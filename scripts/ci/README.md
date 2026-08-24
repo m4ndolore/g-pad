@@ -60,7 +60,7 @@ the commit that added this guard.
 
 ## Downstream repositories
 
-Any repository that vendors `quill/` — including a future g-pad — must carry
+Any repository that vendors `quill/` — including this one — must carry
 this guard and the matching `.gitignore` rules. The ignore rules do not travel
 with copied source; this check is what makes the boundary enforceable rather
 than a convention.

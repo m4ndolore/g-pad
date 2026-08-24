@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build riddle in TAKEOVER mode (links libquill.so + vendor Qt/qsgepaper).
+# Build g-pad in TAKEOVER mode (links libquill.so + vendor Qt/qsgepaper).
 #
 # DEVICE=rmpp (default) builds for the Paper Pro. DEVICE=rm2 builds the
 # clean-room Quill ARMv7 takeover path for the reMarkable 2.
@@ -68,5 +68,5 @@ cargo build --release --target "$RUST_TARGET" --features "$CARGO_FEATURES" "$@"
 # clobber this one. Copy the takeover binary to a distinct name so the two
 # never collide.
 OUT="target/$RUST_TARGET/release"
-cp "$OUT/riddle" "$OUT/riddle-takeover"
-echo "built: $OUT/riddle-takeover ($DEVICE; clean-room Quill takeover)"
+cp "$OUT/g-pad" "$OUT/g-pad-takeover"
+echo "built: $OUT/g-pad-takeover ($DEVICE; clean-room Quill takeover)"

@@ -1,15 +1,15 @@
 #!/bin/sh
 # Full takeover on the reMarkable 2: stop xochitl, drive the panel through
 # the rm2display server (timower/rM2-stuff — vendor libqsgepaper engine,
-# standalone), run riddle with per-update waveform control, and ALWAYS hand
-# the tablet back to xochitl afterwards — even if riddle dies uncleanly.
+# standalone), run g-pad with per-update waveform control, and ALWAYS hand
+# the tablet back to xochitl afterwards — even if g-pad dies uncleanly.
 #
 # Prereqs on the tablet:
 #   - rm2fb_server at /opt/bin/rm2fb_server (from rm2display.ipk), on a
 #     FIRMWARE VERSION IT SUPPORTS (including the 3.27 standalone-server port)
-#   - this script + riddle + oracle.env in /home/root/xovi/exthome/appload/riddle
+#   - this script + g-pad + oracle.env in /home/root/xovi/exthome/appload/g-pad
 #
-# Launch from ssh for now:  sh riddle-takeover-rm2.sh
+# Launch from ssh for now:  sh g-pad-takeover-rm2.sh
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 
@@ -46,4 +46,4 @@ if { [ "$SERVER_UNIT_STARTED" -eq 1 ] &&
 fi
 
 cd "$HERE"
-HOME=/home/root "$HERE/riddle"
+HOME=/home/root "$HERE/g-pad"

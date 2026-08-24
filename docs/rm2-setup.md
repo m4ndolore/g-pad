@@ -1,4 +1,4 @@
-# riddle on the reMarkable 2 — setup from zero
+# g-pad on the reMarkable 2 — setup from zero
 
 This guide installs the stable windowed AppLoad build. An experimental direct
 Quill takeover build is also available; see the reMarkable 2 section of the
@@ -18,7 +18,7 @@ You need: the tablet, its USB-C cable, and ~15 minutes.
 
 ```sh
 rustup target add armv7-unknown-linux-musleabihf   # once; needs zig + cargo-zigbuild
-cd riddle && ./build-rm2.sh && cd ..
+cd g-pad && ./build-rm2.sh && cd ..
 ./scripts/install-rm2.sh
 ```
 
@@ -31,7 +31,7 @@ releases, adds power-button persistence via
 (triple-press = toggle xovi), copies the riddle bundle, prompts for your API
 key, and verifies the oracle end-to-end.
 
-Then on the tablet: open **AppLoad → The Diary**, write, rest the pen ~3 s.
+Then on the tablet: open **AppLoad → g-pad**, write, rest the pen ~3 s.
 
 > ⚠️ Everything here is reversible (`ssh root@10.11.99.1
 > /home/root/xovi/stock` or a reboot returns the stock UI), but reMarkable OS
@@ -66,7 +66,7 @@ Host remarkable rm2 10.11.99.1
 
 Any OpenAI-compatible, vision-capable endpoint works. The installer writes
 `oracle.env` for you; to change it later, edit
-`/home/root/xovi/exthome/appload/riddle/oracle.env` on the tablet. OpenRouter
+`/home/root/xovi/exthome/appload/g-pad/oracle.env` on the tablet. OpenRouter
 example:
 
 ```sh
@@ -78,8 +78,8 @@ RIDDLE_OPENAI_MODEL=openai/gpt-4o-mini
 Test it any time (tablet must be on Wi-Fi — USB gives it no internet):
 
 ```sh
-ssh rm2 'cd /home/root/xovi/exthome/appload/riddle && \
-  set -a && . ./oracle.env && set +a && ./riddle --oracle-test icon.png'
+ssh rm2 'cd /home/root/xovi/exthome/appload/g-pad && \
+  set -a && . ./oracle.env && set +a && ./g-pad --oracle-test icon.png'
 ```
 
 ## Manual path (what the installer does, step by step)

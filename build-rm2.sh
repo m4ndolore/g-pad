@@ -1,6 +1,6 @@
 #!/bin/sh
-# Cross-build riddle for the reMarkable 2 (windowed/qtfb mode only) and
-# assemble a ready-to-scp AppLoad bundle in dist/rm2/riddle/.
+# Cross-build g-pad for the reMarkable 2 (windowed/qtfb mode only) and
+# assemble a ready-to-scp AppLoad bundle in dist/rm2/g-pad/.
 #
 # The rM2 is 32-bit ARM. We target musl and link statically so the binary is
 # independent of the device's (old) glibc. Requires cargo-zigbuild + zig:
@@ -24,17 +24,17 @@ export RUSTFLAGS="-C target-feature=+crt-static"
 cargo zigbuild --release --target $TARGET --features rm2 "$@"
 
 OUT=target/$TARGET/release
-DIST=dist/rm2/riddle
+DIST=dist/rm2/g-pad
 rm -rf "$DIST"
 mkdir -p "$DIST"
 
-cp "$OUT/riddle" "$DIST/riddle"
+cp "$OUT/g-pad" "$DIST/g-pad"
 cp scripts/appload-launch-windowed.sh "$DIST/appload-launch.sh"
-chmod +x "$DIST/riddle" "$DIST/appload-launch.sh"
+chmod +x "$DIST/g-pad" "$DIST/appload-launch.sh"
 cp icon.png oracle.env.example "$DIST/"
 cat > "$DIST/external.manifest.json" <<'EOF'
 {
-  "name": "The Diary",
+  "name": "g-pad",
   "application": "appload-launch.sh",
   "qtfb": true
 }
@@ -42,5 +42,5 @@ EOF
 
 echo
 echo "Bundle ready: $DIST"
-echo "Install:  scp -O -r dist/rm2/riddle root@10.11.99.1:/home/root/xovi/exthome/appload/"
+echo "Install:  scp -O -r dist/rm2/g-pad root@10.11.99.1:/home/root/xovi/exthome/appload/"
 echo "Then create oracle.env in that folder with your RIDDLE_OPENAI_KEY."

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# riddle rM2 installer — one command from zero to the diary on a reMarkable 2.
+# g-pad rM2 installer — one command from zero to the pad on a reMarkable 2.
 #
 #   Usage:   ./scripts/install-rm2.sh                    # USB (10.11.99.1)
 #            RM_HOST=192.168.1.42 ./scripts/install-rm2.sh   # over Wi-Fi
@@ -10,7 +10,7 @@
 #   1. your SSH key (so you type that password once)
 #   2. xovi + AppLoad (arm32, from asivery's official releases)
 #   3. xovi-tripletap persistence (triple-press power = toggle xovi)
-#   4. the riddle bundle from dist/rm2/riddle (build-rm2.sh output)
+#   4. the g-pad bundle from dist/rm2/g-pad (build-rm2.sh output)
 # and asks for your API key to write oracle.env.
 #
 # Everything is reversible: `ssh root@10.11.99.1 /home/root/xovi/stock`
@@ -25,7 +25,7 @@ APPLOAD_URL="https://github.com/asivery/rm-appload/releases/download/${APPLOAD_T
 TRIPLETAP_INSTALL_URL="https://raw.githubusercontent.com/rmitchellscott/xovi-tripletap/main/install.sh"
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BUNDLE="$HERE/riddle/dist/rm2/riddle"
+BUNDLE="$HERE/dist/rm2/g-pad"
 
 say()  { printf '\033[1m== %s\033[0m\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -49,8 +49,8 @@ rm_scp() { scp -O "${SSH_OPTS[@]}" "$@"; }
 cleanup() { ssh "${SSH_OPTS[@]}" -O exit "root@$RM_HOST" 2>/dev/null; rm -rf "$WORK"; }
 trap cleanup EXIT
 
-# --- 0. riddle bundle must exist locally -------------------------------------
-[ -x "$BUNDLE/riddle" ] || die "no rM2 bundle at $BUNDLE — run riddle/build-rm2.sh first"
+# --- 0. g-pad bundle must exist locally -------------------------------------
+[ -x "$BUNDLE/g-pad" ] || die "no rM2 bundle at $BUNDLE — run ./build-rm2.sh first"
 
 # --- 1. reach the tablet, install our key, confirm it is an rM2 --------------
 # BatchMode probe: succeeds only with key auth, so a password-only tablet
@@ -96,19 +96,19 @@ rm_ssh 'cd /tmp && rm -rf appload-unz && mkdir appload-unz && \
 # qt-resource-rebuilder wants a per-OS-version hashtable; AppLoad itself does
 # not need it, so best-effort only.
 rm_ssh 'test -x /home/root/xovi/rebuild_hashtable && /home/root/xovi/rebuild_hashtable </dev/null' \
-    || echo "   (hashtable rebuild skipped — fine for riddle)"
+    || echo "   (hashtable rebuild skipped — fine for g-pad)"
 
 # --- 4. persistence (triple-press the power button to toggle xovi) -----------
 say "Installing xovi-tripletap persistence"
 rm_ssh "wget -qO- '$TRIPLETAP_INSTALL_URL' | bash" \
     || echo "   tripletap didn't install; start xovi manually: ssh root@$RM_HOST /home/root/xovi/start"
 
-# --- 5. riddle ----------------------------------------------------------------
-say "Installing riddle"
+# --- 5. g-pad ----------------------------------------------------------------
+say "Installing g-pad"
 rm_ssh 'mkdir -p /home/root/xovi/exthome/appload'
 rm_scp -r "$BUNDLE" "root@$RM_HOST:/home/root/xovi/exthome/appload/"
 
-if ! rm_ssh 'test -f /home/root/xovi/exthome/appload/riddle/oracle.env'; then
+if ! rm_ssh 'test -f /home/root/xovi/exthome/appload/g-pad/oracle.env'; then
     printf 'API key for the oracle (OpenAI/OpenRouter/compatible; empty to skip): '
     read -r KEY
     if [ -n "$KEY" ]; then
@@ -122,15 +122,15 @@ if ! rm_ssh 'test -f /home/root/xovi/exthome/appload/riddle/oracle.env'; then
         read -r BASE; BASE="${BASE:-$DEF_BASE}"
         printf 'Vision model [%s]: ' "$DEF_MODEL"
         read -r MODEL; MODEL="${MODEL:-$DEF_MODEL}"
-        rm_ssh_stdin "cat > /home/root/xovi/exthome/appload/riddle/oracle.env" <<EOF
+        rm_ssh_stdin "cat > /home/root/xovi/exthome/appload/g-pad/oracle.env" <<EOF
 RIDDLE_OPENAI_KEY=$KEY
 RIDDLE_OPENAI_BASE=$BASE
 RIDDLE_OPENAI_MODEL=$MODEL
 EOF
         say "Verifying the oracle (needs tablet Wi-Fi)"
-        rm_ssh 'cd /home/root/xovi/exthome/appload/riddle && set -a && . ./oracle.env && set +a && \
-                ./riddle --oracle-test icon.png' \
-            || echo "   oracle test failed — check Wi-Fi/key/model, then re-run: riddle --oracle-test"
+        rm_ssh 'cd /home/root/xovi/exthome/appload/g-pad && set -a && . ./oracle.env && set +a && \
+                ./g-pad --oracle-test icon.png' \
+            || echo "   oracle test failed — check Wi-Fi/key/model, then re-run: g-pad --oracle-test"
     fi
 fi
 
@@ -141,8 +141,8 @@ rm_ssh 'systemd-run --unit=xovi-firststart --collect --service-type=oneshot /hom
 
 cat <<EOF
 
-  Done. On the tablet, open AppLoad and tap "The Diary".
-  Write something, rest the pen ~3 s, and watch the page drink your ink.
+  Done. On the tablet, open AppLoad and tap "g-pad".
+  Write something, rest the pen ~3 s, and watch the page write back.
 
   Toggle xovi:   triple-press the power button
   Stock UI:      ssh root@$RM_HOST /home/root/xovi/stock   (or reboot)

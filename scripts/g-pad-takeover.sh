@@ -1,16 +1,16 @@
 #!/bin/bash
-# Launch the diary in full-takeover mode: stop xochitl, run riddle against the
+# Launch the pad in full-takeover mode: stop xochitl, run g-pad against the
 # vendor e-ink engine (instant ink), ALWAYS restore xochitl on exit.
 #
-# Exit the diary: power button, 5-finger tap, or SIGTERM. Escape hatch if
+# Exit the pad: power button, 5-finger tap, or SIGTERM. Escape hatch if
 # anything wedges: ssh rm 'systemctl start xochitl'.
 
 # Resolve our own install directory so the bundle works wherever it lives
-# (e.g. /home/root/xovi/exthome/appload/riddle/ when installed via AppLoad).
+# (e.g. /home/root/xovi/exthome/appload/g-pad/ when installed via AppLoad).
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 restore() {
-    "$HERE/riddle-restore.sh"
+    "$HERE/g-pad-restore.sh"
 }
 # Under the Remagic Home session host (REMAGIC_SESSION=1), xochitl is already
 # stopped and the session owns its restore — skip our own stop/restart.
@@ -22,19 +22,19 @@ fi
 #   RIDDLE_OPENAI_KEY=sk-...
 #   RIDDLE_OPENAI_BASE=https://api.openai.com/v1     # optional
 #   RIDDLE_OPENAI_MODEL=gpt-4o-mini                  # optional
-# Without it, riddle falls back to the pi backend (if pi is installed).
+# Without it, g-pad falls back to the pi backend (if pi is installed).
 if [ -f "$HERE/oracle.env" ]; then
     set -a; . "$HERE/oracle.env"; set +a
 fi
 
 if [ -z "${REMAGIC_SESSION:-}" ]; then
     # xochitl normally holds this. Without a replacement, kernel autosleep can
-    # resume into a second display engine while Riddle still owns the panel.
-    if ! echo riddle-takeover > /sys/power/wake_lock 2>/dev/null; then
+    # resume into a second display engine while g-pad still owns the panel.
+    if ! echo g-pad-takeover > /sys/power/wake_lock 2>/dev/null; then
         if command -v systemd-inhibit >/dev/null 2>&1; then
-            echo "riddle: kernel wakelock unavailable; using systemd sleep inhibitor" >&2
+            echo "g-pad: kernel wakelock unavailable; using systemd sleep inhibitor" >&2
         else
-            echo "riddle: warning: no sleep-prevention mechanism available" >&2
+            echo "g-pad: warning: no sleep-prevention mechanism available" >&2
         fi
     fi
     systemctl stop xochitl
@@ -47,12 +47,12 @@ cd "$HERE"
 # engine) comes from the device's own scenegraph plugin dir. We search the
 # bundle first, then a standalone /home/root/quill install, then the plugin dir.
 if command -v systemd-inhibit >/dev/null 2>&1; then
-    systemd-inhibit --what=sleep --who=Riddle \
-        --why="Riddle owns the e-paper panel during takeover" --mode=block \
+    systemd-inhibit --what=sleep --who=g-pad \
+        --why="g-pad owns the e-paper panel during takeover" --mode=block \
         /usr/bin/env LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph" \
-        PAPERTERM_SHELL= HOME=/home/root "$HERE/riddle"
+        PAPERTERM_SHELL= HOME=/home/root "$HERE/g-pad"
 else
     LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph" \
-        PAPERTERM_SHELL= HOME=/home/root "$HERE/riddle"
+        PAPERTERM_SHELL= HOME=/home/root "$HERE/g-pad"
 fi
-echo "riddle-takeover: diary closed ($?), restoring xochitl"
+echo "g-pad-takeover: pad closed ($?), restoring xochitl"
