@@ -1,24 +1,14 @@
 # g-pad
 
-Works right out of the box. Designed to make the most of gstack and gbrain.
-
 An e-ink writing pad. Write with the pen. Rule a line beneath your words.
 A reply writes itself back in a flowing hand.
 
-Drop in an OpenAI-compatible vision key and it answers. Point it at gstack
-and gbrain and the same pad becomes I/O for a real corpus. Neither is
-required: pages still land on the tablet and wait.
+A vision-capable API key is enough to get a reply. gstack and gbrain are
+optional: when they are there, the pad is I/O for a real corpus; when they
+are not, pages still land on the tablet.
 
-g-pad is developed in the open, same posture as gbrain. It does not rebuild
-the brain or the stack.
-
-Derived from [riddle](https://github.com/MaximeRivest/riddle) (MIT, Maxime
-Rivest). Tom Riddle was the inspiration for the original diary; this pad is
-not that product. The reMarkable 2 takeover, digitizer mapping, and Quill
-host started there. See [NOTICE](NOTICE).
-
-If you want the Tom diary on an rM2, use the maintained fork
-[m4ndolore/riddle](https://github.com/m4ndolore/riddle) (`path-b`).
+Derived from [riddle](https://github.com/MaximeRivest/riddle) (MIT). See
+[NOTICE](NOTICE).
 
 ## What this is
 
@@ -46,8 +36,6 @@ means capture-and-queue, not unplugged-and-mute.
 
 ## Install on a reMarkable 2 (takeover)
 
-Takeover is the shipping path. Windowed qtfb was tried first and abandoned.
-
 You need a **reMarkable 2** with SSH as root (stock; no developer mode),
 xovi + AppLoad, and this bundle.
 
@@ -66,8 +54,7 @@ scp -O -r dist/rm2-takeover/g-pad root@10.11.99.1:/home/root/xovi/exthome/apploa
 ```
 
 3. Add a key: `cp oracle.env.example oracle.env` in that folder and set
-   `RIDDLE_OPENAI_KEY` (any OpenAI-compatible vision key). The `RIDDLE_`
-   prefix is inherited from the parent project; a `GPAD_` rename is follow-up.
+   `RIDDLE_OPENAI_KEY` (any OpenAI-compatible vision key).
 
 4. In **AppLoad**: Reload, then **g-pad**. Write, then rule a line beneath it.
 

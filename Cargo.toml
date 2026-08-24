@@ -3,7 +3,7 @@ name = "g-pad"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Works right out of the box. Designed to make the most of gstack and gbrain."
+description = "An e-ink writing pad. Ready with a vision key. Designed for gstack and gbrain."
 
 [dependencies]
 libc = "0.2"
