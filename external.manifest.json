@@ -2,7 +2,7 @@
   "id": "g-pad",
   "name": "g-pad",
   "version": "0.1.0",
-  "description": "An e-ink writing pad: write with the pen — it writes back, and it remembers.",
+  "description": "Works right out of the box. Designed to make the most of gstack and gbrain.",
   "application": "appload-launch.sh",
   "qtfb": false
 }

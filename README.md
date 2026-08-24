@@ -1,11 +1,13 @@
 # g-pad
 
+Works right out of the box. Designed to make the most of gstack and gbrain.
+
 An e-ink writing pad. Write with the pen. Rule a line beneath your words.
 A reply writes itself back in a flowing hand.
 
-No screen glow, no keyboard. The pad is I/O for a brain (gbrain, gstack, or
-anything with an OpenAI-compatible vision endpoint). It also works with none:
-pages still land on the tablet and wait.
+Drop in an OpenAI-compatible vision key and it answers. Point it at gstack
+and gbrain and the same pad becomes I/O for a real corpus. Neither is
+required: pages still land on the tablet and wait.
 
 g-pad is developed in the open, same posture as gbrain. It does not rebuild
 the brain or the stack.
