@@ -8,6 +8,7 @@
 //! built with --features takeover and launched with xochitl stopped.
 
 mod ask;
+mod brief;
 mod display;
 mod evdev;
 mod fb;
