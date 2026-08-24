@@ -28,14 +28,11 @@ if [ -f "$HERE/oracle.env" ]; then
 fi
 
 if [ -z "${REMAGIC_SESSION:-}" ]; then
-    # xochitl normally holds this. Without a replacement, kernel autosleep can
-    # resume into a second display engine while g-pad still owns the panel.
+    # Kernel wake_lock is what blocks kernel autosleep. xochitl normally holds
+    # one; without a replacement the kernel can suspend into a second display
+    # engine while we still own the panel.
     if ! echo g-pad-takeover > /sys/power/wake_lock 2>/dev/null; then
-        if command -v systemd-inhibit >/dev/null 2>&1; then
-            echo "g-pad: kernel wakelock unavailable; using systemd sleep inhibitor" >&2
-        else
-            echo "g-pad: warning: no sleep-prevention mechanism available" >&2
-        fi
+        echo "g-pad: warning: kernel wake_lock unavailable; kernel autosleep is unguarded" >&2
     fi
     systemctl stop xochitl
 fi
@@ -44,15 +41,17 @@ rm -f /tmp/epframebuffer.lock      # stale EPD lock blocks the engine
 
 cd "$HERE"
 # libquill.so ships in this bundle; libqsgepaper.so (reMarkable's proprietary
-# engine) comes from the device's own scenegraph plugin dir. We search the
-# bundle first, then a standalone /home/root/quill install, then the plugin dir.
+# engine) comes from the device's own scenegraph plugin dir.
+export LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph"
+export PAPERTERM_SHELL=
+export HOME=/home/root
+
+# systemd-inhibit --what=sleep blocks logind-initiated sleep only. It does not
+# replace the kernel wake_lock above. One launch site either way.
+wrap=()
 if command -v systemd-inhibit >/dev/null 2>&1; then
-    systemd-inhibit --what=sleep --who=g-pad \
-        --why="g-pad owns the e-paper panel during takeover" --mode=block \
-        /usr/bin/env LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph" \
-        PAPERTERM_SHELL= HOME=/home/root "$HERE/g-pad"
-else
-    LD_LIBRARY_PATH="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph" \
-        PAPERTERM_SHELL= HOME=/home/root "$HERE/g-pad"
+    wrap=(systemd-inhibit --what=sleep --who=g-pad \
+        --why="g-pad owns the e-paper panel during takeover" --mode=block)
 fi
+"${wrap[@]}" "$HERE/g-pad"
 echo "g-pad-takeover: pad closed ($?), restoring xochitl"

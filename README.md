@@ -86,7 +86,7 @@ gitignored. Do not add it.
 | Write, then draw a long rule beneath it | The pad reads your ink and replies |
 | Flip the marker | Erase |
 | Swipe from the left edge | History: current sitting as a thread; back to conversation selector |
-| Swipe down from the top | Settings |
+| Swipe down from the top | Settings (Stealth) or controls (Guided) |
 | Draw a large `?` | Gesture guide |
 | Hold five fingers, then release | Leave *(takeover)* |
 | Power button | Sleep; press again to wake where you were *(takeover)* |

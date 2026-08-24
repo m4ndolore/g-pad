@@ -145,8 +145,10 @@ const BODY_TAKEOVER: &[&str] = &[
     "and the page will rise again.",
     "",
     "Flip the marker to erase.",
+    "Draw a large ? for this guide.",
     "Swipe from the left edge for history.",
-    "Swipe down from the top for settings.",
+    "Swipe down from the top:",
+    "settings (Stealth) or controls (Guided).",
     "Hold five fingers, then release, to leave.",
     "The power button sleeps the pad.",
     "",
@@ -161,8 +163,10 @@ const BODY_WINDOWED: &[&str] = &[
     "and the page will rise again.",
     "",
     "Flip the marker to erase.",
+    "Draw a large ? for this guide.",
     "Swipe from the left edge for history.",
-    "Swipe down from the top for settings.",
+    "Swipe down from the top:",
+    "settings (Stealth) or controls (Guided).",
     "Close the pad from AppLoad.",
     "",
 ];
@@ -338,6 +342,21 @@ mod tests {
         assert!(!looks_like_question_mark(&[]));
         let dot = stroke(&[(0, 0), (1, 1)]);
         assert!(!looks_like_question_mark(&[dot.clone(), dot.clone(), dot.clone(), dot]));
+    }
+
+    #[test]
+    fn guide_documents_its_entry_point_and_mode_swipe() {
+        for body in [BODY_TAKEOVER, BODY_WINDOWED] {
+            let joined = body.join("\n");
+            assert!(
+                joined.contains("Draw a large ? for this guide."),
+                "guide must name the ? gesture that opens it:\n{joined}"
+            );
+            assert!(
+                joined.contains("settings (Stealth) or controls (Guided)."),
+                "guide must distinguish Stealth settings from Guided controls:\n{joined}"
+            );
+        }
     }
 
     #[test]
