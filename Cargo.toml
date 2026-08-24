@@ -1,0 +1,27 @@
+[package]
+name = "g-pad"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "An e-ink writing pad: pen in, a reply out. Works without a brain."
+
+[dependencies]
+libc = "0.2"
+signal-hook = "0.3"
+png = "0.17"
+ab_glyph = "0.2"
+# HTTP + TLS for the OpenAI-compatible oracle backend. Pure Rust (rustls), no
+# OpenSSL/C — keeps the binary self-contained and cross-compiles cleanly.
+ureq = { version = "2.10", default-features = false, features = ["tls"] }
+
+[features]
+# Link libquill.so (vendor e-ink engine C ABI) for full-takeover mode.
+takeover = []
+# Target the reMarkable 2 (1404x1872, rotated wacom digitizer, 32-bit ARM).
+# Combine with `takeover` for the ARMv7 clean-room Quill backend; without it,
+# the build uses AppLoad/qtfb and retains the experimental rm2fb fallback.
+rm2 = []
+
+[profile.release]
+strip = true
+lto = true

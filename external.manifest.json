@@ -1,0 +1,8 @@
+{
+  "id": "g-pad",
+  "name": "g-pad",
+  "version": "0.1.0",
+  "description": "An e-ink writing pad: write with the pen — it writes back, and it remembers.",
+  "application": "appload-launch.sh",
+  "qtfb": false
+}

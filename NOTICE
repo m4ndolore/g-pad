@@ -1,0 +1,13 @@
+g-pad
+======
+
+This project includes code originally published as riddle:
+
+    https://github.com/MaximeRivest/riddle
+    Copyright (c) 2026 Maxime Rivest
+    MIT License (see LICENSE)
+
+quill/ is the clean-room MIT display host from MaximeRivest/quill. It links
+against reMarkable's proprietary libqsgepaper.so, which is never redistributed
+here. Each user extracts that library from a device they own. See
+quill/CLEANROOM.md and scripts/ci/check-no-vendor-blob.sh.
