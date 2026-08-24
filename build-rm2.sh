@@ -32,13 +32,18 @@ cp "$OUT/g-pad" "$DIST/g-pad"
 cp scripts/appload-launch-windowed.sh "$DIST/appload-launch.sh"
 chmod +x "$DIST/g-pad" "$DIST/appload-launch.sh"
 cp icon.png oracle.env.example "$DIST/"
-cat > "$DIST/external.manifest.json" <<'EOF'
-{
-  "name": "g-pad",
-  "application": "appload-launch.sh",
-  "qtfb": true
-}
-EOF
+# Derive the bundle manifest from the tracked one so id, name, version, and
+# description stay in one place. Only `qtfb` differs: the windowed build runs
+# under qtfb, the takeover build does not.
+#
+# The id matters. AppLoad keys entries by it, so two bundles sharing an id
+# collide in the launcher — which is how "riddle" and "riddle-takeover" both
+# ended up listed as "The Diary".
+sed 's/"qtfb": false/"qtfb": true/' external.manifest.json > "$DIST/external.manifest.json"
+grep -q '"qtfb": true' "$DIST/external.manifest.json" || {
+    echo "manifest: expected a qtfb field to flip" >&2; exit 1; }
+grep -q '"id"' "$DIST/external.manifest.json" || {
+    echo "manifest: no id — AppLoad entries would collide" >&2; exit 1; }
 
 echo
 echo "Bundle ready: $DIST"
