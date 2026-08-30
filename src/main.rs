@@ -19,6 +19,7 @@ mod fb;
 mod gesture;
 mod ink;
 mod memory;
+mod page;
 mod oracle;
 mod pen;
 mod power;
