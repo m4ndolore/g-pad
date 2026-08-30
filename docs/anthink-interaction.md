@@ -215,41 +215,51 @@ Three things the bridge settles that this document adopts:
 - **The pad never mints artifacts.** A mark records a human decision. It must
   never be recorded as though the agent accomplished something.
 
-### One open disagreement
+### Approval is in scope, tiered by consequence
 
-The bridge lists under **Not this build**:
+The bridge lists "approving tool calls from the pad" under **Not this build**,
+reasoning that consequential actions should not hang off a transcription round
+trip. That reasoning is right about transcription and wrong about approval, and
+the distinction is the whole design.
 
-> **Approving tool calls from the pad.** Consequential actions should not hang
-> off a transcription round trip.
+An anchored tick does not transcribe. It is `BBox` containment plus one
+direction test — local geometry, no model, no network, the same class of
+detection as `looks_like_send_rule`, which this tree already trusts to commit a
+page to the oracle. Nothing about approving requires reading handwriting.
 
-The decision box is that feature, and the objection deserves a real answer
-rather than a footnote.
+So approval is in scope. It is **tiered by consequence**, because the honest
+unit of risk is what an action does to the world, not what category it belongs
+to:
 
-The objection is right about *transcription*. Writing "yes, ship it" and having
-a vision model read the cursive is a bad way to approve a consequential action:
-the failure is silent, the confidence is unearned, and the cost lands on the
-repository.
+| Tier | Examples | Behavior |
+|---|---|---|
+| **Read** | read, grep, glob, status | Auto-approved. Never interrupts. |
+| **Write** | edit a file, run a command, create a branch | The decision box. One tick. |
+| **Destructive** | merge, push, deploy, delete, reset | Confirms in vermilion, always — regardless of the setting. |
 
-An anchored tick is not that. It is `BBox` containment plus one direction test
-— local geometry, no model, no network. It is the same class of detection as
-`looks_like_send_rule`, which this tree already trusts to commit a page to the
-oracle. The risk the bridge names is a property of transcription, not of
-approval, and the decision box does not transcribe.
+Two properties keep this honest:
 
-Two constraints keep that honest, and they are part of the design rather than
-concessions to it:
+- **Reject is always cheaper than approve.** A strike takes effect at once; a
+  destructive tick asks a second time. Getting it wrong should cost a redraw,
+  never a rollback.
+- **The floor is not configurable.** The preference moves the Read/Write
+  boundary — how much runs unattended — and never the destructive tier. A
+  setting that can silence a deploy confirmation is a setting that will
+  eventually silence one.
 
-- **Destructive approvals are confirmed, in vermilion, per the UX system.** A
-  tick that merges, deploys, or deletes renders a confirmation; a tick that
-  advances a conversation does not. The line is consequence, not category.
-- **Reject is always cheaper than approve.** A strike takes effect immediately;
-  a consequential tick asks once. Getting it wrong should cost a redraw, never
-  a rollback.
+Vermilion finally earns its place here. The UX system reserved it for
+destructive confirmation and nothing in the tree has ever used it; this is the
+first surface with genuinely destructive actions to confirm.
 
-If hardware testing shows anchored marks misfire often enough to be dangerous,
-the decision box loses to the bridge's position and approval moves off the pad.
-That is a hardware question, and it should be answered on hardware rather than
-in a document.
+**What this needs that does not exist.** The bridge has no consequence
+classifier — `Session` carries a bare `state: String` and `Artifact` a
+reference, with nothing describing a pending action. Tiering requires the
+bridge to report *what the agent is about to do*, classified at the source
+where the tool call is known, never guessed on the pad from prose. A pad that
+infers "this looks destructive" from an agent's wording is the ungrounded
+confidence failure the capture record warns about, wearing a friendlier face.
+Until the bridge reports a tier, the pad must treat every pending action as
+destructive and confirm it.
 
 ### Two questions the bridge left open, answered here
 
@@ -266,22 +276,37 @@ what this document decides, so they are answered rather than re-asked:
   and `SCREEN_H` rather than `PANEL_W`. Half-width for choosing, full-page for
   reading.
 
-### The test this contradicts, deliberately
+### The read-only boundary is unsettled
 
 `ui.rs::the_sessions_tab_is_read_only` asserts that a tap below the drawer
-header returns `Action::None`, with the comment *"reading is not a capture
-path."*
+header returns `Action::None`, commented *"reading is not a capture path."*
 
-Opening a session from the board breaks that test, and it should — but as an
-argued change, not a silent one. The rule the test protects is real: reading
-must not become a capture path, because capture means ink, transcription, and
-a post back to the agent. Opening a session is none of those. It is navigation
-between two read-only surfaces, and it writes nothing.
+That test encodes a boundary nobody has yet worked out, so it should be treated
+as a hypothesis rather than a constraint — as should the rest of the current
+read-only handling. It is not evidence of a decision; it is evidence that a
+decision was deferred.
 
-The replacement invariant, which keeps the intent and drops the
-over-restriction: **no tap on a reading surface may write.** A tap may change
-what is displayed. Marks — which do carry intent — remain a separate channel
-with their own confirmation rules.
+The distinction the code is missing is between three different things it
+currently lumps together:
+
+| | Writes? | Needs confirmation? |
+|---|---|---|
+| **Navigate** — open a session, switch tab, page down | No | No |
+| **Mark** — tick, strike, arrow | Yes, to the agent | By tier |
+| **Capture** — ink, transcription, a post back | Yes, to the corpus | Yes |
+
+The existing test forbids all three because it only distinguishes "tap" from
+"no tap." Navigation writes nothing and should never have been blocked; capture
+genuinely should not happen by accident. Marking is the case the codebase has
+no concept of at all.
+
+The replacement invariant: **no interaction may write without the writer having
+aimed at something.** Navigation is exempt because it writes nothing. Marks
+qualify because they are aimed at a rendered region by definition. Blind
+capture — ink committed with no target — does not.
+
+This wants hardware time before it is settled, and the current code should be
+reviewed against it rather than preserved.
 
 ### What stays out, and stays out here too
 
