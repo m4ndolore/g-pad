@@ -12,7 +12,13 @@ page. Git reports a modify/delete conflict, and the obvious resolution — "I
 deleted it, so `git rm src/help.rs`" — silently drops the branding. The build
 stays green and the tests pass.
 
-**Already handled.** `gesture.rs` absorbed the branded page in `b5eff5b`:
+**Already handled**, and note the direction has since flipped: `sleep-fix` has
+landed, so `help.rs` is now modified on `main` and deleted here. Same shape,
+but `git rm src/help.rs` is now the *right* resolution — the very resolution
+that would have destroyed the branding before the absorb. Anyone working from
+the older warning would now do the wrong thing.
+
+`gesture.rs` absorbed the branded page in `b5eff5b`:
 `assets/mc-mark.png`, `mark_gray`, `blit_gray`, `blit_left`, the composed
 page, and both guard tests. `show_sleep` is now `(surf, font, ui_font)`.
 
@@ -47,11 +53,66 @@ Everything else in `main.rs` auto-merges, including the suspend fix from
 `8b902ba`, which touches `main.rs` and `power.rs` and is independent of all of
 the above.
 
+## Deliberate removals — not conflicts, but decisions
+
+Two things on `main` do not exist on this branch. Neither is an oversight, and
+neither will produce a conflict: `help.rs` is deleted wholesale here, so its
+contents vanish quietly. Anyone resolving from these notes should know they are
+ratifying a decision, not discovering a bug.
+
+### `looks_like_question_mark` and the `?` gesture guide
+
+`main`'s `help.rs` has `looks_like_question_mark` (:52) and the guide modal it
+opened, `show` (:193) with `Help::dismiss` (:232). This branch has neither, and
+the README no longer lists "Draw a large `?` → Gesture guide".
+
+**Removed on the user's explicit instruction**, in two steps:
+
+1. *"looks like question mark never worked. It should be cut completely."* The
+   recognizer was not merely inert — at two of its three call sites a suspected
+   `?` set `send_mode = Some(CommitMode::Capture)`, force-committing the page.
+   A recognizer nobody could trigger deliberately was wired to the pad's most
+   consequential action.
+2. Cutting it orphaned the guide, because the `?` was its only entry point —
+   there is no `HELP` control and no `Action::Help`, so the panel had been
+   unreachable in practice all along. Asked whether to delete it, re-enter it
+   from the control strip, or leave it dark, the user chose **delete**.
+
+Removing the panel also took `help.rs`'s off-spec 88/54/40 type scale and one
+of the four competing `PAD` values — two findings from the UX audit resolved as
+a side effect.
+
+**If the guide is ever wanted back**, it should not return as a free-floating
+shape. `docs/anthink-interaction.md` argues the general case: free-floating
+recognition competes with handwriting for the same strokes and does not degrade
+into doing nothing — it degrades into doing something else. A `GUIDE` entry in
+the control strip is one `Action` variant and cannot misfire.
+
+### Everything else
+
+`help.rs`'s remaining contents are accounted for: the two working recognizers
+(`looks_like_send_rule`, `looks_like_ask_arrow`) and the branded sleep page all
+live in `gesture.rs`. Nothing else was dropped.
+
 ## Verified result
 
-Merging this branch, then `worktree-sleep-fix`, then `origin/main`, resolving
-as above: **80 tests pass, 0 warnings.** The branded sleep page renders with
-its two mark strokes on distinct ink levels.
+Re-verified against `main` at `cd688a0`, after `sleep-fix` landed. Merging this
+branch with `origin/main` and resolving purely from these notes — `git rm
+src/help.rs`, take `gesture::show_sleep(&mut surf, &font, &ui_font)`, re-add
+`mod bridge;` — gives **80 tests passing** with the branded sleep page intact
+(`brand_mark_keeps_its_grays` green).
+
+Note the merged tree reports **26 dead-code warnings**, all from `bridge.rs`.
+That is not merge damage: `bridge.rs` is unwired on `main` already, in exactly
+the state `brief.rs` was before it got a module-level `#[allow(dead_code)]`.
+This branch is at 0 warnings on its own. The two obvious follow-ups, in order:
+
+1. Give `bridge.rs` the same annotation `brief.rs` has, with the same reason —
+   it is a designed surface waiting on a call site.
+2. Adopt `page.rs` in `bridge.rs`, which deletes most of those warnings
+   outright rather than silencing them. See `docs/page-geometry.md`; it is a
+   delete-only change, and `bridge.rs`'s own tests are the acceptance
+   criteria.
 
 ## Order
 
