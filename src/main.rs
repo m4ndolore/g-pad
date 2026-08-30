@@ -539,7 +539,7 @@ fn run() -> std::io::Result<()> {
             if (pressed || sleep_requested) && Instant::now() >= power_grace {
                 sleep_requested = false;
                 eprintln!("g-pad: sleeping (power button)");
-                let saved = gesture::show_sleep(&mut surf, &font);
+                let saved = gesture::show_sleep(&mut surf, &font, &ui_font);
                 disp.full_refresh(surf.w, surf.h);
                 // Let the flashing refresh finish before the panel loses power.
                 std::thread::sleep(Duration::from_millis(800));
