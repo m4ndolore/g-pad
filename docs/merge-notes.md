@@ -1,4 +1,8 @@
-# Merging `anthink-interaction-design`
+# Merging `anthink-interaction-design` — LANDED
+
+**This branch landed on `main` as `ae0479b` on 2026-08-30.** The hazards below
+are kept as the record of what the merge involved and how it was resolved;
+they are history, not pending work.
 
 Verified by test-merging in a scratch worktree, building, and running the
 tests. Two of the three hazards below compile cleanly when resolved wrongly,
@@ -148,5 +152,6 @@ Any order works given the absorb, because the absorb is what removed the
 silent-loss path. The earlier concern that "sleep-fix then anthink loses the
 page" no longer applies: the page now lives in `gesture.rs` on this branch.
 
-Do not merge to `main` without coordinating — merges are being sequenced
-elsewhere.
+Landed as `ae0479b`, resolved exactly as documented above, plus one follow-up
+commit adopting `page.rs` in `bridge.rs` (which is why `main` is at zero
+warnings rather than the 26 this document anticipated).
