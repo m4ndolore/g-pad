@@ -74,7 +74,6 @@ gitignored. Do not add it.
 | Flip the marker | Erase |
 | Swipe from the left edge | History: current sitting as a thread; back to conversation selector |
 | Swipe down from the top | Settings (Stealth) or controls (Guided) |
-| Draw a large `?` | Gesture guide |
 | Hold five fingers, then release | Leave *(takeover)* |
 | Power button | Sleep; press again to wake where you were *(takeover)* |
 

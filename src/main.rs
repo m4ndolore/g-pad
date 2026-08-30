@@ -12,7 +12,7 @@ mod brief;
 mod display;
 mod evdev;
 mod fb;
-mod help;
+mod gesture;
 mod ink;
 mod memory;
 mod oracle;
@@ -86,7 +86,6 @@ enum State {
     FadingReply { stage: u32, next: Instant, region: BBox },
     /// The guide panel. `panel: None` = dismissed, waiting for pen-up so the
     /// dismissing touch doesn't leave a mark on the page.
-    Help { panel: Option<help::Help>, until: Instant },
     /// A remembered page rising through the paper: date, the writer's own
     /// past ink, Tom's old reply — all in faded ink. `saved` is today's page.
     Conjuring { plan: ConjurePlan, next: Instant, saved: Vec<u8> },
@@ -535,7 +534,7 @@ fn run() -> std::io::Result<()> {
             if (pressed || sleep_requested) && Instant::now() >= power_grace {
                 sleep_requested = false;
                 eprintln!("g-pad: sleeping (power button)");
-                let saved = help::show_sleep(&mut surf, &font);
+                let saved = gesture::show_sleep(&mut surf, &font);
                 disp.full_refresh(surf.w, surf.h);
                 // Let the flashing refresh finish before the panel loses power.
                 std::thread::sleep(Duration::from_millis(800));
@@ -569,7 +568,7 @@ fn run() -> std::io::Result<()> {
                     eprintln!("g-pad: suspend aborted (EPD discharge timer), retrying");
                 }
                 eprintln!("g-pad: waking");
-                help::restore_sleep(&mut surf, &saved);
+                gesture::restore_sleep(&mut surf, &saved);
                 disp.full_refresh(surf.w, surf.h);
                 power::wifi_heal();
                 // Discard input that queued while asleep — stale pen events
@@ -594,7 +593,7 @@ fn run() -> std::io::Result<()> {
                 // quit); the pen is the authoritative input device here.
                 if s.proximity && !matches!(state,
                     State::Settings { .. } | State::Drawer { .. }
-                    | State::ExpandedConversation { .. } | State::Help { .. })
+                    | State::ExpandedConversation { .. })
                 {
                     if let Some(ref mut td) = touch_dev {
                         td.suppress();
@@ -612,8 +611,6 @@ fn run() -> std::io::Result<()> {
                             *last_pen = Some(Instant::now());
                             if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
-                            } else if help::looks_like_question_mark(user_ink.stroke_list()) {
-                                send_mode = Some(CommitMode::Capture);
                             }
                         }
                     }
@@ -717,8 +714,6 @@ fn run() -> std::io::Result<()> {
                             *last_pen = Some(Instant::now());
                             if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
-                            } else if help::looks_like_question_mark(user_ink.stroke_list()) {
-                                send_mode = Some(CommitMode::Capture);
                             }
                         }
                     }
@@ -755,21 +750,9 @@ fn run() -> std::io::Result<()> {
                 {
                     let commit_mode = send_mode.take().unwrap_or(CommitMode::Capture);
                     if region_all_white(&surf, user_ink.bbox) {
-                        // Everything was erased before commit: nothing to
-                        // commit (and no phantom "?" from erased strokes).
+                        // Everything was erased before commit: nothing to commit.
                         user_ink.clear();
                         State::Listening { last_pen: None }
-                    } else if help::looks_like_question_mark(user_ink.stroke_list()) {
-                        // Absorb the "?" and open the guide instead of asking.
-                        let (qx, qy, qw, qh) = user_ink.bbox.rect();
-                        surf.fill_rect(qx as usize, qy as usize, qw as usize, qh as usize, WHITE);
-                        disp.update(qx, qy, qw, qh, false);
-                        user_ink.clear();
-                        let panel = help::show(&mut surf, &font, takeover);
-                        let (px, py, pw, ph) = panel.region.rect();
-                        disp.update(px, py, pw, ph, false);
-                        eprintln!("g-pad: guide shown");
-                        State::Help { panel: Some(panel), until: Instant::now() + Duration::from_secs(45) }
                     } else if oracle.is_none() {
                         // No spirit at all: don't eat ink that nothing will
                         // answer — leave the writing and put the reason below.
@@ -990,22 +973,6 @@ fn run() -> std::io::Result<()> {
 
             State::Lingering { region, more } => State::Lingering { region, more },
 
-            State::Help { panel, until } => match panel {
-                Some(p) => {
-                    if stylus_tapped || Instant::now() >= until {
-                        let region = p.dismiss(&mut surf);
-                        let (x, y, w, h) = region.rect();
-                        disp.update(x, y, w, h, false);
-                        eprintln!("g-pad: guide dismissed");
-                        State::Help { panel: None, until }
-                    } else {
-                        State::Help { panel: Some(p), until }
-                    }
-                }
-                // Dismissed: swallow the closing touch, listen again on pen-up.
-                None if stylus_on => State::Help { panel: None, until },
-                None => State::Listening { last_pen: None },
-            },
 
             State::Conjuring { mut plan, next, saved } => {
                 if stylus_tapped {
@@ -1282,9 +1249,9 @@ fn absorb_send_rule(ink: &mut ink::Ink, surf: &mut Surface, disp: &display::Disp
     let text_w = (text.x1 - text.x0).max(0);
     let min_w = (text_w * 3 / 5).max(SCREEN_W as i32 * 3 / 20);
     let mode = strokes.last().and_then(|stroke| {
-        if help::looks_like_ask_arrow(stroke, min_w) {
+        if gesture::looks_like_ask_arrow(stroke, min_w) {
             Some(CommitMode::Ask)
-        } else if help::looks_like_send_rule(stroke, min_w) {
+        } else if gesture::looks_like_send_rule(stroke, min_w) {
             Some(CommitMode::Capture)
         } else {
             None
