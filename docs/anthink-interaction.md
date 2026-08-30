@@ -26,11 +26,17 @@ on a tablet than on a laptop — which is the only reason to build this at all.
 
 ## The cost that shapes everything
 
-`help::looks_like_question_mark` is ~85 lines of hand-tuned geometry to
-recognize a single glyph drawn anywhere on a blank page: normalize the stroke
-direction, measure the arc, rule out a "7", constrain the descender. That is
-the true price of free-floating shape recognition, and it buys exactly one
-symbol.
+`looks_like_question_mark` was ~85 lines of hand-tuned geometry to recognize a
+single glyph drawn anywhere on a blank page: normalize the stroke direction,
+measure the arc, rule out a "7", constrain the descender. That is the price of
+free-floating shape recognition, and it bought exactly one symbol.
+
+It has been deleted, and how it failed is the argument. It never fired reliably
+in practice — but it was not inert. At two of its three call sites a suspected
+"?" set `send_mode = Some(CommitMode::Capture)`, force-committing the page. A
+recognizer nobody could trigger on purpose was wired to the most consequential
+action the pad has. Free-floating recognition does not degrade into doing
+nothing; it degrades into doing something else.
 
 Worse, it is ambiguous by nature. A tick and a hastily written "v" are the same
 ink. A circle and a written "o" are the same ink. Any vocabulary of free-floating
