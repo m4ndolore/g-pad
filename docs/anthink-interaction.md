@@ -183,3 +183,63 @@ against that map. It is the same idea as `control_action`'s fixed hit regions,
 generalized from a fixed strip to whatever the page currently shows — and it
 should be built as a returned value of drawing, so a region can never drift
 from what was painted.
+
+## Reconciling with the Claude bridge
+
+`docs/claude-bridge.md` (branch `worktree-claude-bridge`) designs the reading
+half of Agent mode and reaches the same conclusion from the other direction:
+
+> A surface that pretends to be a terminal will fight the hardware on every
+> frame; one that behaves like correspondence will not.
+
+That is *mark, don't manipulate* arrived at from latency rather than from what
+a pen is. The two documents agree on the shape of the thing. This one adds the
+marking vocabulary; the bridge defines what is on the page to mark.
+
+Three things the bridge settles that this document adopts:
+
+- **Reading ships before responding.** Marks are worthless without state to
+  mark. The board and the turn page come first.
+- **Prompt / response / artifact.** Agent prose is commentary; a sha, a path,
+  or an exit code is a fact about the world. The board shows *state*, and state
+  is an artifact — `RUNNING`, `WAITING`, a commit — never the agent's prose
+  about its own progress. This is why the board's rows are words and not the
+  model's self-report.
+- **The pad never mints artifacts.** A mark records a human decision. It must
+  never be recorded as though the agent accomplished something.
+
+### One open disagreement
+
+The bridge lists under **Not this build**:
+
+> **Approving tool calls from the pad.** Consequential actions should not hang
+> off a transcription round trip.
+
+The decision box is that feature, and the objection deserves a real answer
+rather than a footnote.
+
+The objection is right about *transcription*. Writing "yes, ship it" and having
+a vision model read the cursive is a bad way to approve a consequential action:
+the failure is silent, the confidence is unearned, and the cost lands on the
+repository.
+
+An anchored tick is not that. It is `BBox` containment plus one direction test
+— local geometry, no model, no network. It is the same class of detection as
+`looks_like_send_rule`, which this tree already trusts to commit a page to the
+oracle. The risk the bridge names is a property of transcription, not of
+approval, and the decision box does not transcribe.
+
+Two constraints keep that honest, and they are part of the design rather than
+concessions to it:
+
+- **Destructive approvals are confirmed, in vermilion, per the UX system.** A
+  tick that merges, deploys, or deletes renders a confirmation; a tick that
+  advances a conversation does not. The line is consequence, not category.
+- **Reject is always cheaper than approve.** A strike takes effect immediately;
+  a consequential tick asks once. Getting it wrong should cost a redraw, never
+  a rollback.
+
+If hardware testing shows anchored marks misfire often enough to be dangerous,
+the decision box loses to the bridge's position and approval moves off the pad.
+That is a hardware question, and it should be answered on hardware rather than
+in a document.
