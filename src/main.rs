@@ -8,6 +8,10 @@
 //! built with --features takeover and launched with xochitl stopped.
 
 mod ask;
+// Laid out and tested, but not yet wired to a DrawerKind: the brief is a
+// reading surface waiting on a call site, not dead code. See
+// docs/daily-brief.md. Its JSON scanner is shared with the Claude bridge.
+#[allow(dead_code)]
 mod brief;
 mod display;
 mod evdev;

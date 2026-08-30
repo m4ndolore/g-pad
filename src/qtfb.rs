@@ -42,6 +42,7 @@ pub const INPUT_PEN_PRESS: i32 = 0x20;
 pub const INPUT_PEN_RELEASE: i32 = 0x21;
 #[allow(dead_code)]
 pub const INPUT_PEN_UPDATE: i32 = 0x22;
+#[allow(dead_code)]
 pub const INPUT_VKB_PRESS: i32 = 0x40;
 #[allow(dead_code)]
 pub const INPUT_VKB_RELEASE: i32 = 0x41;
@@ -57,6 +58,7 @@ const SRV_PAYLOAD: usize = 4;
 #[derive(Debug, Clone, Copy)]
 pub struct InputEvent {
     pub input_type: i32,
+    #[allow(dead_code)]
     pub dev_id: i32,
     pub x: i32,
     pub y: i32,
@@ -68,9 +70,14 @@ pub struct QtfbClient {
     fd: RawFd,
     shm: *mut u8,
     shm_len: usize,
+    /// From the qtfb server handshake; kept because the wire format defines
+    /// them, not because this client reads them back.
+    #[allow(dead_code)]
     pub width: usize,
+    #[allow(dead_code)]
     pub height: usize,
     /// bytes per pixel
+    #[allow(dead_code)]
     pub bpp: usize,
 }
 
@@ -182,6 +189,7 @@ impl QtfbClient {
         })
     }
 
+    #[allow(dead_code)]
     pub fn raw_fd(&self) -> RawFd {
         self.fd
     }

@@ -8,6 +8,10 @@ pub enum PixFmt {
     /// 2 bytes/px, little-endian RGB565 (qtfb FBFMT_RMPP_RGB565).
     Rgb565,
     /// 4 bytes/px, QImage Format_RGB32: bytes B,G,R,0xFF.
+    /// Live only under `--features takeover` (`display.rs` builds the Quill
+    /// surface with it). Dead-code warnings here are a false positive of the
+    /// host build: deleting this breaks the device.
+    #[allow(dead_code)]
     Rgb32,
 }
 
@@ -118,7 +122,11 @@ impl Surface {
         }
     }
 
-    /// Invert the RGB of a rect (cursor/pressed-key feedback).
+    /// Invert the RGB of a rect. No caller yet: kept for marking feedback —
+    /// showing that a rendered row has been ticked or struck is an inversion,
+    /// and this is already correct for both pixel formats.
+    /// See docs/anthink-interaction.md.
+    #[allow(dead_code)]
     pub fn invert_rect(&mut self, x: usize, y: usize, w: usize, h: usize) {
         let x1 = (x + w).min(self.w);
         let y1 = (y + h).min(self.h);

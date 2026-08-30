@@ -91,10 +91,6 @@ fn blit_centered(surf: &mut Surface, font: &FontRef, text: &str, px_size: f32, p
 mod tests {
     use super::*;
 
-    fn stroke(pts: &[(i32, i32)]) -> Vec<(i32, i32, i32)> {
-        pts.iter().map(|&(x, y)| (x, y, 3)).collect()
-    }
-
     #[test]
     fn distinguishes_capture_rule_from_ask_arrow() {
         let rule: Vec<(i32, i32, i32)> = (0..=40).map(|i| (100 + i * 10, 300, 3)).collect();
@@ -105,7 +101,6 @@ mod tests {
         assert!(looks_like_ask_arrow(&arrow, 300));
     }
 
-    #[test]
     #[test]
     fn sleep_page_renders_and_restores() {
         let (w, h) = (SCREEN_W, SCREEN_H);
