@@ -28,11 +28,14 @@ if [ -f "$HERE/oracle.env" ]; then
 fi
 
 if [ -z "${REMAGIC_SESSION:-}" ]; then
-    # Kernel wake_lock is what blocks kernel autosleep. xochitl normally holds
-    # one; without a replacement the kernel can suspend into a second display
-    # engine while we still own the panel.
-    if ! echo g-pad-takeover > /sys/power/wake_lock 2>/dev/null; then
-        echo "g-pad: warning: kernel wake_lock unavailable; kernel autosleep is unguarded" >&2
+    # Kernel wake_lock blocks kernel autosleep where the kernel is built with
+    # CONFIG_PM_WAKELOCKS/CONFIG_PM_AUTOSLEEP. The rM2 5.4 tree is NOT
+    # (/sys/power/wake_lock is absent, verified on-device) — there is no kernel
+    # autosleep to guard against there, and logind's idle handling plus the
+    # systemd-inhibit wrap below covers it. Write it only where it exists, and
+    # stay quiet when it doesn't rather than warning about an absent risk.
+    if [ -w /sys/power/wake_lock ]; then
+        echo g-pad-takeover > /sys/power/wake_lock 2>/dev/null || true
     fi
     systemctl stop xochitl
 fi
