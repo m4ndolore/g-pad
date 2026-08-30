@@ -13,6 +13,10 @@ mod ask;
 // docs/daily-brief.md. Its JSON scanner is shared with the Claude bridge.
 #[allow(dead_code)]
 mod brief;
+// The session reader is laid out and tested, but only the drawer's AGENTS tab
+// is wired; the full page (bridge::layout_session) has no call site yet. See
+// docs/claude-bridge.md.
+#[allow(dead_code)]
 mod bridge;
 mod display;
 mod evdev;

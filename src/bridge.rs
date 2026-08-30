@@ -16,8 +16,7 @@
 use ab_glyph::FontRef;
 
 use crate::brief::{json_field, split_objects};
-use crate::fb::{SCREEN_H, SCREEN_W};
-use crate::script;
+use crate::page::{self, BODY_PX, LINE_H, TITLE_LINE_H};
 
 /// Something outside the model that another system can verify: a commit, a
 /// path, an exit status.
@@ -70,28 +69,14 @@ pub struct Bridge {
     pub stale: bool,
 }
 
-/// Margins and type sizes. Same grotesque as the other read-only surfaces;
-/// the pad's handwriting never appears here.
-const PAD: usize = 44;
-const TITLE_PX: f32 = 38.0;
-const BODY_PX: f32 = 28.0;
-const LINE_H: usize = 38;
-const TITLE_LINE_H: usize = 46;
+/// The gap under each turn. Page geometry is shared (see `page`); this is the
+/// bridge's own rhythm.
 const TURN_GAP: usize = 26;
-const HEADER_H: usize = 110;
-/// Leave the footer clear: it carries the "N more sessions" count.
-const FOOTER_H: usize = 70;
-
-/// The widest a line of body text may run.
-pub fn content_width() -> usize {
-    SCREEN_W - PAD * 2
-}
 
 /// Agent turns run long. Cap them so one turn cannot take the page — the
 /// brief's `MAX_BODY_LINES`, loosened because there is one session per page
 /// rather than a list of items.
 const MAX_TURN_LINES: usize = 6;
-const MAX_TITLE_LINES: usize = 2;
 /// Artifacts are references, not reading. A page that ends in a wall of shas
 /// has stopped being a page.
 const MAX_ARTIFACTS: usize = 3;
@@ -118,11 +103,7 @@ pub struct PageLayout {
 }
 
 pub fn layout_turn(font: &FontRef, turn: &Turn) -> TurnLayout {
-    let width = content_width() as f32;
-    let lines: Vec<String> = script::wrap(font, &turn.text, BODY_PX, width)
-        .into_iter()
-        .take(MAX_TURN_LINES)
-        .collect();
+    let lines = page::wrap_capped(font, &turn.text, BODY_PX, MAX_TURN_LINES);
     let height = LINE_H // speaker row
         + lines.len() * LINE_H
         + TURN_GAP;
@@ -134,40 +115,25 @@ pub fn layout_turn(font: &FontRef, turn: &Turn) -> TurnLayout {
 /// Turns are taken from the end — the last exchange is the one worth reading —
 /// and then put back in order so the page reads downward.
 pub fn layout_session(font: &FontRef, session: &Session) -> PageLayout {
-    let width = content_width() as f32;
-    let title_lines: Vec<String> = script::wrap(font, &session.title, TITLE_PX, width)
-        .into_iter()
-        .take(MAX_TITLE_LINES)
-        .collect();
-    let meta = if session.updated.is_empty() {
-        session.state.clone()
-    } else {
-        format!("{} · {}", session.state, session.updated)
-    };
+    let title_lines = page::title_lines(font, &session.title);
+    let meta = page::meta_line(&session.state, &session.updated);
 
     let artifacts: Vec<Artifact> = session.artifacts.iter().take(MAX_ARTIFACTS).cloned().collect();
     let artifacts_omitted = session.artifacts.len().saturating_sub(artifacts.len());
 
-    let mut y = HEADER_H + title_lines.len() * TITLE_LINE_H + LINE_H;
+    let y = page::HEADER_H + title_lines.len() * TITLE_LINE_H + LINE_H;
     // Artifacts are pinned: they are the evidence on the page, so they claim
     // their room before prose does.
     let artifact_room = artifacts.len() * LINE_H;
-    let limit = (SCREEN_H - FOOTER_H).saturating_sub(artifact_room);
 
     let readable: Vec<&Turn> = session.turns.iter().filter(|t| !t.text.trim().is_empty()).collect();
-    let mut taken: Vec<TurnLayout> = Vec::new();
-    for turn in readable.iter().rev() {
-        let layout = layout_turn(font, turn);
-        if y + layout.height > limit {
-            break;
-        }
-        y += layout.height;
-        taken.push(layout);
-    }
-    taken.reverse();
-    let turns_omitted = readable.len().saturating_sub(taken.len());
+    let measured: Vec<TurnLayout> = readable.iter().map(|t| layout_turn(font, t)).collect();
+    // Taken from the end — the last exchange is the one worth reading — and
+    // restored to order, so the page still reads downward.
+    let (turns, turns_omitted) =
+        page::fit(measured, y, page::limit(artifact_room), page::Fill::Back, |t| t.height);
 
-    PageLayout { title_lines, meta, turns: taken, turns_omitted, artifacts, artifacts_omitted }
+    PageLayout { title_lines, meta, turns, turns_omitted, artifacts, artifacts_omitted }
 }
 
 /// The footer line. Empty when everything fit — no need to say "0 more".
@@ -378,11 +344,11 @@ mod tests {
             .map(|i| turn("claude", &format!("turn {i} with enough text to occupy several lines of the page")))
             .collect();
         let layout = layout_session(&f, &session(many));
-        let used: usize = HEADER_H
+        let used: usize = page::HEADER_H
             + layout.title_lines.len() * TITLE_LINE_H
             + LINE_H
             + layout.turns.iter().map(|t| t.height).sum::<usize>();
-        assert!(used <= SCREEN_H - FOOTER_H, "used {used} px");
+        assert!(used <= page::limit(0), "used {used} px");
     }
 
     #[test]
@@ -438,7 +404,7 @@ mod tests {
         let mut s = session(vec![turn("you", "hi")]);
         s.title = "a very long session title ".repeat(20);
         let layout = layout_session(&f, &s);
-        assert!(layout.title_lines.len() <= MAX_TITLE_LINES);
+        assert!(layout.title_lines.len() <= page::MAX_TITLE_LINES);
     }
 
     #[test]

@@ -96,6 +96,8 @@ pub const SUSPEND_WAIT: std::time::Duration = std::time::Duration::from_secs(90)
 
 /// The longest plausible logind teardown before the kernel actually freezes.
 /// Any wait shorter than this races the suspend it is trying to observe.
+/// Referenced by the regression test that pins SUSPEND_WAIT above it.
+#[allow(dead_code)]
 pub const TEARDOWN_HEADROOM: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// After resume, Wi-Fi is often stranded: wpa_supplicant fails a few attempts
