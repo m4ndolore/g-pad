@@ -9,6 +9,7 @@
 
 mod ask;
 mod brief;
+mod bridge;
 mod display;
 mod evdev;
 mod fb;
@@ -503,6 +504,10 @@ fn run() -> std::io::Result<()> {
                             ui::Action::Close => {
                                 close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
                                 continue;
+                            }
+                            ui::Action::Quit => {
+                                eprintln!("g-pad: leave from settings");
+                                break;
                             }
                             _ => {}
                         }
@@ -1192,10 +1197,14 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
                 *state = State::FadingReply { stage: 0, next: Instant::now(), region };
             }
         }
-        ui::Action::History | ui::Action::Corpus => {
+        ui::Action::History | ui::Action::Corpus | ui::Action::Sessions => {
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
                 let old = std::mem::replace(state, State::Listening { last_pen: None });
-                let kind = if action == ui::Action::History { ui::DrawerKind::History } else { ui::DrawerKind::Corpus };
+                let kind = match action {
+                    ui::Action::History => ui::DrawerKind::History,
+                    ui::Action::Sessions => ui::DrawerKind::Sessions,
+                    _ => ui::DrawerKind::Corpus,
+                };
                 let thread = if kind == ui::DrawerKind::History {
                     store.as_ref().and_then(|s| s.conversations().len().checked_sub(1))
                 } else { None };
@@ -1251,6 +1260,7 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             ui::Action::Threads => { p.thread = None; p.scroll = 0; p.selection = None; redraw = true; }
             ui::Action::OpenThread(i) => { p.thread = Some(i); p.scroll = 0; p.selection = None; redraw = true; }
             ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.scroll = 0; redraw = true; }
+            ui::Action::Sessions => { p.kind = ui::DrawerKind::Sessions; p.scroll = 0; redraw = true; }
             ui::Action::None => redraw = true,
             _ => {}
         }

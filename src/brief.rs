@@ -157,7 +157,7 @@ pub fn footer_label(layout: &PageLayout, stale: bool) -> String {
 /// an item missing a title or excerpt is skipped rather than rendered blank.
 pub fn parse_feed(json: &str) -> Vec<Item> {
     let mut items = Vec::new();
-    for block in split_objects(json) {
+    for block in split_objects(json, "articles") {
         let title = json_field(&block, "title").unwrap_or_default();
         let excerpt = json_field(&block, "excerpt").unwrap_or_default();
         if title.trim().is_empty() || excerpt.trim().is_empty() {
@@ -174,10 +174,13 @@ pub fn parse_feed(json: &str) -> Vec<Item> {
     items
 }
 
-/// Split the `articles` array into per-object slices. A hand-rolled scan keeps
-/// the binary free of a JSON dependency for one endpoint.
-fn split_objects(json: &str) -> Vec<String> {
-    let Some(start) = json.find("\"articles\"") else { return Vec::new() };
+/// Split the named array into per-object slices. A hand-rolled scan keeps the
+/// binary free of a JSON dependency for two endpoints.
+///
+/// Shared with the Claude bridge, which reads the same shape under different
+/// keys — one scanner, so a fix to the escape handling lands on both readers.
+pub(crate) fn split_objects(json: &str, array_key: &str) -> Vec<String> {
+    let Some(start) = json.find(&format!("\"{array_key}\"")) else { return Vec::new() };
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut current = String::new();
@@ -236,7 +239,9 @@ fn split_objects(json: &str) -> Vec<String> {
 }
 
 /// Read one string field out of a flat JSON object slice.
-fn json_field(block: &str, key: &str) -> Option<String> {
+///
+/// Shared with the Claude bridge for the same reason as `split_objects`.
+pub(crate) fn json_field(block: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let at = block.find(&needle)? + needle.len();
     let rest = block[at..].trim_start();

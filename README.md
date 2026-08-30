@@ -1,7 +1,14 @@
-# g-pad
+# Anthink
 
 An e-ink writing pad. Write with the pen. Rule a line beneath your words.
 A reply writes itself back in a flowing hand.
+
+**Anthink** is the project. The device is the **Anthink Slate**; the pen
+surface this repository began as is **g-pad mode**; agent sessions arrive over
+the **Claude bridge**. The binary, its data directory, and the `RIDDLE_*`
+environment are still named for their history and are not being churned — the
+names above are how the surfaces are described, not a rename of the install
+path.
 
 A vision-capable API key is enough to get a reply. gstack and gbrain are
 optional: when they are there, the pad is I/O for a real corpus; when they
@@ -72,7 +79,7 @@ gitignored. Do not add it.
 |---------|-----|
 | Write, then draw a long rule beneath it | The pad reads your ink and replies |
 | Flip the marker | Erase |
-| Swipe from the left edge | History: current sitting as a thread; back to conversation selector |
+| Swipe from the left edge | History: current sitting as a thread; back to conversation selector. HISTORY / CORPUS / AGENTS across the top |
 | Swipe down from the top | Settings (Stealth) or controls (Guided) |
 | Draw a large `?` | Gesture guide |
 | Hold five fingers, then release | Leave *(takeover)* |
@@ -80,6 +87,21 @@ gitignored. Do not add it.
 
 HISTORY splits sittings after six hours of silence. Long replies page with
 swipe up (next) and swipe down (prev).
+
+## Reading
+
+The pad reads as well as it writes. Two reading surfaces, both bounded: they
+show what fits and say what they left out.
+
+- **The daily brief** — one page, one day, no navigation and no article bodies.
+  See [docs/daily-brief.md](docs/daily-brief.md).
+- **The Claude bridge** — agent sessions under the **AGENTS** tab: what is
+  running, and the last exchange of each. Reading only; the pad has no keyboard
+  and is not growing one. See [docs/claude-bridge.md](docs/claude-bridge.md).
+
+Agent output is split where it matters. Prose is commentary and never ranks as
+evidence; a commit sha or a path is a fact another system can check, and is
+recorded as an artifact. See [docs/capture-record.md](docs/capture-record.md).
 
 ## Memory
 
