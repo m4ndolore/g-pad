@@ -196,10 +196,17 @@ That is *mark, don't manipulate* arrived at from latency rather than from what
 a pen is. The two documents agree on the shape of the thing. This one adds the
 marking vocabulary; the bridge defines what is on the page to mark.
 
+The bridge branch has already built more of this than a reader would guess.
+`ui::draw_sessions` ships the board: a session list in the drawer's half-width
+panel, one row each with state, time, and the last readable line.
+`bridge::layout_session` — the full-page reader, which takes turns from the end
+and pins artifacts before prose — is written and tested but **never called**.
+The turn page is not unbuilt. It is built and unwired.
+
 Three things the bridge settles that this document adopts:
 
 - **Reading ships before responding.** Marks are worthless without state to
-  mark. The board and the turn page come first.
+  mark. The board exists; the turn page needs only to be reached.
 - **Prompt / response / artifact.** Agent prose is commentary; a sha, a path,
   or an exit code is a fact about the world. The board shows *state*, and state
   is an artifact — `RUNNING`, `WAITING`, a commit — never the agent's prose
@@ -243,3 +250,41 @@ If hardware testing shows anchored marks misfire often enough to be dangerous,
 the decision box loses to the bridge's position and approval moves off the pad.
 That is a hardware question, and it should be answered on hardware rather than
 in a document.
+
+### Two questions the bridge left open, answered here
+
+`docs/claude-bridge.md` closes with an Open list. Two of its items are exactly
+what this document decides, so they are answered rather than re-asked:
+
+- **"What a session is on the page — one per page, or a selector?"** Both, and
+  they are the two surfaces above. The selector is the board; one-per-page is
+  the turn. The bridge already shipped the first and wrote the second.
+- **"Whether the drawer's half-width panel is enough, or whether reading wants
+  the full page."** The board earns the drawer — it is a glance, and it should
+  not displace what is on the canvas. The turn wants the full page: it is the
+  thing being read, and `layout_session` already measures against `SCREEN_W`
+  and `SCREEN_H` rather than `PANEL_W`. Half-width for choosing, full-page for
+  reading.
+
+### The test this contradicts, deliberately
+
+`ui.rs::the_sessions_tab_is_read_only` asserts that a tap below the drawer
+header returns `Action::None`, with the comment *"reading is not a capture
+path."*
+
+Opening a session from the board breaks that test, and it should — but as an
+argued change, not a silent one. The rule the test protects is real: reading
+must not become a capture path, because capture means ink, transcription, and
+a post back to the agent. Opening a session is none of those. It is navigation
+between two read-only surfaces, and it writes nothing.
+
+The replacement invariant, which keeps the intent and drops the
+over-restriction: **no tap on a reading surface may write.** A tap may change
+what is displayed. Marks — which do carry intent — remain a separate channel
+with their own confirmation rules.
+
+### What stays out, and stays out here too
+
+The bridge's exclusions this document does not touch: no keyboard ever, no
+streaming (the pad polls), no arbitrary tool output, no orchestrating g-stack.
+Nothing in the marking vocabulary needs any of them.
