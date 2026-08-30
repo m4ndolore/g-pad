@@ -114,6 +114,34 @@ This branch is at 0 warnings on its own. The two obvious follow-ups, in order:
    delete-only change, and `bridge.rs`'s own tests are the acceptance
    criteria.
 
+## Dry run, resolved and verified
+
+Full rehearsal against `main` at `cd688a0`, resolving only from this document:
+
+```
+git merge origin/main
+git rm src/help.rs                                   # Hazard 1
+# main.rs: keep gesture::show_sleep(&mut surf, &font, &ui_font)   # Hazard 3
+# main.rs: keep `mod bridge;`                                     # Hazard 2
+```
+
+Resulting tree: `f8cea82`. Checks run on it:
+
+| Check | Result |
+|---|---|
+| `cargo test` | 80 passed, 0 failed |
+| `scripts/ci/check-no-vendor-blob.sh` | clean |
+| `assets/mc-mark.png` | present, 15530 bytes |
+| `brand_mark_keeps_its_grays` | present and passing |
+| `MARK_PNG` / `mark_gray` / `blit_gray` / `blit_left` | all present in `gesture.rs` |
+| `src/help.rs` | gone, no dangling `help::` references |
+| `page.rs`, `gesture.rs`, `bridge.rs`, `brief.rs` | all present and compiling together |
+| Rendered sleep page | inspected; mark strokes on distinct ink levels |
+
+A quiet merge is not proof nothing was dropped, so the path checks above matter
+as much as the test count. If a future rehearsal produces a different tree,
+something moved and the difference is worth understanding before landing.
+
 ## Order
 
 Any order works given the absorb, because the absorb is what removed the
