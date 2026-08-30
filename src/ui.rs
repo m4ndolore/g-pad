@@ -51,6 +51,7 @@ pub enum Action {
     Dismiss,
     SetMode(Mode),
     ToggleIdle,
+    Quit,
 }
 
 impl Drawer {
@@ -325,18 +326,32 @@ pub fn draw_settings(surf: &mut Surface, font: &FontRef, prefs: Preferences) -> 
     text(surf, font, "OPTIONAL IDLE-SEND", LABEL_PX, PAD, 510, BLACK);
     text(surf, font, if prefs.idle_send_ms == 0 { "OFF" } else { "ON" }, LABEL_PX, PAD, 570,
         if prefs.idle_send_ms == 0 { BLACK } else { BLUE });
+
+    // Leaving is a five-finger hold, which is not discoverable — nothing on
+    // the page says so. Give it a tapped row too, and say what the gesture is
+    // so the pad teaches it rather than hiding it.
+    rule(surf, PAD, 690, PANEL_W - 2 * PAD, 2);
+    text(surf, font, "LEAVE G-PAD", LABEL_PX, PAD, 755, BLACK);
+    text(surf, font, "OR HOLD FIVE FINGERS", LABEL_PX, PAD, 805, BLACK);
+
+    // Signature, at the foot of the one panel that is already a settled
+    // surface rather than the writing page.
+    text(surf, font, "G-PAD", LABEL_PX, PAD, SCREEN_H - 120, BLACK);
+    text(surf, font, "BY MERGE COMBINATOR", LABEL_PX, PAD, SCREEN_H - 70, BLACK);
     saved
 }
 
 pub fn settings_action(x: i32, y: i32) -> Action {
     if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
     if y < HEADER_H { return Action::Close; }
-    // Labels sit at 310 / 390 / 570; give each a full row so a slightly
-    // off tap still hits the control it is over.
+    // Labels sit at 310 / 390 / 570 / 755; give each a full row so a slightly
+    // off tap still hits the control it is over. Leaving stops short of the
+    // signature at the foot so a tap down there cannot quit the pad.
     match y {
         250..=355 => Action::SetMode(Mode::Stealth),
         356..=470 => Action::SetMode(Mode::Guided),
         480..=680 => Action::ToggleIdle,
+        700..=860 => Action::Quit,
         _ => Action::None,
     }
 }

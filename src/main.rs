@@ -504,6 +504,10 @@ fn run() -> std::io::Result<()> {
                                 close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
                                 continue;
                             }
+                            ui::Action::Quit => {
+                                eprintln!("g-pad: leave from settings");
+                                break;
+                            }
                             _ => {}
                         }
                         ui::draw_settings(&mut surf, &ui_font, prefs);
