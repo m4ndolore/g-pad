@@ -40,12 +40,10 @@ pub struct Brief {
     pub stale: bool,
 }
 
-/// Margins and type sizes. The brief uses the same grotesque as the other
-/// read-only surfaces; the pad's handwriting never appears here.
+/// The gap under each item. Page geometry is shared (see `page`); this is the
+/// brief's own rhythm, because a list of items breathes differently from a
+/// single session.
 const ITEM_GAP: usize = 30;
-/// Leave the footer clear: it carries the "N more" count.
-
-/// The widest a line of body text may run.
 
 /// A laid-out item: the wrapped lines and the height they occupy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,11 +129,11 @@ pub fn parse_feed(json: &str) -> Vec<Item> {
     items
 }
 
-/// Split a named array into per-object slices. A hand-rolled scan keeps the
-/// binary free of a JSON dependency.
+/// Split the named array into per-object slices. A hand-rolled scan keeps the
+/// binary free of a JSON dependency for two endpoints.
 ///
-/// Shared with the Claude bridge, which reads the same shape under a different
-/// key — one scanner, so a fix to the escape handling lands on both readers.
+/// Shared with the Claude bridge, which reads the same shape under different
+/// keys — one scanner, so a fix to the escape handling lands on both readers.
 pub(crate) fn split_objects(json: &str, array_key: &str) -> Vec<String> {
     let Some(start) = json.find(&format!("\"{array_key}\"")) else { return Vec::new() };
     let mut out = Vec::new();
@@ -195,8 +193,9 @@ pub(crate) fn split_objects(json: &str, array_key: &str) -> Vec<String> {
     out
 }
 
-/// Read one string field out of a flat JSON object slice. Shared with the
-/// Claude bridge.
+/// Read one string field out of a flat JSON object slice.
+///
+/// Shared with the Claude bridge for the same reason as `split_objects`.
 pub(crate) fn json_field(block: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let at = block.find(&needle)? + needle.len();

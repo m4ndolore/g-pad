@@ -33,9 +33,24 @@ right:
 This is the only behavioral difference between the two fit loops, so it is the
 only thing the shared one takes as an argument.
 
+## Merge state against main
+
+Verified by test-merging this branch with `origin/main` at `f671bd5` (the
+commit that landed the bridge) in a scratch worktree:
+
+- **The merge is clean apart from two doc comments** in `brief.rs`. Main and
+  this branch independently arrived at a byte-identical
+  `split_objects(json, array_key)` and `json_field` — convergence, not
+  conflict. Main's wording is the better of the two and has been adopted here,
+  so the conflict is now gone.
+- **The merged tree builds and passes 77 tests** — this branch's 61 plus main's
+  bridge tests, green together.
+- `bridge.rs` on main still carries its own copy of the geometry constants, so
+  the adoption below is exactly as applicable post-merge as it was before.
+
 ## Adopting this in `bridge.rs`
 
-`src/bridge.rs` (branch `worktree-claude-bridge`) predates this module and
+`src/bridge.rs` (now on `main`, commit `f671bd5`) predates this module and
 carries its own copy. Adopting it is deletion, not rework:
 
 Delete from `bridge.rs`, and import from `page`:
