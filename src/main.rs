@@ -544,34 +544,55 @@ fn run() -> std::io::Result<()> {
                 disp.full_refresh(surf.w, surf.h);
                 // Let the flashing refresh finish before the panel loses power.
                 std::thread::sleep(Duration::from_millis(800));
-                // Suspend, and confirm via the kernel's success counter. The
-                // EPD regulator refuses to sleep while its post-update vpdd
-                // timer (≤30s) runs — the whole suspend aborts with "Some
-                // devices failed to suspend" — so retry until it sticks.
+                // Ask logind to suspend, then wait to be woken.
+                //
+                // `systemctl suspend` is ASYNCHRONOUS: it hands logind a D-Bus
+                // request and returns within milliseconds, long before the
+                // kernel has frozen anything (measured on-device: same-second
+                // return, actual "PM: suspend entry" several seconds later).
+                // So the success counter cannot be polled on a short deadline
+                // to decide whether the suspend "took" — it only moves once we
+                // are already awake again on the other side.
+                //
+                // Wait for the counter to advance with no deadline short
+                // enough to race the teardown. When it moves we have slept AND
+                // resumed, which is exactly the moment to redraw.
                 let count0 = power::suspend_count();
-                let mut attempts = 0;
-                'sleeping: loop {
-                    if p.grabbed {
-                        // The takeover wrapper blocks ambient sleep with
-                        // systemd-inhibit. This explicit user action is
-                        // intentional, so bypass that inhibitor here.
-                        let _ = std::process::Command::new("systemctl")
-                            .args(["--check-inhibitors=no", "suspend"])
-                            .status();
-                    }
-                    attempts += 1;
-                    let t0 = Instant::now();
-                    while t0.elapsed() < Duration::from_secs(6) {
-                        std::thread::sleep(Duration::from_millis(400));
-                        if power::suspend_count() > count0 {
-                            break 'sleeping;
-                        }
-                    }
-                    if attempts >= 8 {
-                        eprintln!("g-pad: suspend never happened ({attempts} tries); waking the page");
+                if p.grabbed {
+                    // The takeover wrapper blocks ambient sleep with
+                    // systemd-inhibit. This explicit user action is
+                    // intentional, so bypass that inhibitor here.
+                    let _ = std::process::Command::new("systemctl")
+                        .args(["--check-inhibitors=no", "suspend"])
+                        .status();
+                }
+                // Give logind room to complete teardown, sleep, and resume.
+                // A press that never reaches suspend (something else vetoed
+                // it) falls out after the timeout and simply redraws the page.
+                let t0 = Instant::now();
+                let mut slept = false;
+                while t0.elapsed() < power::SUSPEND_WAIT {
+                    std::thread::sleep(Duration::from_millis(400));
+                    if power::suspend_count() > count0 {
+                        slept = true;
                         break;
                     }
-                    eprintln!("g-pad: suspend aborted (EPD discharge timer), retrying");
+                    // A press while still awake means the user gave up on a
+                    // suspend that is not coming; stop waiting and redraw.
+                    // Re-check the counter first: the press that WAKES us
+                    // arrives on this same grabbed fd, and must read as "we
+                    // slept", not as a cancellation.
+                    if p.drain_pressed() {
+                        if power::suspend_count() > count0 {
+                            slept = true;
+                        } else {
+                            eprintln!("g-pad: suspend did not take; press cancelled the wait");
+                        }
+                        break;
+                    }
+                }
+                if !slept {
+                    eprintln!("g-pad: suspend never happened; waking the page");
                 }
                 eprintln!("g-pad: waking");
                 help::restore_sleep(&mut surf, &saved);
