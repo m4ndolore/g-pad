@@ -1,9 +1,10 @@
 # g-pad on the reMarkable 2 — setup from zero
 
-This guide installs the stable windowed AppLoad build. An experimental direct
-Quill takeover build is also available; see the reMarkable 2 section of the
-main README. It removes the qtfb latency floor but should first be launched
-with SSH available as a recovery path.
+This guide installs the windowed AppLoad build. The direct Quill **takeover**
+build is the one to want: it removes the qtfb latency floor and is the only
+mode with touch gestures (history, settings, five-finger exit) and power
+handling — windowed has none of those. See "Takeover build" below, and keep
+SSH available as a recovery path the first time you launch it.
 
 The rM2 needs no "developer mode": SSH as root is built into every unit.
 You need: the tablet, its USB-C cable, and ~15 minutes.
@@ -61,6 +62,42 @@ Host remarkable rm2 10.11.99.1
   HostKeyAlgorithms ssh-ed25519,ssh-rsa
   PubkeyAcceptedAlgorithms +ssh-rsa
 ```
+
+## Takeover build
+
+Takeover drives the vendor e-ink engine directly with xochitl stopped. It needs
+two artifacts the repository deliberately does not ship:
+
+- `quill/vendor/armv7-unknown-linux-gnueabihf/libqsgepaper.so` — reMarkable's
+  proprietary library, copied from a tablet **you own**. It is gitignored and
+  CI-guarded; never commit it.
+- `quill/build/armv7-unknown-linux-gnueabihf/libquill.so` — the clean-room
+  adapter, compiled from `quill/src`.
+
+```sh
+scp -O root@10.11.99.1:/usr/lib/plugins/scenegraph/libqsgepaper.so \
+    quill/vendor/armv7-unknown-linux-gnueabihf/
+```
+
+Compiling `libquill.so` needs the reMarkable SDK for its Qt headers:
+
+```sh
+DEVICE=rm2 ./build-takeover.sh          # SDK at ~/rm-sdk-rm2
+```
+
+Once `libquill.so` exists, later builds do not need the SDK at all —
+`cargo-zigbuild` supplies the cross-linker:
+
+```sh
+./build-takeover-zig.sh                 # brew install zig cargo-zigbuild
+DEVICE=rm2 ./scripts/make-bundle.sh
+scp -O -r dist/rm2-takeover/g-pad root@10.11.99.1:/home/root/xovi/exthome/appload/
+```
+
+The two bundles carry different AppLoad ids (`g-pad` for takeover,
+`g-pad-windowed` for qtfb) so both can be installed side by side. Leave
+takeover with a **five-finger hold**; if it ever exits badly,
+`ssh root@10.11.99.1 'systemctl start xochitl'` restores the stock UI.
 
 ## The oracle key
 

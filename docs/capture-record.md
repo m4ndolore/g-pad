@@ -48,7 +48,7 @@ own past answers manufactures corroboration, and that compounds.
 
 ```yaml
 id: rm2-paul:1755950400:7f3a         # device : unix seconds : random
-kind: prompt                          # prompt | response
+kind: prompt                          # prompt | response | artifact
 conversation: null                    # id of the conversation, or null
 captured_at: 2026-08-23T11:03:00Z
 device_id: rm2-paul
@@ -75,6 +75,28 @@ status: inbox
 A response record carries the same envelope with `kind: response`, a
 `conversation`, and provenance for how it was produced (model, retrieval
 sources). It is never `kind: prompt`.
+
+### Artifacts
+
+An agent that edits files does not fit the prompt/response split. Its prose is
+commentary like any other response, but the commit it made is a fact the
+repository can be asked about independently. Filing both as `response` throws
+away the only agent output worth keeping; filing both as evidence is exactly
+the self-citation the rule above forbids.
+
+So there is a third kind. An `artifact` record names something outside the
+model that another system can verify — a commit sha, a file path, an exit
+status — and carries the session and agent that produced it.
+
+> **An artifact is evidence by reference, never by description.**
+
+`"fixed the parser"` is prose and files as `response`. `a1b2c3d` is an
+artifact. The test is whether the claim can be named by a reference something
+else can check; if it cannot, it is prose. Nothing that only the model asserts
+becomes evidence by being recorded next to something that did happen.
+
+The pad never mints artifacts. It renders what a bridge reports. See
+`claude-bridge.md`.
 
 ### Identity
 
@@ -157,6 +179,11 @@ Reading and annotating are the same gesture. Marking up a brief produces a
 prompt whose `context` is that document — the same record, entered from a
 different door. That is why `context` is in the shell now: the reader should
 slot in without reshaping anything.
+
+The second reader is the **Claude bridge** — agent sessions on the same paper,
+annotated through the same door. It needed one addition to this record (the
+artifact kind above) and no reshaping otherwise, which is the first real test
+of that claim. See `claude-bridge.md`.
 
 ## Open
 
