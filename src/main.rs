@@ -266,6 +266,10 @@ fn run() -> std::io::Result<()> {
     let font = FontRef::try_from_slice(font_bytes).map_err(std::io::Error::other)?;
     let ui_font = FontRef::try_from_slice(ui::UI_FONT_TTF).map_err(std::io::Error::other)?;
 
+    // Agent sessions arrive by poll, when a hub is configured. Dormant
+    // without RIDDLE_BRIDGE_URL.
+    bridge::spawn_poll();
+
     let (disp, mut surf) = display::Display::open()?;
     // Anything that isn't the qtfb window owns the panel, raw input devices,
     // and power button: Quill on either tablet, or the legacy rm2fb fallback.

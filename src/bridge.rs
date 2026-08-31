@@ -188,10 +188,49 @@ pub fn replace(bridge: Bridge) {
 /// Mark what we hold as stale after a failed poll, keeping the contents.
 pub fn mark_stale() {
     if let Ok(mut g) = HELD.lock() {
-        if let Some(b) = g.as_mut() {
-            b.stale = true;
-        }
+        let b = g.get_or_insert_with(Bridge::default);
+        b.stale = true;
     }
+}
+
+/// `http://laptop:9707` → the board endpoint. The base is configuration; the
+/// paths are the bridge's contract with the hub.
+pub fn sessions_url(base: &str) -> String {
+    format!("{}/sessions", base.trim_end_matches('/'))
+}
+
+/// Where a mark on session `id` is POSTed.
+pub fn nudge_url(base: &str, id: &str) -> String {
+    format!("{}/sessions/{id}/nudge", base.trim_end_matches('/'))
+}
+
+/// Start polling the hub, if one is configured. Without RIDDLE_BRIDGE_URL the
+/// thread never starts and Agent mode stays dormant — the pad loses nothing.
+///
+/// The pad polls; there is no streaming. A failed poll marks what is held as
+/// stale rather than clearing it: a stale page that says so beats an empty
+/// one. See `docs/claude-bridge.md`.
+pub fn spawn_poll() {
+    let Ok(base) = std::env::var("RIDDLE_BRIDGE_URL") else { return };
+    let every = std::env::var("RIDDLE_BRIDGE_POLL_S")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(20)
+        .max(5);
+    eprintln!("g-pad: bridge polling {base} every {every}s");
+    std::thread::spawn(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+        let url = sessions_url(&base);
+        loop {
+            match agent.get(&url).call().ok().and_then(|r| r.into_string().ok()) {
+                Some(body) => replace(Bridge { sessions: parse_sessions(&body), stale: false }),
+                None => mark_stale(),
+            }
+            std::thread::sleep(std::time::Duration::from_secs(every));
+        }
+    });
 }
 
 /// Parse the bridge payload.
@@ -357,6 +396,24 @@ mod tests {
         let layout = layout_session(&f, &session(vec![turn("you", "short"), turn("claude", "also short")]));
         assert_eq!(layout.turns_omitted, 0);
         assert_eq!(footer_label(&layout, 0, false), "");
+    }
+
+    #[test]
+    fn urls_compose_from_a_base_with_or_without_slash() {
+        assert_eq!(sessions_url("http://h:9707"), "http://h:9707/sessions");
+        assert_eq!(sessions_url("http://h:9707/"), "http://h:9707/sessions");
+        assert_eq!(nudge_url("http://h:9707", "s1"), "http://h:9707/sessions/s1/nudge");
+    }
+
+    #[test]
+    fn a_failed_first_poll_still_reads_as_stale() {
+        // Serialized with the shared HELD state: reset, fail, inspect.
+        if let Ok(mut g) = HELD.lock() {
+            *g = None;
+        }
+        mark_stale();
+        assert!(held().stale, "a pad that never heard from the hub must say so");
+        assert!(held().sessions.is_empty());
     }
 
     #[test]
