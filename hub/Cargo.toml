@@ -1,0 +1,12 @@
+[package]
+name = "anthink-hub"
+version = "0.1.0"
+edition = "2021"
+description = "The homelab side of Anthink's Agent mode: exports Claude Code sessions to the pad, carries nudges back."
+
+# Deliberately its own crate, not a workspace member: the pad cross-compiles
+# self-contained for the rM2, and none of these laptop-side deps belong in
+# that build.
+[dependencies]
+serde_json = "1"
+tiny_http = "0.12"
