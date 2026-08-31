@@ -31,6 +31,13 @@ const TOUCH_MAX_Y: i32 = 1871;
 // Require a deliberate hold before five-finger exit.  A single frame can be
 // produced by a writing-hand/palm contact on the reMarkable touch sensor.
 const FIVE_FINGER_HOLD_FRAMES: usize = 20;
+/// Drift the contact centroid is allowed per frame of a five-finger hold.
+/// Real holds measured on an rM2 ran to ~14 units a frame; a hand deliberately
+/// swiped across the panel runs far above this.
+const DRIFT_PER_FRAME: i32 = 24;
+/// Frames allowed for five fingers to land before drift is charged. Contacts
+/// arrive raggedly and the centroid lurches until the last one is down.
+const LANDING_FRAMES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gesture {
@@ -69,6 +76,8 @@ pub struct TouchDevice {
     frame_y: Option<i32>,
     total_motion: i32,
     five_finger_hold_frames: usize,
+    hold_drift: i32,
+    hold_quit_sent: bool,
 }
 
 impl TouchDevice {
@@ -95,11 +104,46 @@ impl TouchDevice {
                         frame_y: None,
                         total_motion: 0,
                         five_finger_hold_frames: 0,
+                        hold_drift: 0,
+                        hold_quit_sent: false,
                     });
                 }
             }
         }
         Err(io::Error::new(io::ErrorKind::NotFound, "no touch device"))
+    }
+
+    /// A device with no fd, for exercising frame logic without hardware.
+    #[cfg(test)]
+    fn detached() -> Self {
+        Self {
+            fd: -1,
+            slots: [Slot::default(); MAX_SLOTS],
+            cur: 0,
+            max_fingers: 0,
+            frame_x: None,
+            frame_y: None,
+            total_motion: 0,
+            five_finger_hold_frames: 0,
+            hold_drift: 0,
+            hold_quit_sent: false,
+        }
+    }
+
+    /// Feed one synthetic frame: `fingers` contacts, the centroid moved
+    /// `drift` units since the previous frame.
+    #[cfg(test)]
+    fn hold_frame(&mut self, fingers: usize, drift: i32) -> Vec<Gesture> {
+        for slot in self.slots.iter_mut() {
+            *slot = Slot::default();
+        }
+        let x = self.frame_x.unwrap_or(700) + drift;
+        for slot in self.slots.iter_mut().take(fingers) {
+            *slot = Slot { active: true, start_x: x, start_y: 900, x, y: 900 };
+        }
+        let mut out = Vec::new();
+        self.finish_frame(&mut out);
+        out
     }
 
     /// Drain and discard touch input, then cancel every partial gesture. Used
@@ -112,6 +156,8 @@ impl TouchDevice {
         self.frame_y = None;
         self.total_motion = 0;
         self.five_finger_hold_frames = 0;
+        self.hold_drift = 0;
+        self.hold_quit_sent = false;
     }
 
     /// Compatibility helper for takeover apps that only use five-finger exit.
@@ -168,16 +214,25 @@ impl TouchDevice {
         self.max_fingers = self.max_fingers.max(count);
         if count >= 5 {
             self.five_finger_hold_frames = self.five_finger_hold_frames.saturating_add(1);
+        } else {
+            // Dropping below five ends the hold: a hand that lifts a finger and
+            // puts it back is starting over, not continuing.
+            self.five_finger_hold_frames = 0;
+            self.hold_drift = 0;
+            self.hold_quit_sent = false;
         }
 
         let average_x = (count > 0).then(|| active.iter().map(|s| s.x).sum::<i32>() / count as i32);
         let average_y = (count > 0).then(|| active.iter().map(|s| s.y).sum::<i32>() / count as i32);
+        let mut frame_drift = 0;
         if let (Some(previous), Some(current)) = (self.frame_x, average_x) {
             self.total_motion += (previous - current).abs();
+            frame_drift += (previous - current).abs();
         }
         if let (Some(previous), Some(current)) = (self.frame_y, average_y) {
             let raw_delta = previous - current;
             self.total_motion += raw_delta.abs();
+            frame_drift += raw_delta.abs();
             if count == 2 {
                 let pixels = raw_delta * fb::SCREEN_H as i32 / TOUCH_MAX_Y;
                 if pixels != 0 {
@@ -188,7 +243,38 @@ impl TouchDevice {
         self.frame_y = average_y;
         self.frame_x = average_x;
 
+        // Quit on the frame the hold completes, not on the lift. Waiting for
+        // the release makes the gesture unobservable — nothing happens while
+        // the hand is down, so the writer holds longer and drifts further,
+        // failing the budget they were trying to satisfy.
+        if count >= 5 && !self.hold_quit_sent {
+            self.hold_drift += frame_drift;
+            // Only drift after the hand has settled counts. Fingers land
+            // raggedly and the centroid lurches as contacts arrive; charging
+            // for that arrival is charging for starting the gesture.
+            let settled = self.five_finger_hold_frames.saturating_sub(LANDING_FRAMES);
+            if self.five_finger_hold_frames == LANDING_FRAMES {
+                self.hold_drift = 0;
+            }
+            if settled >= FIVE_FINGER_HOLD_FRAMES
+                && self.hold_drift <= TAP_SLOP + DRIFT_PER_FRAME * settled as i32
+            {
+                self.hold_quit_sent = true;
+                out.push(Gesture::Quit);
+            }
+        }
+
         if count == 0 && self.max_fingers > 0 {
+            // A multi-finger release that is not recognised is invisible from
+            // the outside: the pad simply does nothing. Say what was measured
+            // so a missed gesture can be told from an unsupported one.
+            if self.max_fingers >= 4 {
+                eprintln!(
+                    "g-pad: touch release fingers={} hold_frames={} motion={} (quit needs >={} frames, motion <{})",
+                    self.max_fingers, self.five_finger_hold_frames, self.total_motion,
+                    FIVE_FINGER_HOLD_FRAMES, TAP_SLOP,
+                );
+            }
             if five_finger_release_is_quit(
                 self.max_fingers,
                 self.five_finger_hold_frames,
@@ -269,8 +355,19 @@ pub fn gesture_from_points(start: (i32, i32), end: (i32, i32)) -> Gesture {
     }
 }
 
+/// How far the contact centroid may drift per frame and still count as held.
+///
+/// Five fingers resting on glass are never perfectly still: the centroid moves
+/// as pressure shifts between them. Measured holds drifted ~3-15 units a frame.
 fn five_finger_release_is_quit(max_fingers: usize, hold_frames: usize, motion: i32) -> bool {
-    max_fingers >= 5 && hold_frames >= FIVE_FINGER_HOLD_FRAMES && motion < TAP_SLOP
+    if max_fingers < 5 || hold_frames < FIVE_FINGER_HOLD_FRAMES {
+        return false;
+    }
+    // A budget proportional to the hold, not a fixed total. Charging drift
+    // against a constant made a longer, more deliberate hold *harder* to
+    // perform — the opposite of what the gesture asks for — and rejected
+    // every real attempt.
+    motion <= TAP_SLOP + DRIFT_PER_FRAME * hold_frames as i32
 }
 
 #[cfg(test)]
@@ -280,8 +377,58 @@ mod tests {
     #[test]
     fn five_finger_quit_requires_a_stationary_hold() {
         assert!(!five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES - 1, 0));
-        assert!(!five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP));
-        assert!(five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES, TAP_SLOP - 1));
+        assert!(five_finger_release_is_quit(5, FIVE_FINGER_HOLD_FRAMES, 0));
+        // Fewer than five fingers is never a quit, however still it is held.
+        assert!(!five_finger_release_is_quit(4, FIVE_FINGER_HOLD_FRAMES * 4, 0));
+    }
+
+    // Measured on an rM2 from five real five-finger holds. Every one of them
+    // was rejected by a fixed motion budget: the hold was 2.4-5.5x longer than
+    // required, and drift accumulates every frame, so holding deliberately
+    // made the gesture strictly harder to perform. A resting hand is never
+    // perfectly still; the budget has to be a rate, not a total.
+    #[test]
+    fn a_deliberate_hand_is_not_disqualified_by_its_own_drift() {
+        for (hold_frames, motion) in [(48, 140), (50, 133), (75, 1081), (94, 589), (111, 300)] {
+            assert!(
+                five_finger_release_is_quit(5, hold_frames, motion),
+                "a real five-finger hold ({hold_frames} frames, motion {motion}) must quit",
+            );
+        }
+    }
+
+    #[test]
+    fn a_five_finger_swipe_is_still_not_a_quit() {
+        // Deliberately dragging the whole hand across the panel far outruns
+        // the per-frame budget and must stay a non-event.
+        assert!(!five_finger_release_is_quit(5, 40, DRIFT_PER_FRAME * 40 * 4));
+    }
+
+    // "Hold" has to mean the pad acts while the hand is still down. Waiting for
+    // the lift makes the gesture unobservable: nothing happens, so the writer
+    // holds longer, drifts further, and fails the very budget they are trying
+    // to satisfy. Measured: a 31-frame attempt drifted 27/frame and was
+    // refused, while a settled 49-frame one drifted 15/frame and passed.
+    #[test]
+    fn the_hold_fires_while_the_hand_is_still_down() {
+        let mut touch = TouchDevice::detached();
+        let mut fired = 0;
+        for _ in 0..FIVE_FINGER_HOLD_FRAMES * 2 {
+            fired += touch.hold_frame(5, 0).len();
+        }
+        assert_eq!(fired, 1, "quit fires once, on the frame the hold completes");
+    }
+
+    #[test]
+    fn a_hand_still_landing_is_not_charged_for_its_own_arrival() {
+        let mut touch = TouchDevice::detached();
+        let mut fired = 0;
+        // Fingers land raggedly: the centroid lurches while contacts arrive.
+        for frame in 0..FIVE_FINGER_HOLD_FRAMES * 2 {
+            let drift = if frame < 8 { DRIFT_PER_FRAME * 3 } else { 2 };
+            fired += touch.hold_frame(5, drift).len();
+        }
+        assert_eq!(fired, 1, "a settled hold still quits after a ragged landing");
     }
 
     #[test]
