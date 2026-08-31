@@ -46,6 +46,9 @@ pub enum Action {
     History,
     Corpus,
     Sessions,
+    /// Open one agent session as a full page. The index is a row on the
+    /// board, in `bridge::readable` order.
+    OpenSession(usize),
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -89,7 +92,16 @@ impl Drawer {
             if x < TAB_SESSIONS_X { return Action::Corpus; }
             return Action::Sessions;
         }
-        // Corpus and Sessions are read-only: nothing below the header is a target.
+        // The AGENTS tab is a selector: tick a row, open that session. This
+        // is navigation, which writes nothing — the read-only rule was only
+        // ever about capture (see docs/anthink-interaction.md).
+        if self.kind == DrawerKind::Sessions {
+            return match session_index_at(y) {
+                Some(i) => Action::OpenSession(i),
+                None => Action::None,
+            };
+        }
+        // Corpus is read-only: nothing below the header is a target.
         if self.kind != DrawerKind::History { return Action::None; }
         let Some(s) = store else { return Action::None };
         let convs = s.conversations();
@@ -186,6 +198,69 @@ fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bri
     if !label.is_empty() {
         text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
     }
+}
+
+/// Which board row a tap landed on. Mirrors `draw_sessions` geometry: rows
+/// from `HEADER_H + 16`, `CONV_ROW_H` tall, and only rows that fully fit are
+/// drawn — a tap below the drawn rows targets nothing.
+fn session_index_at(y: i32) -> Option<usize> {
+    let top = HEADER_H + 16;
+    if y < top {
+        return None;
+    }
+    let i = ((y - top) as usize) / CONV_ROW_H;
+    (top as usize + (i + 1) * CONV_ROW_H <= SCREEN_H).then_some(i)
+}
+
+/// One session, full page — the turn page of `docs/anthink-interaction.md`.
+/// The board chooses; this reads. Artifacts pin above the footer because
+/// evidence must not be pushed off the page by prose.
+pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::bridge::Session,
+    remaining: usize, stale: bool) {
+    use crate::page;
+    let layout = crate::bridge::layout_session(font, session);
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    text(surf, font, "AGENTS", LABEL_PX, page::PAD, 36, BLACK);
+    rule(surf, page::PAD, 92, SCREEN_W - page::PAD * 2, 2);
+    let mut y = page::HEADER_H;
+    for line in &layout.title_lines {
+        text(surf, font, line, page::TITLE_PX, page::PAD, y, BLACK);
+        y += page::TITLE_LINE_H;
+    }
+    text(surf, font, &layout.meta.to_uppercase(), LABEL_PX, page::PAD, y, BLUE);
+    y += page::LINE_H;
+    for t in &layout.turns {
+        text(surf, font, &t.speaker.to_uppercase(), LABEL_PX, page::PAD, y, BLUE);
+        let mut ly = y + page::LINE_H;
+        for line in &t.lines {
+            text(surf, font, line, page::BODY_PX, page::PAD, ly, BLACK);
+            ly += page::LINE_H;
+        }
+        y += t.height;
+    }
+    // Exactly the room the layout reserved, so drawing can never disagree
+    // with measuring.
+    let mut ay = page::limit(0) - layout.artifacts.len() * page::LINE_H;
+    for a in &layout.artifacts {
+        text(surf, font, &tail(&a.reference, 22), page::BODY_PX, page::PAD, ay, BLUE);
+        text(surf, font, &one_line(&a.label, 44), page::BODY_PX, page::PAD + 330, ay, BLACK);
+        ay += page::LINE_H;
+    }
+    let footer = crate::bridge::footer_label(&layout, remaining, stale);
+    if !footer.is_empty() {
+        text(surf, font, &footer.to_uppercase(), LABEL_PX, page::PAD, SCREEN_H - 60, BLUE);
+    }
+}
+
+/// The end of a reference is the part that identifies it — a path's file, a
+/// sha. Keep the tail, mark the cut.
+fn tail(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().skip(n - (max - 1)).collect();
+    format!("…{kept}")
 }
 
 /// The drawer's footer line. Mirrors `bridge::footer_label`, but counts rows
@@ -486,15 +561,59 @@ mod tests {
     }
 
     #[test]
-    fn the_sessions_tab_is_read_only() {
+    fn a_board_row_opens_its_session_and_the_gutter_opens_nothing() {
+        // Navigation writes nothing, so it was never the thing the read-only
+        // rule protected — see docs/anthink-interaction.md.
         let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
         let ptr = bytes.as_mut_ptr();
         let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
         let mut d = Drawer::open(&surf, DrawerKind::Sessions, None, 0, None);
-        // Nothing below the header is a target: reading is not a capture path.
-        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::None);
-        assert_eq!(d.tap(PAD as i32, SCREEN_H as i32 - 40, &None), Action::None);
-        assert_eq!(d.selection, None);
+        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::OpenSession(0));
+        assert_eq!(
+            d.tap(PAD as i32, HEADER_H + 16 + CONV_ROW_H as i32 + 10, &None),
+            Action::OpenSession(1)
+        );
+        // Above the rows the header owns the tap; below the last row that
+        // fully fits, nothing does.
+        assert_eq!(d.tap(PAD as i32, 40, &None), Action::Close);
+        assert_eq!(session_index_at(10), None);
+        let last_fit = (SCREEN_H - (HEADER_H as usize + 16)) / CONV_ROW_H;
+        assert_eq!(session_index_at(HEADER_H + 16 + (last_fit * CONV_ROW_H) as i32 + 4), None);
+        assert_eq!(d.selection, None, "the board keeps no selection; a tap opens");
+    }
+
+    #[test]
+    fn the_session_page_draws_without_panicking_and_pins_artifacts() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let session = crate::bridge::Session {
+            id: "s1".into(),
+            title: "Wire the bridge board to the page".into(),
+            state: "waiting".into(),
+            updated: "14:02".into(),
+            turns: (0..30)
+                .map(|i| crate::bridge::Turn {
+                    speaker: if i % 2 == 0 { "you".into() } else { "claude".into() },
+                    text: format!("turn {i} with enough words to wrap across a line or two of the page"),
+                })
+                .collect(),
+            artifacts: vec![crate::bridge::Artifact {
+                reference: "/a/very/long/path/deep/in/the/tree/src/bridge.rs".into(),
+                label: "edited".into(),
+            }],
+        };
+        draw_session_page(&mut surf, &font, &session, 3, true);
+    }
+
+    #[test]
+    fn a_reference_keeps_its_tail_when_cut() {
+        assert_eq!(tail("a1b2c3d", 22), "a1b2c3d");
+        let cut = tail("/Users/p/Dev/g-pad/src/bridge.rs", 22);
+        assert!(cut.starts_with('…'));
+        assert!(cut.ends_with("bridge.rs"));
+        assert_eq!(cut.chars().count(), 22);
     }
 
     #[test]

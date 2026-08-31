@@ -13,9 +13,9 @@ mod ask;
 // docs/daily-brief.md. Its JSON scanner is shared with the Claude bridge.
 #[allow(dead_code)]
 mod brief;
-// The session reader is laid out and tested, but only the drawer's AGENTS tab
-// is wired; the full page (bridge::layout_session) has no call site yet. See
-// docs/claude-bridge.md.
+// Agent mode: the AGENTS tab is the board, a tapped row opens the full turn
+// page, and a poll thread feeds both when RIDDLE_BRIDGE_URL names a hub. See
+// docs/claude-bridge.md and docs/plans/2026-08-30-anthink-hub-design.md.
 #[allow(dead_code)]
 mod bridge;
 mod display;
@@ -106,6 +106,9 @@ enum State {
     #[allow(dead_code)]
     ExpandedConversation { panel: Option<ui::Drawer>, return_to: Box<State> },
     Settings { saved: Option<Vec<u8>>, return_to: Box<State> },
+    /// One agent session read full-page (the turn page). `saved` is the whole
+    /// canvas underneath; the drawer swipe brings it back.
+    SessionPage { saved: Vec<u8>, return_to: Box<State> },
 }
 
 #[derive(Clone, Copy)]
@@ -632,7 +635,7 @@ fn run() -> std::io::Result<()> {
                 // quit); the pen is the authoritative input device here.
                 if s.proximity && !matches!(state,
                     State::Settings { .. } | State::Drawer { .. }
-                    | State::ExpandedConversation { .. })
+                    | State::ExpandedConversation { .. } | State::SessionPage { .. })
                 {
                     if let Some(ref mut td) = touch_dev {
                         td.suppress();
@@ -662,7 +665,8 @@ fn run() -> std::io::Result<()> {
                     }
                     continue;
                 }
-                if matches!(state, State::Settings { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
+                if matches!(state, State::Settings { .. } | State::Drawer { .. }
+                    | State::ExpandedConversation { .. } | State::SessionPage { .. }) {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
                         control_pen_latched = true;
@@ -736,7 +740,8 @@ fn run() -> std::io::Result<()> {
                             queued_gestures.push(touch::Gesture::Page(1));
                             control_pen_latched = true;
                         }
-                    } else if matches!(state, State::Settings { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
+                    } else if matches!(state, State::Settings { .. } | State::Drawer { .. }
+                        | State::ExpandedConversation { .. } | State::SessionPage { .. }) {
                         if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
                             control_pen_latched = true;
@@ -1093,6 +1098,8 @@ fn run() -> std::io::Result<()> {
                 None if stylus_on => State::Settings { saved: None, return_to },
                 None => *return_to,
             },
+            // The turn page rests until the reader closes it.
+            State::SessionPage { saved, return_to } => State::SessionPage { saved, return_to },
 
             State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
@@ -1176,6 +1183,10 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes);
             disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
+        State::SessionPage { saved, return_to } => {
+            surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
+            disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
+        }
         other => *state = other,
     }
 }
@@ -1243,6 +1254,21 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
     if let ui::Action::Replay(id) = action {
         close_overlay(state, surf, disp, selection, scroll);
         if let Some(next) = conjure(reply_font, store, id, surf, disp) { *state = next; }
+        return;
+    }
+    if let ui::Action::OpenSession(i) = action {
+        // Snapshot the session before the drawer closes; a poll can land at
+        // any moment and the page should show what the row showed.
+        let held = crate::bridge::held();
+        let list = crate::bridge::readable(&held);
+        let Some(session) = list.get(i).map(|s| (*s).clone()) else { return };
+        let remaining = list.len().saturating_sub(1);
+        close_overlay(state, surf, disp, selection, scroll);
+        let old = std::mem::replace(state, State::Listening { last_pen: None });
+        let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
+        ui::draw_session_page(surf, ui_font, &session, remaining, held.stale);
+        disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+        *state = State::SessionPage { saved, return_to: Box::new(old) };
         return;
     }
     let mut redraw = false;
