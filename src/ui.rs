@@ -46,6 +46,9 @@ pub enum Action {
     History,
     Corpus,
     Sessions,
+    /// Open one agent session as a full page. The index is a row on the
+    /// board, in `bridge::readable` order.
+    OpenSession(usize),
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -89,7 +92,16 @@ impl Drawer {
             if x < TAB_SESSIONS_X { return Action::Corpus; }
             return Action::Sessions;
         }
-        // Corpus and Sessions are read-only: nothing below the header is a target.
+        // The AGENTS tab is a selector: tick a row, open that session. This
+        // is navigation, which writes nothing — the read-only rule was only
+        // ever about capture (see docs/anthink-interaction.md).
+        if self.kind == DrawerKind::Sessions {
+            return match session_index_at(y) {
+                Some(i) => Action::OpenSession(i),
+                None => Action::None,
+            };
+        }
+        // Corpus is read-only: nothing below the header is a target.
         if self.kind != DrawerKind::History { return Action::None; }
         let Some(s) = store else { return Action::None };
         let convs = s.conversations();
@@ -186,6 +198,134 @@ fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bri
     if !label.is_empty() {
         text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
     }
+}
+
+/// Which board row a tap landed on. Mirrors `draw_sessions` geometry: rows
+/// from `HEADER_H + 16`, `CONV_ROW_H` tall, and only rows that fully fit are
+/// drawn — a tap below the drawn rows targets nothing.
+fn session_index_at(y: i32) -> Option<usize> {
+    let top = HEADER_H + 16;
+    if y < top {
+        return None;
+    }
+    let i = ((y - top) as usize) / CONV_ROW_H;
+    (top as usize + (i + 1) * CONV_ROW_H <= SCREEN_H).then_some(i)
+}
+
+/// What a tick on the decision box means for this session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    /// The session sits at a pending prompt: tick approves, strike rejects.
+    Approve,
+    /// The session finished its turn: tick nudges it forward.
+    Continue,
+}
+
+/// A rendered region and what marking it means — the hit map, returned by
+/// drawing so it can never drift from what was painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecisionBox {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub decision: Decision,
+}
+
+/// Room the decision box claims above the footer, gap included.
+const DECISION_H: usize = 130;
+
+/// One session, full page — the turn page of `docs/anthink-interaction.md`.
+/// The board chooses; this reads and, when the session needs a human,
+/// carries the decision box. Artifacts pin above the box because evidence
+/// must not be pushed off the page by prose.
+///
+/// `armed` is the destructive-confirmation state: the first tick arms, the
+/// box inverts, the second tick sends. `status` replaces the box label after
+/// a send — the pad never assumes a mark landed.
+pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::bridge::Session,
+    remaining: usize, stale: bool, armed: bool, status: Option<&str>) -> Option<DecisionBox> {
+    use crate::page;
+    let decision = match session.state.as_str() {
+        "waiting" => Some(Decision::Approve),
+        "done" => Some(Decision::Continue),
+        _ => None,
+    };
+    let reserved = if decision.is_some() { DECISION_H } else { 0 };
+    let layout = crate::bridge::layout_session_reserving(font, session, reserved);
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    text(surf, font, "AGENTS", LABEL_PX, page::PAD, 36, BLACK);
+    rule(surf, page::PAD, 92, SCREEN_W - page::PAD * 2, 2);
+    let mut y = page::HEADER_H;
+    for line in &layout.title_lines {
+        text(surf, font, line, page::TITLE_PX, page::PAD, y, BLACK);
+        y += page::TITLE_LINE_H;
+    }
+    text(surf, font, &layout.meta.to_uppercase(), LABEL_PX, page::PAD, y, BLUE);
+    y += page::LINE_H;
+    for t in &layout.turns {
+        text(surf, font, &t.speaker.to_uppercase(), LABEL_PX, page::PAD, y, BLUE);
+        let mut ly = y + page::LINE_H;
+        for line in &t.lines {
+            text(surf, font, line, page::BODY_PX, page::PAD, ly, BLACK);
+            ly += page::LINE_H;
+        }
+        y += t.height;
+    }
+    // Exactly the room the layout reserved, so drawing can never disagree
+    // with measuring: artifacts above the box, the box above the footer.
+    let mut ay = page::limit(reserved) - layout.artifacts.len() * page::LINE_H;
+    for a in &layout.artifacts {
+        text(surf, font, &tail(&a.reference, 22), page::BODY_PX, page::PAD, ay, BLUE);
+        text(surf, font, &one_line(&a.label, 44), page::BODY_PX, page::PAD + 330, ay, BLACK);
+        ay += page::LINE_H;
+    }
+    let footer = crate::bridge::footer_label(&layout, remaining, stale);
+    if !footer.is_empty() {
+        text(surf, font, &footer.to_uppercase(), LABEL_PX, page::PAD, SCREEN_H - 60, BLUE);
+    }
+    decision.map(|d| draw_decision_box(surf, font, d, armed, status))
+}
+
+/// The box itself: a fixed, known, anchored target that requires no
+/// recognition and no precision. Armed, it inverts — the pad's stand-in for
+/// vermilion, and unmistakable on a grayscale panel.
+fn draw_decision_box(surf: &mut Surface, font: &FontRef, decision: Decision, armed: bool,
+    status: Option<&str>) -> DecisionBox {
+    use crate::page;
+    let x = page::PAD;
+    let w = SCREEN_W - page::PAD * 2;
+    let h = DECISION_H - 34; // the rest is the gap above
+    let y = page::limit(0) - h;
+    let label = match (status, armed, decision) {
+        (Some(s), _, _) => one_line(s, 60),
+        (None, false, Decision::Approve) => "PENDING ACTION · TICK TO APPROVE · STRIKE TO REJECT".into(),
+        (None, true, Decision::Approve) => "TICK AGAIN TO APPROVE — TREATED AS DESTRUCTIVE".into(),
+        (None, false, Decision::Continue) => "TURN FINISHED · TICK TO NUDGE FORWARD".into(),
+        (None, true, Decision::Continue) => "TICK AGAIN TO SEND CONTINUE".into(),
+    };
+    if armed && status.is_none() {
+        surf.fill_rect(x, y, w, h, BLACK);
+        text(surf, font, &label, LABEL_PX, x + 28, y + h / 2 - 18, WHITE);
+    } else {
+        surf.fill_rect(x, y, w, 3, BLACK);
+        surf.fill_rect(x, y + h - 3, w, 3, BLACK);
+        surf.fill_rect(x, y, 3, h, BLACK);
+        surf.fill_rect(x + w - 3, y, 3, h, BLACK);
+        text(surf, font, &label, LABEL_PX, x + 28, y + h / 2 - 18, BLACK);
+    }
+    DecisionBox { x, y, w, h, decision }
+}
+
+/// The end of a reference is the part that identifies it — a path's file, a
+/// sha. Keep the tail, mark the cut.
+fn tail(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().skip(n - (max - 1)).collect();
+    format!("…{kept}")
 }
 
 /// The drawer's footer line. Mirrors `bridge::footer_label`, but counts rows
@@ -486,15 +626,71 @@ mod tests {
     }
 
     #[test]
-    fn the_sessions_tab_is_read_only() {
+    fn a_board_row_opens_its_session_and_the_gutter_opens_nothing() {
+        // Navigation writes nothing, so it was never the thing the read-only
+        // rule protected — see docs/anthink-interaction.md.
         let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
         let ptr = bytes.as_mut_ptr();
         let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
         let mut d = Drawer::open(&surf, DrawerKind::Sessions, None, 0, None);
-        // Nothing below the header is a target: reading is not a capture path.
-        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::None);
-        assert_eq!(d.tap(PAD as i32, SCREEN_H as i32 - 40, &None), Action::None);
-        assert_eq!(d.selection, None);
+        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::OpenSession(0));
+        assert_eq!(
+            d.tap(PAD as i32, HEADER_H + 16 + CONV_ROW_H as i32 + 10, &None),
+            Action::OpenSession(1)
+        );
+        // Above the rows the header owns the tap; below the last row that
+        // fully fits, nothing does.
+        assert_eq!(d.tap(PAD as i32, 40, &None), Action::Close);
+        assert_eq!(session_index_at(10), None);
+        let last_fit = (SCREEN_H - (HEADER_H as usize + 16)) / CONV_ROW_H;
+        assert_eq!(session_index_at(HEADER_H + 16 + (last_fit * CONV_ROW_H) as i32 + 4), None);
+        assert_eq!(d.selection, None, "the board keeps no selection; a tap opens");
+    }
+
+    #[test]
+    fn the_session_page_draws_without_panicking_and_pins_artifacts() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let session = crate::bridge::Session {
+            id: "s1".into(),
+            title: "Wire the bridge board to the page".into(),
+            state: "waiting".into(),
+            updated: "14:02".into(),
+            turns: (0..30)
+                .map(|i| crate::bridge::Turn {
+                    speaker: if i % 2 == 0 { "you".into() } else { "claude".into() },
+                    text: format!("turn {i} with enough words to wrap across a line or two of the page"),
+                })
+                .collect(),
+            artifacts: vec![crate::bridge::Artifact {
+                reference: "/a/very/long/path/deep/in/the/tree/src/bridge.rs".into(),
+                label: "edited".into(),
+            }],
+        };
+        // Waiting: the decision box is on the page, and arming redraws it.
+        let boxr = draw_session_page(&mut surf, &font, &session, 3, true, false, None);
+        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Approve));
+        let armed = draw_session_page(&mut surf, &font, &session, 3, true, true, None);
+        assert_eq!(armed, boxr, "arming changes the drawing, never the hit map");
+        // Done: a tick means nudge forward. Running: nothing to decide.
+        let mut done = session.clone();
+        done.state = "done".into();
+        let boxr = draw_session_page(&mut surf, &font, &done, 0, false, false, None);
+        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Continue));
+        let mut running = session.clone();
+        running.state = "running".into();
+        assert_eq!(draw_session_page(&mut surf, &font, &running, 0, false, false, None), None);
+    }
+
+    #[test]
+    fn a_reference_keeps_its_tail_when_cut() {
+        assert_eq!(tail("a1b2c3d", 22), "a1b2c3d");
+        let cut = tail("/Users/p/Dev/g-pad/src/bridge.rs", 22);
+        assert!(cut.starts_with('…'));
+        assert!(cut.ends_with("bridge.rs"));
+        assert_eq!(cut.chars().count(), 22);
     }
 
     #[test]
