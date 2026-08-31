@@ -24,6 +24,7 @@ mod fb;
 mod gesture;
 mod ink;
 mod memory;
+mod notebook;
 mod page;
 mod oracle;
 mod pen;
@@ -368,6 +369,15 @@ fn run() -> std::io::Result<()> {
     let mut queued_gestures: Vec<touch::Gesture> = Vec::new();
     let mut fallback_touch: Option<((i32, i32), (i32, i32))> = None;
     let mut control_pen_latched = false;
+    // The canvas's page stack, and the flip banner that names where you are.
+    let mut notebook = notebook::Notebook::new();
+    let mut banner_saved: Option<Vec<u8>> = None;
+    let mut banner_until: Option<Instant> = None;
+    // What the pen tip does, chosen from the tap-summoned palette. The
+    // marker's hardware eraser end always erases regardless of this.
+    let mut selected_tool = pen::Tool::Pen;
+    let mut palette: Option<ui::Palette> = None;
+    let mut palette_until: Option<Instant> = None;
 
     // Reply draw speed: points drawn per animation frame. Higher = the answer
     // appears faster (fewer seconds of watching it scrawl). Was 26; the e-ink
@@ -442,6 +452,17 @@ fn run() -> std::io::Result<()> {
             match gesture {
                 touch::Gesture::OpenControls => {
                     if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
+                        if let Some(p) = palette.take() {
+                            let (px, py, pw, ph) = p.close(&mut surf).rect();
+                            disp.update(px, py, pw, ph, false);
+                            palette_until = None;
+                        }
+                        // The banner lives inside the strip's saved region;
+                        // interleaved save/restore patches would corrupt both.
+                        if let Some(saved) = banner_saved.take() {
+                            ui::restore_page_banner(&mut surf, &saved);
+                            banner_until = None;
+                        }
                         if prefs.mode == preferences::Mode::Guided {
                             if controls_saved.is_none() {
                                 controls_saved = Some(ui::draw_controls(&mut surf, &ui_font, matches!(state, State::Lingering { .. })));
@@ -457,6 +478,11 @@ fn run() -> std::io::Result<()> {
                     }
                 }
                 touch::Gesture::OpenDrawer if matches!(state, State::Listening { .. } | State::Lingering { .. }) => {
+                    if let Some(p) = palette.take() {
+                        let (px, py, pw, ph) = p.close(&mut surf).rect();
+                        disp.update(px, py, pw, ph, false);
+                        palette_until = None;
+                    }
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
                     let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
                     let thread = store.as_ref().and_then(|s| s.conversations().len().checked_sub(1));
@@ -472,6 +498,46 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::Page(delta) if matches!(state, State::Lingering { .. }) => {
                     let _ = step_reply_page(delta, &font, reply_w, &mut reply_pages, &mut reply_page,
                         &mut state, &mut surf, &disp);
+                }
+                // Flipping the writing canvas: forward through the notebook
+                // (a fresh sheet past an inked last page), back to earlier
+                // sheets. Overlays come down first so they are not parked
+                // into the page snapshot.
+                touch::Gesture::Page(delta) if matches!(state, State::Listening { .. }) && !pen_down => {
+                    let mut came_down = false;
+                    if let Some(p) = palette.take() {
+                        p.close(&mut surf);
+                        palette_until = None;
+                        came_down = true;
+                    }
+                    if let Some(saved) = controls_saved.take() {
+                        ui::restore_controls(&mut surf, &saved);
+                        controls_until = None;
+                        came_down = true;
+                    }
+                    if let Some(saved) = banner_saved.take() {
+                        ui::restore_page_banner(&mut surf, &saved);
+                        banner_until = None;
+                        came_down = true;
+                    }
+                    let flipped = if delta < 0 {
+                        notebook.prev(&mut surf, &mut user_ink)
+                    } else {
+                        notebook.next(&mut surf, &mut user_ink)
+                    };
+                    if flipped {
+                        send_mode = None;
+                        state = State::Listening { last_pen: None };
+                        let (current, total) = notebook.position();
+                        eprintln!("g-pad: page {current} of {total}");
+                        banner_saved = Some(ui::draw_page_banner(&mut surf, &ui_font, current, total));
+                        banner_until = Some(Instant::now() + Duration::from_millis(1500));
+                        disp.full_refresh(surf.w, surf.h);
+                    } else if came_down {
+                        // The flip was refused (a cover, or a full notebook)
+                        // but overlays already left the surface; show that.
+                        disp.update_all(surf.w, surf.h);
+                    }
                 }
                 touch::Gesture::Scroll(delta) | touch::Gesture::Page(delta) => {
                     let panel = match &mut state {
@@ -499,8 +565,8 @@ fn run() -> std::io::Result<()> {
                         if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
                         disp.update(0, 0, SCREEN_W as i32, 82, false);
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
-                            &mut user_ink, &mut send_mode, &mut sleep_requested, &mut prefs,
-                            &mut idle_commit, drawer_selection, drawer_scroll);
+                            &mut user_ink, &mut notebook, &mut send_mode, &mut sleep_requested,
+                            &mut prefs, &mut idle_commit, drawer_selection, drawer_scroll);
                     } else if matches!(state, State::Settings { .. }) {
                         let action = ui::settings_action(x, y);
                         match action {
@@ -521,6 +587,25 @@ fn run() -> std::io::Result<()> {
                         }
                         ui::draw_settings(&mut surf, &ui_font, prefs);
                         disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
+                    } else if let Some(p) = palette.take() {
+                        // A tap on a row picks that tool; anywhere else just
+                        // puts the page back.
+                        let choice = p.tap(x, y);
+                        let (px, py, pw, ph) = p.close(&mut surf).rect();
+                        disp.update(px, py, pw, ph, false);
+                        palette_until = None;
+                        if let Some(tool) = choice {
+                            selected_tool = tool;
+                            eprintln!("g-pad: pen tip is now the {tool:?}");
+                        }
+                    } else if matches!(state, State::Listening { .. }) && !pen_down {
+                        // A bare finger tap on the open page summons the pen
+                        // palette where the finger landed.
+                        let p = ui::Palette::open(&mut surf, &ui_font, x, y, selected_tool);
+                        let (px, py, pw, ph) = p.region().rect();
+                        disp.update(px, py, pw, ph, false);
+                        palette = Some(p);
+                        palette_until = Some(Instant::now() + Duration::from_secs(10));
                     } else {
                         let action = match &mut state {
                             State::Drawer { panel: Some(p), .. } | State::ExpandedConversation { panel: Some(p), .. } => p.tap(x, y, &store),
@@ -540,6 +625,21 @@ fn run() -> std::io::Result<()> {
                 disp.update(0, 0, SCREEN_W as i32, 82, false);
             }
             controls_until = None;
+        }
+        if palette_until.is_some_and(|t| Instant::now() >= t) {
+            if let Some(p) = palette.take() {
+                let (px, py, pw, ph) = p.close(&mut surf).rect();
+                disp.update(px, py, pw, ph, false);
+            }
+            palette_until = None;
+        }
+        if banner_until.is_some_and(|t| Instant::now() >= t) {
+            if let Some(saved) = banner_saved.take() {
+                ui::restore_page_banner(&mut surf, &saved);
+                let (bx, by) = ui::banner_origin();
+                disp.update(bx as i32, by as i32, ui::BANNER_W as i32, ui::BANNER_H as i32, false);
+            }
+            banner_until = None;
         }
 
         // ---- power button: sleep page, suspend, restore on wake ----
@@ -658,6 +758,13 @@ fn run() -> std::io::Result<()> {
                     }
                     continue;
                 }
+                if palette.as_ref().is_some_and(|p| p.contains(s.x, s.y)) {
+                    if !control_pen_latched {
+                        queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
+                        control_pen_latched = true;
+                    }
+                    continue;
+                }
                 if matches!(state, State::Settings { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
@@ -668,12 +775,16 @@ fn run() -> std::io::Result<()> {
                 match state {
                     State::Listening { ref mut last_pen } => {
                         pen_down = true;
-                        let d = match s.tool {
-                            pen::Tool::Pen => {
+                        // The hardware eraser end always erases; the tip does
+                        // whatever the palette last chose.
+                        let d = match (s.tool, selected_tool) {
+                            (pen::Tool::Eraser, _) | (_, pen::Tool::Eraser) => {
+                                user_ink.erase_point(&mut surf, s.x, s.y, 22)
+                            }
+                            _ => {
                                 let r = 2 + s.pressure * 3 / pen::MAX_PRESSURE;
                                 user_ink.pen_point(&mut surf, s.x, s.y, r)
                             }
-                            pen::Tool::Eraser => user_ink.erase_point(&mut surf, s.x, s.y, 22),
                         };
                         if !d.is_empty() {
                             ink_dirty.add(d.x0, d.y0, 0);
@@ -715,10 +826,21 @@ fn run() -> std::io::Result<()> {
                         }
                         continue;
                     }
+                    if palette.as_ref().is_some_and(|p| p.contains(ev.x, ev.y)) {
+                        if !control_pen_latched {
+                            queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
+                            control_pen_latched = true;
+                        }
+                        continue;
+                    }
                     if let State::Listening { ref mut last_pen } = state {
                         pen_down = true;
-                        let r = 2 + ev.d.clamp(0, 100) / 45;
-                        let d = user_ink.pen_point(&mut surf, ev.x, ev.y, r);
+                        let d = if selected_tool == pen::Tool::Eraser {
+                            user_ink.erase_point(&mut surf, ev.x, ev.y, 22)
+                        } else {
+                            let r = 2 + ev.d.clamp(0, 100) / 45;
+                            user_ink.pen_point(&mut surf, ev.x, ev.y, r)
+                        };
                         if !d.is_empty() {
                             ink_dirty.add(d.x0, d.y0, 0);
                             ink_dirty.add(d.x1, d.y1, 0);
@@ -784,6 +906,20 @@ fn run() -> std::io::Result<()> {
                         && !user_ink.is_empty() =>
                 {
                     let commit_mode = send_mode.take().unwrap_or(CommitMode::Capture);
+                    // Overlays must not outlive the page they were opened
+                    // over: the drink and the reply repaint beneath them, and
+                    // their saved patches would restore stale pixels.
+                    if let Some(p) = palette.take() {
+                        let (px, py, pw, ph) = p.close(&mut surf).rect();
+                        disp.update(px, py, pw, ph, false);
+                        palette_until = None;
+                    }
+                    if let Some(saved) = banner_saved.take() {
+                        ui::restore_page_banner(&mut surf, &saved);
+                        let (bx, by) = ui::banner_origin();
+                        disp.update(bx as i32, by as i32, ui::BANNER_W as i32, ui::BANNER_H as i32, false);
+                        banner_until = None;
+                    }
                     if region_all_white(&surf, user_ink.bbox) {
                         // Everything was erased before commit: nothing to commit.
                         user_ink.clear();
@@ -1179,14 +1315,25 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
 #[allow(clippy::too_many_arguments)]
 fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp: &display::Display,
     ui_font: &FontRef, store: &Option<memory::MemoryStore>, user_ink: &mut ink::Ink,
-    send_mode: &mut Option<CommitMode>, sleep_requested: &mut bool,
+    notebook: &mut notebook::Notebook, send_mode: &mut Option<CommitMode>, sleep_requested: &mut bool,
     prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
     selection: Option<usize>, scroll: i32) {
     match action {
         ui::Action::Send => *send_mode = Some(CommitMode::Capture),
-        ui::Action::Erase | ui::Action::NewPage => {
+        ui::Action::Erase => {
             surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE); disp.full_refresh(surf.w, surf.h);
             user_ink.clear(); *state = State::Listening { last_pen: None };
+        }
+        ui::Action::NewPage => {
+            // An inked sheet is parked in the notebook (flip back with a
+            // swipe to return to it); anything else is simply wiped, which
+            // is what NEW PAGE always did.
+            if !notebook.new_page(surf, user_ink) {
+                surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+                user_ink.clear();
+            }
+            disp.full_refresh(surf.w, surf.h);
+            *state = State::Listening { last_pen: None };
         }
         ui::Action::Dismiss => {
             if let State::Lingering { region, .. } = state {

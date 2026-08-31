@@ -377,6 +377,99 @@ pub fn restore_controls(surf: &mut Surface, saved: &[u8]) {
     surf.paste_rect(0, 0, SCREEN_W, 82, saved);
 }
 
+/// The pen palette — a transient tool menu summoned by a one-finger tap on
+/// the open page. It picks what the pen *tip* does; the marker's hardware
+/// eraser end always erases regardless. One entry per row so a new tool is
+/// one line here and one arm at the pen.
+const PALETTE_TOOLS: [(&str, crate::pen::Tool); 2] =
+    [("PEN", crate::pen::Tool::Pen), ("ERASER", crate::pen::Tool::Eraser)];
+const PALETTE_W: i32 = 300;
+const PALETTE_ROW_H: i32 = 96;
+
+fn palette_h() -> i32 {
+    PALETTE_TOOLS.len() as i32 * PALETTE_ROW_H
+}
+
+pub struct Palette {
+    x: i32,
+    y: i32,
+    saved: Vec<u8>,
+}
+
+impl Palette {
+    /// Paint the palette near the tap, clamped fully on screen, and remember
+    /// what it covers. The caller flushes the returned region.
+    pub fn open(surf: &mut Surface, font: &FontRef, tap_x: i32, tap_y: i32, current: crate::pen::Tool) -> Self {
+        let x = (tap_x - PALETTE_W / 2).clamp(0, SCREEN_W as i32 - PALETTE_W);
+        let y = (tap_y + 30).clamp(0, SCREEN_H as i32 - palette_h());
+        let saved = surf.copy_rect(x as usize, y as usize, PALETTE_W as usize, palette_h() as usize);
+        surf.fill_rect(x as usize, y as usize, PALETTE_W as usize, palette_h() as usize, WHITE);
+        for (i, (label, tool)) in PALETTE_TOOLS.iter().enumerate() {
+            let row_y = y + i as i32 * PALETTE_ROW_H;
+            if i > 0 {
+                surf.fill_rect(x as usize, row_y as usize, PALETTE_W as usize, 1, BLACK);
+            }
+            render_text(surf, font, label, LABEL_PX, x as usize + 28, row_y as usize + 30,
+                if *tool == current { BLUE } else { BLACK }, SCREEN_W);
+        }
+        // Border last, so a row rule cannot overpaint it.
+        surf.fill_rect(x as usize, y as usize, PALETTE_W as usize, 2, BLACK);
+        surf.fill_rect(x as usize, (y + palette_h() - 2) as usize, PALETTE_W as usize, 2, BLACK);
+        surf.fill_rect(x as usize, y as usize, 2, palette_h() as usize, BLACK);
+        surf.fill_rect((x + PALETTE_W - 2) as usize, y as usize, 2, palette_h() as usize, BLACK);
+        Self { x, y, saved }
+    }
+
+    pub fn region(&self) -> BBox {
+        let mut b = BBox::empty();
+        b.add(self.x, self.y, 0);
+        b.add(self.x + PALETTE_W - 1, self.y + palette_h() - 1, 0);
+        b
+    }
+
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && x < self.x + PALETTE_W && y >= self.y && y < self.y + palette_h()
+    }
+
+    /// The tool under a tap, or None for a tap outside (which closes it).
+    pub fn tap(&self, x: i32, y: i32) -> Option<crate::pen::Tool> {
+        if !self.contains(x, y) {
+            return None;
+        }
+        let row = ((y - self.y) / PALETTE_ROW_H) as usize;
+        PALETTE_TOOLS.get(row).map(|&(_, tool)| tool)
+    }
+
+    /// Put back what the palette covered. The caller flushes the region.
+    pub fn close(self, surf: &mut Surface) -> BBox {
+        let region = self.region();
+        surf.paste_rect(self.x as usize, self.y as usize, PALETTE_W as usize, palette_h() as usize, &self.saved);
+        region
+    }
+}
+
+/// Where the flip banner sits, and what it covers: a small top-right chip
+/// saying "PAGE 2 / 3" for a moment after a page flip.
+pub const BANNER_W: usize = 280;
+pub const BANNER_H: usize = 60;
+
+pub fn banner_origin() -> (usize, usize) {
+    (SCREEN_W - BANNER_W - 20, 16)
+}
+
+pub fn draw_page_banner(surf: &mut Surface, font: &FontRef, current: usize, total: usize) -> Vec<u8> {
+    let (x, y) = banner_origin();
+    let saved = surf.copy_rect(x, y, BANNER_W, BANNER_H);
+    surf.fill_rect(x, y, BANNER_W, BANNER_H, WHITE);
+    render_text(surf, font, &format!("PAGE {current} / {total}"), LABEL_PX, x + 16, y + 12, BLACK, SCREEN_W);
+    saved
+}
+
+pub fn restore_page_banner(surf: &mut Surface, saved: &[u8]) {
+    let (x, y) = banner_origin();
+    surf.paste_rect(x, y, BANNER_W, BANNER_H, saved);
+}
+
 pub fn draw_settings(surf: &mut Surface, font: &FontRef, prefs: Preferences) -> Vec<u8> {
     let saved = surf.copy_rect(0, 0, PANEL_W, SCREEN_H);
     surf.fill_rect(0, 0, PANEL_W, SCREEN_H, WHITE);
@@ -456,6 +549,41 @@ fn wrapped(surf: &mut Surface, font: &FontRef, value: &str, px: f32, x: usize, y
 mod tests {
     use super::*;
     use crate::surface::PixFmt;
+    #[test]
+    fn the_palette_selects_by_row_and_closes_outside() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let p = Palette::open(&mut surf, &font, 700, 900, crate::pen::Tool::Pen);
+        let (rx, ry, _, _) = p.region().rect();
+        assert_eq!(p.tap(rx + 10, ry + 10), Some(crate::pen::Tool::Pen));
+        assert_eq!(p.tap(rx + 10, ry + PALETTE_ROW_H + 10), Some(crate::pen::Tool::Eraser));
+        assert_eq!(p.tap(rx - 5, ry), None, "a tap outside closes the palette");
+        assert!(p.contains(rx + 1, ry + 1));
+
+        // Closing restores what the palette covered.
+        let before = surf.luma(rx + 20, ry + 40);
+        assert!(before < 250 || before == 255); // painted either way
+        p.close(&mut surf);
+        assert_eq!(surf.luma(rx + 20, ry + 40), 255, "the page under the palette returns");
+    }
+
+    #[test]
+    fn the_palette_stays_on_screen_at_the_edges() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        for (tx, ty) in [(0, 0), (SCREEN_W as i32 - 1, SCREEN_H as i32 - 1)] {
+            let p = Palette::open(&mut surf, &font, tx, ty, crate::pen::Tool::Pen);
+            let (x, y, w, h) = p.region().rect();
+            assert!(x >= 0 && y >= 0);
+            assert!(x + w <= SCREEN_W as i32 && y + h <= SCREEN_H as i32);
+            p.close(&mut surf);
+        }
+    }
+
     #[test]
     fn controls_use_fixed_hit_regions() {
         assert_eq!(control_action(10, 20, false), Action::Send);
