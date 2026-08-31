@@ -50,7 +50,9 @@ use fb::{BBox, SCREEN_H, SCREEN_W};
 use oracle::Event;
 use surface::{Surface, BLACK, FADED, WHITE};
 
-const FONT_TTF: &[u8] = include_bytes!("../fonts/DancingScript.ttf");
+// Replies default to the same legible sans the chrome uses; the cursive
+// hand survives only as an opt-in via RIDDLE_FONT_FILE.
+const FONT_TTF: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 const PNG_PATH: &str = "/tmp/g-pad-page.png";
 
 /// How long the diary waits on a silent oracle before giving up on the turn.
@@ -492,7 +494,7 @@ fn build_ctx(store: &Option<memory::MemoryStore>) -> oracle::TurnContext {
 
 fn run() -> std::io::Result<()> {
     // The reply hand: RIDDLE_FONT_FILE (any TTF/OTF next to the binary or an
-    // absolute path), else the embedded Dancing Script. Loaded once and
+    // absolute path), else the embedded Liberation Sans. Loaded once and
     // leaked — one font per process lifetime.
     let font_bytes: &'static [u8] = match std::env::var("RIDDLE_FONT_FILE") {
         Ok(p) => match std::fs::read(&p) {
@@ -501,7 +503,7 @@ fn run() -> std::io::Result<()> {
                 Box::leak(b.into_boxed_slice())
             }
             Err(e) => {
-                eprintln!("g-pad: font {p} unreadable ({e}); using Dancing Script");
+                eprintln!("g-pad: font {p} unreadable ({e}); using Liberation Sans");
                 FONT_TTF
             }
         },
