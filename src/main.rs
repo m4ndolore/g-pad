@@ -23,6 +23,7 @@ mod evdev;
 mod fb;
 mod gesture;
 mod ink;
+mod learn;
 mod memory;
 mod notebook;
 mod page;
@@ -69,6 +70,9 @@ usage:
   g-pad --oracle-test [PNG]   run one oracle turn against PNG (default
                               /tmp/g-pad-page.png) and print the streamed
                               reply; verifies key + endpoint + model
+  g-pad --learn-sheets [DIR]  render sample Learn-mode worksheets for every
+                              level into DIR (default /tmp/learn-sheets) as
+                              PNGs; no display or oracle needed
   g-pad --version             print the version
 
 configuration lives in oracle.env next to the binary — see
@@ -94,6 +98,10 @@ enum State {
     /// A completed reply stays until an explicit dismissal or new turn.
     /// `more` is leftover reply text that did not fit this page.
     Lingering { region: BBox, more: String },
+    /// Learn mode: the child marked DONE and the tutor is reading the answer
+    /// region. `got` accumulates the streamed reply until it can be read as a
+    /// verdict; the child's ink stays on the page throughout.
+    LearnMarking { rx: OracleRx, pulse: Instant, blot_on: bool, since: Instant, got: String },
     FadingReply { stage: u32, next: Instant, region: BBox },
     /// The guide panel. `panel: None` = dismissed, waiting for pen-up so the
     /// dismissing touch doesn't leave a mark on the page.
@@ -175,6 +183,12 @@ fn main() {
                 }
             });
         }
+        // Diagnostic: render sample Learn worksheets to PNGs so the sheets can
+        // be reviewed (and shown to a parent) without a tablet in hand.
+        Some("--learn-sheets") => {
+            let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/learn-sheets");
+            std::process::exit(learn_sheets(dir));
+        }
         Some("--version" | "-V") => {
             println!("riddle {}", env!("CARGO_PKG_VERSION"));
             return;
@@ -235,6 +249,52 @@ fn oracle_test(png: &str) -> i32 {
     }
     println!("\n--- reply complete ({}ms, {} chars) ---", t0.elapsed().as_millis(), got.len());
     if got.trim().is_empty() { 1 } else { 0 }
+}
+
+/// Render four sample sheets per level into `dir`: the Learn-mode preview.
+fn learn_sheets(dir: &str) -> i32 {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("g-pad: cannot create {dir}: {e}");
+        return 1;
+    }
+    let Ok(ui_font) = FontRef::try_from_slice(ui::UI_FONT_TTF) else {
+        eprintln!("g-pad: bundled UI font unreadable");
+        return 1;
+    };
+    let mut buf = vec![0xFFu8; SCREEN_W * SCREEN_H * 4];
+    let ptr = buf.as_mut_ptr();
+    let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
+    for level in 1..=4u8 {
+        let mut session = learn::Session::start_at(level, 41 + level as u32);
+        for page in 0..4 {
+            session.draw(&mut surf, &ui_font);
+            let path = format!("{dir}/learn-L{level}-{page}.png");
+            if let Err(e) = dump_page(&surf, &path) {
+                eprintln!("g-pad: write {path}: {e}");
+                return 1;
+            }
+            println!("{path}");
+            session.next();
+        }
+    }
+    0
+}
+
+/// Write the whole page as an 8-bit grayscale PNG (full resolution).
+fn dump_page(surf: &Surface, path: &str) -> std::io::Result<()> {
+    let mut gray = vec![0u8; surf.w * surf.h];
+    for y in 0..surf.h {
+        for x in 0..surf.w {
+            gray[y * surf.w + x] = surf.luma(x as i32, y as i32);
+        }
+    }
+    let file = std::fs::File::create(path)?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), surf.w as u32, surf.h as u32);
+    enc.set_color(png::ColorType::Grayscale);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.set_compression(png::Compression::Fast);
+    let mut writer = enc.write_header().map_err(std::io::Error::other)?;
+    writer.write_image_data(&gray).map_err(std::io::Error::other)
 }
 
 /// What the diary sends alongside the page: its memory of recent turns and
@@ -313,6 +373,18 @@ fn run() -> std::io::Result<()> {
         eprintln!("g-pad: memory holds {} pages", s.entries.len());
     }
 
+    // Learn mode: the kids' tutor page. The pad remembers which page it was
+    // left on (RIDDLE_PAGE=learn dedicates a boot). See docs/learn-mode.md.
+    let mut learn_session: Option<learn::Session> = match prefs.page {
+        preferences::Page::Learn => Some(learn::Session::start()),
+        preferences::Page::Pad => None,
+    };
+    if let Some(ref mut session) = learn_session {
+        session.draw(&mut surf, &ui_font);
+        disp.update_all(surf.w, surf.h);
+        eprintln!("g-pad: learn mode open (level {})", session.level());
+    }
+
     // Warm the oracle now: pi loads Node + extensions + codex auth ONCE here,
     // while you're still picking up the pen, so replies pay only model latency.
     let oracle = match oracle::Oracle::spawn(store.is_some()) {
@@ -361,6 +433,8 @@ fn run() -> std::io::Result<()> {
         .unwrap_or(4);
     // Deliberate send: latched when the user draws the send rule.
     let mut send_mode: Option<CommitMode> = None;
+    // Learn mode: latched when a stroke lands in a decision box.
+    let mut learn_tick: Option<LearnTick> = None;
     let mut drawer_selection: Option<usize> = None;
     let mut drawer_scroll = 0i32;
     let mut controls_saved: Option<Vec<u8>> = None;
@@ -409,7 +483,7 @@ fn run() -> std::io::Result<()> {
                 .then(ask::newest_xochitl_page)
                 .flatten()
         });
-    if let Some(png) = ask_png {
+    if let (Some(png), true) = (ask_png, learn_session.is_none()) {
         if let Some(ref o) = oracle {
             turn_id = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -503,7 +577,8 @@ fn run() -> std::io::Result<()> {
                 // (a fresh sheet past an inked last page), back to earlier
                 // sheets. Overlays come down first so they are not parked
                 // into the page snapshot.
-                touch::Gesture::Page(delta) if matches!(state, State::Listening { .. }) && !pen_down => {
+                touch::Gesture::Page(delta)
+                    if matches!(state, State::Listening { .. }) && !pen_down && learn_session.is_none() => {
                     let mut came_down = false;
                     if let Some(p) = palette.take() {
                         p.close(&mut surf);
@@ -566,7 +641,7 @@ fn run() -> std::io::Result<()> {
                         disp.update(0, 0, SCREEN_W as i32, 82, false);
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
                             &mut user_ink, &mut notebook, &mut send_mode, &mut sleep_requested,
-                            &mut prefs, &mut idle_commit, drawer_selection, drawer_scroll);
+                            &mut prefs, &mut idle_commit, drawer_selection, drawer_scroll, &mut learn_session);
                     } else if matches!(state, State::Settings { .. }) {
                         let action = ui::settings_action(x, y);
                         match action {
@@ -574,6 +649,28 @@ fn run() -> std::io::Result<()> {
                             ui::Action::ToggleIdle => {
                                 prefs.idle_send_ms = if prefs.idle_send_ms == 0 { 2800 } else { 0 };
                                 idle_commit = Duration::from_millis(prefs.idle_send_ms); let _ = prefs.save();
+                            }
+                            ui::Action::ToggleLearn => {
+                                prefs.page = match prefs.page {
+                                    preferences::Page::Learn => preferences::Page::Pad,
+                                    preferences::Page::Pad => preferences::Page::Learn,
+                                };
+                                let _ = prefs.save();
+                                // Land directly on the chosen page, clean.
+                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                                user_ink.clear();
+                                surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+                                learn_session = match prefs.page {
+                                    preferences::Page::Learn => {
+                                        let mut s = learn::Session::start();
+                                        s.draw(&mut surf, &ui_font);
+                                        Some(s)
+                                    }
+                                    preferences::Page::Pad => None,
+                                };
+                                disp.full_refresh(surf.w, surf.h);
+                                state = State::Listening { last_pen: None };
+                                continue;
                             }
                             ui::Action::Close => {
                                 close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
@@ -598,9 +695,10 @@ fn run() -> std::io::Result<()> {
                             selected_tool = tool;
                             eprintln!("g-pad: pen tip is now the {tool:?}");
                         }
-                    } else if matches!(state, State::Listening { .. }) && !pen_down {
+                    } else if matches!(state, State::Listening { .. }) && !pen_down && learn_session.is_none() {
                         // A bare finger tap on the open page summons the pen
-                        // palette where the finger landed.
+                        // palette where the finger landed. Not in Learn mode:
+                        // a child's stray finger must never grow chrome.
                         let p = ui::Palette::open(&mut surf, &ui_font, x, y, selected_tool);
                         let (px, py, pw, ph) = p.region().rect();
                         disp.update(px, py, pw, ph, false);
@@ -744,7 +842,13 @@ fn run() -> std::io::Result<()> {
                         user_ink.pen_up();
                         if let State::Listening { ref mut last_pen } = state {
                             *last_pen = Some(Instant::now());
-                            if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
+                            if let Some(ref session) = learn_session {
+                                // Anchored marks, never shape recognition: a
+                                // stroke landing in a decision box is a command.
+                                if let Some(tick) = learn_mark(&mut user_ink, session, &ui_font, &mut surf, &disp) {
+                                    learn_tick = Some(tick);
+                                }
+                            } else if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
                             }
                         }
@@ -869,7 +973,13 @@ fn run() -> std::io::Result<()> {
                         user_ink.pen_up();
                         if let State::Listening { ref mut last_pen } = state {
                             *last_pen = Some(Instant::now());
-                            if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
+                            if let Some(ref session) = learn_session {
+                                // Anchored marks, never shape recognition: a
+                                // stroke landing in a decision box is a command.
+                                if let Some(tick) = learn_mark(&mut user_ink, session, &ui_font, &mut surf, &disp) {
+                                    learn_tick = Some(tick);
+                                }
+                            } else if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
                             }
                         }
@@ -896,11 +1006,63 @@ fn run() -> std::io::Result<()> {
             last_flush = Instant::now();
         }
 
+        // ---- learn mode: an absorbed decision-box mark acts here ----
+        if let Some(tick) = learn_tick.take() {
+            if matches!(state, State::Listening { .. }) {
+                if let Some(ref mut session) = learn_session {
+                    match tick {
+                        LearnTick::New => {
+                            session.next();
+                            user_ink.clear();
+                            session.draw(&mut surf, &ui_font);
+                            disp.full_refresh(surf.w, surf.h);
+                        }
+                        LearnTick::Done => {
+                            clear_feedback(&mut surf, &disp);
+                            if !user_ink.has_ink_in(&session.hits.answer) {
+                                // An empty blank needs no oracle to mark.
+                                turn_failed = true;
+                                let plan = plan_reply(&font, "Write your answer first, then mark DONE.",
+                                    Some(learn::sheet::feedback_y()));
+                                state = State::Replying { plan, next: Instant::now(), rx: None };
+                            } else if let Some(ref o) = oracle {
+                                if let Err(e) = ink::region_png(&surf, session.hits.answer, PNG_PATH) {
+                                    eprintln!("g-pad: rasterize answer failed: {e}");
+                                }
+                                let ctx = oracle::TurnContext {
+                                    instruction: Some(session.instruction()),
+                                    ..Default::default()
+                                };
+                                let (tx, rx) = mpsc::channel();
+                                o.ask(PNG_PATH, &ctx, tx);
+                                if std::env::var_os("RIDDLE_KEEP_PAGE").is_none() {
+                                    let _ = std::fs::remove_file(PNG_PATH);
+                                }
+                                state = State::LearnMarking {
+                                    rx,
+                                    pulse: Instant::now(),
+                                    blot_on: false,
+                                    since: Instant::now(),
+                                    got: String::new(),
+                                };
+                            } else {
+                                turn_failed = true;
+                                let plan = plan_reply(&font, &oracle_excuse("no oracle"),
+                                    Some(learn::sheet::feedback_y()));
+                                state = State::Replying { plan, next: Instant::now(), rx: None };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- state machine ----
         state = match state {
             State::Listening { last_pen } => match last_pen {
                 Some(t)
-                    if !pen_down
+                    if learn_session.is_none()
+                        && !pen_down
                         && (send_mode.is_some()
                             || (!idle_commit.is_zero() && t.elapsed() >= idle_commit))
                         && !user_ink.is_empty() =>
@@ -1142,7 +1304,98 @@ fn run() -> std::io::Result<()> {
                 }
             }
 
-            State::Lingering { region, more } => State::Lingering { region, more },
+            State::Lingering { region, more } => {
+                if learn_session.is_some() {
+                    // Learn feedback stays painted; the page listens again at
+                    // once so the child can keep writing or retry.
+                    State::Listening { last_pen: None }
+                } else {
+                    State::Lingering { region, more }
+                }
+            }
+
+            State::LearnMarking { rx, pulse, blot_on, since, mut got } => {
+                // The thinking blot pulses above the DONE box the child marked.
+                let (bx, by) = learn_session
+                    .as_ref()
+                    .map(|s| ((s.hits.done.x0 + s.hits.done.x1) / 2, (s.hits.done.y0 - 40).max(20)))
+                    .unwrap_or((THINK_X, THINK_Y));
+                let clear_blot = |surf: &mut Surface, disp: &display::Display| {
+                    surf.fill_rect((bx - 14).max(0) as usize, (by - 14).max(0) as usize, 28, 28, WHITE);
+                    disp.update(bx - 14, by - 14, 28, 28, true);
+                };
+                match rx.try_recv() {
+                    Ok(Ok(Event::Ink(text))) => {
+                        if !got.is_empty() {
+                            got.push(' ');
+                        }
+                        got.push_str(&text);
+                        State::LearnMarking { rx, pulse, blot_on, since, got }
+                    }
+                    // Conjuring and transcription have no meaning on a worksheet.
+                    Ok(Ok(_)) => State::LearnMarking { rx, pulse, blot_on, since, got },
+                    Ok(Err(e)) => {
+                        eprintln!("g-pad: tutor failed: {e}");
+                        clear_blot(&mut surf, &disp);
+                        turn_failed = true;
+                        let plan = plan_reply(&font, &oracle_excuse(&e), Some(learn::sheet::feedback_y()));
+                        State::Replying { plan, next: Instant::now(), rx: None }
+                    }
+                    Err(mpsc::TryRecvError::Empty) => {
+                        if since.elapsed() >= ORACLE_PATIENCE {
+                            eprintln!("g-pad: tutor timed out after {}s", ORACLE_PATIENCE.as_secs());
+                            clear_blot(&mut surf, &disp);
+                            turn_failed = true;
+                            let plan = plan_reply(&font, &oracle_excuse("timed out"), Some(learn::sheet::feedback_y()));
+                            State::Replying { plan, next: Instant::now(), rx: None }
+                        } else if pulse.elapsed() >= Duration::from_millis(600) {
+                            if blot_on {
+                                surf.fill_rect((bx - 14).max(0) as usize, (by - 14).max(0) as usize, 28, 28, WHITE);
+                            } else {
+                                surf.stamp(bx, by, 9, BLACK);
+                            }
+                            disp.update(bx - 14, by - 14, 28, 28, true);
+                            State::LearnMarking { rx, pulse: Instant::now(), blot_on: !blot_on, since, got }
+                        } else {
+                            State::LearnMarking { rx, pulse, blot_on, since, got }
+                        }
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        clear_blot(&mut surf, &disp);
+                        let (verdict, feedback) = learn::verdict::parse(got.trim());
+                        let mut mark_dirty = BBox::empty();
+                        if let Some(ref mut session) = learn_session {
+                            session.record(verdict);
+                            let answer = session.hits.answer;
+                            mark_dirty = match verdict {
+                                learn::Verdict::Yes => learn::sheet::draw_check(&mut surf, &answer),
+                                learn::Verdict::Almost | learn::Verdict::No => {
+                                    learn::sheet::draw_look_again(&mut surf, &answer)
+                                }
+                                learn::Verdict::Unknown => BBox::empty(),
+                            };
+                        }
+                        if !mark_dirty.is_empty() {
+                            let (x, y, w, h) = mark_dirty.rect();
+                            disp.update(x, y, w, h, true);
+                        }
+                        let text = if feedback.trim().is_empty() {
+                            match verdict {
+                                learn::Verdict::Yes => "Yes! Well done.".to_string(),
+                                learn::Verdict::Almost => "So close! Look once more.".to_string(),
+                                learn::Verdict::No => "Not yet. Try again!".to_string(),
+                                learn::Verdict::Unknown => oracle_excuse("empty reply"),
+                            }
+                        } else {
+                            feedback
+                        };
+                        // A worksheet turn never enters the diary's memory.
+                        turn_failed = true;
+                        let plan = plan_reply(&font, &text, Some(learn::sheet::feedback_y()));
+                        State::Replying { plan, next: Instant::now(), rx: None }
+                    }
+                }
+            }
 
 
             State::Conjuring { mut plan, next, saved } => {
@@ -1317,7 +1570,26 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
     ui_font: &FontRef, store: &Option<memory::MemoryStore>, user_ink: &mut ink::Ink,
     notebook: &mut notebook::Notebook, send_mode: &mut Option<CommitMode>, sleep_requested: &mut bool,
     prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
-    selection: Option<usize>, scroll: i32) {
+    selection: Option<usize>, scroll: i32, learn: &mut Option<learn::Session>) {
+    // Learn mode repurposes the strip: committing is the DONE box, so SEND and
+    // DISMISS do nothing; ERASE re-deals the same sheet clean; NEW PAGE deals
+    // a fresh problem. Everything else behaves as on the pad.
+    if let Some(session) = learn.as_mut() {
+        match action {
+            ui::Action::Send | ui::Action::Dismiss => return,
+            ui::Action::Erase | ui::Action::NewPage => {
+                if action == ui::Action::NewPage {
+                    session.next();
+                }
+                user_ink.clear();
+                session.draw(surf, ui_font);
+                disp.full_refresh(surf.w, surf.h);
+                *state = State::Listening { last_pen: None };
+                return;
+            }
+            _ => {}
+        }
+    }
     match action {
         ui::Action::Send => *send_mode = Some(CommitMode::Capture),
         ui::Action::Erase => {
@@ -1415,6 +1687,43 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
         }
     }
+}
+
+/// Which decision box a Learn-mode mark landed in.
+#[derive(Clone, Copy)]
+enum LearnTick {
+    Done,
+    New,
+}
+
+/// An anchored Learn-mode mark: if the just-finished stroke's centroid landed
+/// in a decision box, absorb the stroke (pop it, white the ink out, restore
+/// the box under it) and report which box. Ink anywhere else is the child's
+/// answer and stays on the page. Form never matters — a check, a scribble,
+/// and an "x" all mean the same deliberate thing: "that box".
+fn learn_mark(ink: &mut ink::Ink, session: &learn::Session, ui_font: &FontRef,
+    surf: &mut Surface, disp: &display::Display) -> Option<LearnTick> {
+    let (cx, cy) = ink.last_stroke_centroid()?;
+    let tick = match session.hits.hit(cx, cy) {
+        Some(learn::Target::Done) => LearnTick::Done,
+        Some(learn::Target::New) => LearnTick::New,
+        _ => return None,
+    };
+    if let Some(gone) = ink.pop_stroke() {
+        let (x, y, w, h) = gone.rect();
+        surf.fill_rect(x.max(0) as usize, y.max(0) as usize, w as usize, h as usize, WHITE);
+        learn::sheet::refresh_boxes(surf, ui_font);
+        disp.update(x, y, w, h, true);
+    }
+    Some(tick)
+}
+
+/// White out the tutor's previous feedback line so replies never stack.
+fn clear_feedback(surf: &mut Surface, disp: &display::Display) {
+    let region = learn::sheet::feedback_region();
+    let (x, y, w, h) = region.rect();
+    surf.fill_rect(x.max(0) as usize, y.max(0) as usize, w as usize, h as usize, WHITE);
+    disp.update(x, y, w, h, true);
 }
 
 /// If the most recent stroke is the "send rule" (a long flat line ruled under

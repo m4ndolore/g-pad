@@ -52,6 +52,10 @@ pub struct TurnContext {
     pub catalog_lines: Vec<String>,
     /// catalog_ids[i] is the memory id behind catalog number i+1.
     pub catalog_ids: Vec<u64>,
+    /// When set, this REPLACES the default per-turn instruction: a surface
+    /// (Learn mode's tutor) telling the model what this page is and how to
+    /// answer. It travels as user text so it works on both backends.
+    pub instruction: Option<String>,
 }
 
 /// Read-only description of exactly the non-image context for the next turn.
@@ -67,7 +71,7 @@ pub fn context_snapshot(store: &Option<crate::memory::MemoryStore>, turns: usize
     let context = match store {
         Some(s) => {
             let (catalog_lines, catalog_ids) = s.catalog(40);
-            TurnContext { history: s.recent_dialogue(turns), catalog_lines, catalog_ids }
+            TurnContext { history: s.recent_dialogue(turns), catalog_lines, catalog_ids, instruction: None }
         }
         None => TurnContext::default(),
     };
@@ -248,6 +252,9 @@ impl Oracle {
 
 /// The per-turn user text: memory catalog (when remembering) + instruction.
 fn turn_text(ctx: &TurnContext) -> String {
+    if let Some(instruction) = &ctx.instruction {
+        return instruction.clone();
+    }
     if ctx.catalog_lines.is_empty() {
         return "Reply to what is written on the page.".into();
     }
@@ -828,6 +835,7 @@ mod tests {
             history: vec![("line one\nline two".into(), "answer".into())],
             catalog_lines: vec!["1. exact catalog row".into()],
             catalog_ids: vec![77],
+            instruction: None,
         };
         let prompt = pi_turn_text(&ctx);
         assert!(prompt.contains("YOU: line one\nline two\nPAD: answer"));
@@ -845,6 +853,7 @@ mod tests {
             history: vec![],
             catalog_lines: vec!["1. garden notes".into()],
             catalog_ids: vec![1],
+            instruction: None,
         };
         let prompt = turn_text(&ctx);
         assert!(!prompt.contains("Memory catalog (newest first)"));

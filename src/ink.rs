@@ -124,15 +124,44 @@ impl Ink {
         self.last_erase = None;
     }
 
+    /// True if any finished stroke has a point inside `region` — the "did the
+    /// child actually write in the blank" test, immune to printed page ink.
+    pub fn has_ink_in(&self, region: &BBox) -> bool {
+        !region.is_empty()
+            && self.strokes.iter().flatten().any(|&(x, y, _)| {
+                x >= region.x0 && x <= region.x1 && y >= region.y0 && y <= region.y1
+            })
+    }
+
+    /// Centroid of the most recent finished stroke: where an anchored mark
+    /// landed. `None` when there is no finished stroke.
+    pub fn last_stroke_centroid(&self) -> Option<(i32, i32)> {
+        let s = self.strokes.last()?;
+        if s.is_empty() {
+            return None;
+        }
+        let n = s.len() as i64;
+        let (sx, sy) = s.iter().fold((0i64, 0i64), |(ax, ay), &(x, y, _)| (ax + x as i64, ay + y as i64));
+        Some(((sx / n) as i32, (sy / n) as i32))
+    }
+
     /// Rasterize the ink region to a grayscale PNG for the oracle.
     /// Crops to the ink bounding box and box-downscales so the long side stays
     /// ≤ 800px (at least 2x): the model reads handwriting fine at that scale,
     /// and image pixels are the dominant vision-token / latency cost.
     pub fn to_png(&self, surf: &Surface, path: &str) -> std::io::Result<()> {
-        if self.bbox.is_empty() {
+        region_png(surf, self.bbox, path)
+    }
+}
+
+/// Rasterize any page region to the oracle's grayscale PNG. Learn mode sends
+/// only the region the sheet declared as the answer, never the whole page.
+pub fn region_png(surf: &Surface, region: BBox, path: &str) -> std::io::Result<()> {
+    {
+        if region.is_empty() {
             return Err(std::io::Error::other("no ink"));
         }
-        let (bx, by, bw, bh) = self.bbox.rect();
+        let (bx, by, bw, bh) = region.rect();
         let x0 = (bx - 20).max(0) as usize;
         let y0 = (by - 20).max(0) as usize;
         let x1 = ((bx + bw + 20) as usize).min(surf.w);

@@ -57,6 +57,7 @@ pub enum Action {
     Dismiss,
     SetMode(Mode),
     ToggleIdle,
+    ToggleLearn,
     Quit,
 }
 
@@ -483,12 +484,18 @@ pub fn draw_settings(surf: &mut Surface, font: &FontRef, prefs: Preferences) -> 
     text(surf, font, if prefs.idle_send_ms == 0 { "OFF" } else { "ON" }, LABEL_PX, PAD, 570,
         if prefs.idle_send_ms == 0 { BLACK } else { BLUE });
 
+    // The kids' tutor: the same pen, a different page. See docs/learn-mode.md.
+    rule(surf, PAD, 650, PANEL_W - 2 * PAD, 2);
+    text(surf, font, "KIDS LEARN MODE", LABEL_PX, PAD, 700, BLACK);
+    text(surf, font, if prefs.page == crate::preferences::Page::Learn { "ON" } else { "OFF" },
+        LABEL_PX, PAD, 760, if prefs.page == crate::preferences::Page::Learn { BLUE } else { BLACK });
+
     // Leaving is a five-finger hold, which is not discoverable — nothing on
     // the page says so. Give it a tapped row too, and say what the gesture is
     // so the pad teaches it rather than hiding it.
-    rule(surf, PAD, 690, PANEL_W - 2 * PAD, 2);
-    text(surf, font, "LEAVE G-PAD", LABEL_PX, PAD, 755, BLACK);
-    text(surf, font, "OR HOLD FIVE FINGERS", LABEL_PX, PAD, 805, BLACK);
+    rule(surf, PAD, 850, PANEL_W - 2 * PAD, 2);
+    text(surf, font, "LEAVE G-PAD", LABEL_PX, PAD, 905, BLACK);
+    text(surf, font, "OR HOLD FIVE FINGERS", LABEL_PX, PAD, 955, BLACK);
 
     // Signature, at the foot of the one panel that is already a settled
     // surface rather than the writing page.
@@ -506,8 +513,9 @@ pub fn settings_action(x: i32, y: i32) -> Action {
     match y {
         250..=355 => Action::SetMode(Mode::Stealth),
         356..=470 => Action::SetMode(Mode::Guided),
-        480..=680 => Action::ToggleIdle,
-        700..=860 => Action::Quit,
+        480..=640 => Action::ToggleIdle,
+        660..=830 => Action::ToggleLearn,
+        860..=1010 => Action::Quit,
         _ => Action::None,
     }
 }
@@ -596,6 +604,9 @@ mod tests {
         assert_eq!(settings_action(40, 310), Action::SetMode(Mode::Stealth));
         assert_eq!(settings_action(40, 390), Action::SetMode(Mode::Guided));
         assert_eq!(settings_action(40, 570), Action::ToggleIdle);
+        assert_eq!(settings_action(40, 700), Action::ToggleLearn);
+        assert_eq!(settings_action(40, 760), Action::ToggleLearn);
+        assert_eq!(settings_action(40, 905), Action::Quit);
         assert_eq!(settings_action(40, 36), Action::Close);
         assert_eq!(settings_action(PANEL_W as i32 + 8, 310), Action::Close);
     }
