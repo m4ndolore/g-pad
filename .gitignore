@@ -7,3 +7,6 @@
 
 # Never commit a real API key.
 /oracle.env
+
+# Agent session state and worktrees.
+/.claude/

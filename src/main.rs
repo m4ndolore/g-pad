@@ -13,9 +13,9 @@ mod ask;
 // docs/daily-brief.md. Its JSON scanner is shared with the Claude bridge.
 #[allow(dead_code)]
 mod brief;
-// The session reader is laid out and tested, but only the drawer's AGENTS tab
-// is wired; the full page (bridge::layout_session) has no call site yet. See
-// docs/claude-bridge.md.
+// Agent mode: the AGENTS tab is the board, a tapped row opens the full turn
+// page, and a poll thread feeds both when RIDDLE_BRIDGE_URL names a hub. See
+// docs/claude-bridge.md and docs/plans/2026-08-30-anthink-hub-design.md.
 #[allow(dead_code)]
 mod bridge;
 mod display;
@@ -118,6 +118,32 @@ enum State {
     #[allow(dead_code)]
     ExpandedConversation { panel: Option<ui::Drawer>, return_to: Box<State> },
     Settings { saved: Option<Vec<u8>>, return_to: Box<State> },
+    /// One agent session read full-page (the turn page). `saved` is the whole
+    /// canvas underneath. Touch acts only on named targets: ← AGENTS returns
+    /// to the board, × (or the leftward swipe) closes to the canvas, the
+    /// vertical swipe flips pages, and the rest of the page ignores fingers —
+    /// the pen alone commands. `boxr` is the hit map drawing returned;
+    /// `armed` is the destructive-confirmation state (first tick arms, second
+    /// sends); `status` is the last nudge's outcome; `page` is which page is
+    /// open — 0 the newest, the swipe pages backward.
+    SessionPage {
+        session: bridge::Session,
+        remaining: usize,
+        stale: bool,
+        armed: bool,
+        status: Option<String>,
+        boxr: Option<ui::DecisionBox>,
+        page: usize,
+        saved: Vec<u8>,
+        return_to: Box<State>,
+    },
+}
+
+/// What a pen stroke on the turn page meant, once anchored to the hit map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageMark {
+    Tick,
+    Strike,
 }
 
 #[derive(Clone, Copy)]
@@ -484,6 +510,10 @@ fn run() -> std::io::Result<()> {
     let font = FontRef::try_from_slice(font_bytes).map_err(std::io::Error::other)?;
     let ui_font = FontRef::try_from_slice(ui::UI_FONT_TTF).map_err(std::io::Error::other)?;
 
+    // Agent sessions arrive by poll, when a hub is configured. Dormant
+    // without RIDDLE_BRIDGE_URL.
+    bridge::spawn_poll();
+
     let (disp, mut surf) = display::Display::open()?;
     // Anything that isn't the qtfb window owns the panel, raw input devices,
     // and power button: Quill on either tablet, or the legacy rm2fb fallback.
@@ -728,20 +758,18 @@ fn run() -> std::io::Result<()> {
                         }
                     }
                 }
-                touch::Gesture::OpenDrawer if matches!(state, State::Listening { .. } | State::Lingering { .. }) => {
+                // The drawer opens over the canvas AND over an open turn
+                // page — reading one session must not wall off the rest of
+                // the board. Whatever was open rides in `return_to`.
+                touch::Gesture::OpenDrawer if matches!(state,
+                    State::Listening { .. } | State::Lingering { .. } | State::SessionPage { .. }) => {
                     if let Some(p) = palette.take() {
                         let (px, py, pw, ph) = p.close(&mut surf).rect();
                         disp.update(px, py, pw, ph, false);
                         palette_until = None;
                     }
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
-                    let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
-                    let thread = store.as_ref().and_then(|s| s.conversations().len().checked_sub(1));
-                    let panel = ui::Drawer::open(&surf, ui::DrawerKind::History, drawer_selection, 0, thread);
-                    let snapshot = oracle::context_snapshot(&store, memory_turns());
-                    ui::draw_drawer(&mut surf, &ui_font, &store, &snapshot, &panel);
-                    disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
-                    state = State::Drawer { panel: Some(panel), return_to: Box::new(old) };
+                    open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection);
                 }
                 touch::Gesture::CloseDrawer => {
                     close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
@@ -749,6 +777,12 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::Page(delta) if matches!(state, State::Lingering { .. }) => {
                     let _ = step_reply_page(delta, &font, reply_w, &mut reply_pages, &mut reply_page,
                         &mut state, &mut surf, &disp);
+                }
+                // The turn page flips on the swipe alone (not the two-finger
+                // scroll, which fires once per frame and would tear through
+                // every page in one drag).
+                touch::Gesture::Page(delta) if matches!(state, State::SessionPage { .. }) => {
+                    session_page_flip(delta, &mut state, &mut surf, &disp, &ui_font);
                 }
                 // Flipping the writing canvas: forward through the notebook
                 // (a fresh sheet past an inked last page), back to earlier
@@ -865,6 +899,21 @@ fn run() -> std::io::Result<()> {
                         }
                         ui::draw_settings(&mut surf, &ui_font, prefs);
                         disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
+                    } else if matches!(state, State::SessionPage { .. }) {
+                        // Specific targets, not a whole-page trigger — the
+                        // first tap-anywhere-closes build read as breakage
+                        // on hardware: an idle touch threw the page away.
+                        // ← AGENTS returns to the board, × closes to the
+                        // canvas, and the rest of the page is inert.
+                        match ui::session_page_action(x, y) {
+                            ui::Action::Sessions => {
+                                open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection);
+                            }
+                            ui::Action::Close => {
+                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                            }
+                            _ => {}
+                        }
                     } else if let Some(p) = palette.take() {
                         // A tap on a row picks that tool; anywhere else just
                         // puts the page back.
@@ -1005,6 +1054,8 @@ fn run() -> std::io::Result<()> {
                 // touch the capacitive sensor.  Never let that contact
                 // participate in touch gestures (especially five-finger
                 // quit); the pen is the authoritative input device here.
+                // The turn page is a pen surface like the canvas: while the
+                // pen is near, the palm must not tap the page closed.
                 if s.proximity && !matches!(state,
                     State::Settings { .. } | State::Drawer { .. }
                     | State::ExpandedConversation { .. })
@@ -1032,6 +1083,8 @@ fn run() -> std::io::Result<()> {
                             } else if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
                             }
+                        } else if matches!(state, State::SessionPage { .. }) {
+                            session_page_mark(&mut state, &mut user_ink, &mut surf, &disp, &ui_font);
                         }
                     }
                     continue;
@@ -1083,6 +1136,20 @@ fn run() -> std::io::Result<()> {
                         } else if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Page(1));
                             control_pen_latched = true;
+                        }
+                    }
+                    // The turn page: the pen marks. Ink lands like anywhere
+                    // else; pen-up reads it against the hit map and the
+                    // redraw absorbs it.
+                    State::SessionPage { .. } => {
+                        pen_down = true;
+                        if s.tool == pen::Tool::Pen {
+                            let r = 2 + s.pressure * 3 / pen::MAX_PRESSURE;
+                            let d = user_ink.pen_point(&mut surf, s.x, s.y, r);
+                            if !d.is_empty() {
+                                ink_dirty.add(d.x0, d.y0, 0);
+                                ink_dirty.add(d.x1, d.y1, 0);
+                            }
                         }
                     }
                     _ => {}
@@ -1139,7 +1206,8 @@ fn run() -> std::io::Result<()> {
                             queued_gestures.push(touch::Gesture::Page(1));
                             control_pen_latched = true;
                         }
-                    } else if matches!(state, State::Settings { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
+                    } else if matches!(state, State::Settings { .. } | State::Drawer { .. }
+                        | State::ExpandedConversation { .. } | State::SessionPage { .. }) {
                         if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
                             control_pen_latched = true;
@@ -1779,6 +1847,8 @@ fn run() -> std::io::Result<()> {
                 None if stylus_on => State::Settings { saved: None, return_to },
                 None => *return_to,
             },
+            // The turn page rests until the reader closes it.
+            s @ State::SessionPage { .. } => s,
 
             State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
@@ -1849,6 +1919,20 @@ fn reply_below_writing(wrote: BBox) -> (i32, bool) {
     }
 }
 
+/// Open the drawer on the AGENTS board over whatever is on screen — the
+/// canvas or an open turn page. What was open rides in `return_to`, so
+/// closing the drawer puts it back. History and Corpus stay one tab-tap
+/// away inside the drawer.
+fn open_drawer(state: &mut State, surf: &mut Surface, disp: &display::Display,
+    ui_font: &FontRef, store: &Option<memory::MemoryStore>, selection: Option<usize>) {
+    let old = std::mem::replace(state, State::Listening { last_pen: None });
+    let panel = ui::Drawer::open(surf, ui::DrawerKind::Sessions, selection, 0, None);
+    let snapshot = oracle::context_snapshot(store, memory_turns());
+    ui::draw_drawer(surf, ui_font, store, &snapshot, &panel);
+    disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
+    *state = State::Drawer { panel: Some(panel), return_to: Box::new(old) };
+}
+
 fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
     selection: &mut Option<usize>, scroll: &mut i32) {
     let old = std::mem::replace(state, State::Listening { last_pen: None });
@@ -1862,8 +1946,105 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes);
             disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
+        State::SessionPage { saved, return_to, .. } => {
+            surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
+            disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
+        }
         other => *state = other,
     }
+}
+
+/// Read the stroke just finished on the turn page against the hit map, act,
+/// and redraw — the redraw absorbs the ink, so a command leaves no mark.
+///
+/// Approval is tiered by consequence, and until the hub reports tiers every
+/// pending action counts as destructive: the first tick arms the box, the
+/// second sends. Reject is always cheaper — a strike takes effect at once.
+/// See docs/anthink-interaction.md.
+fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
+    disp: &display::Display, ui_font: &FontRef) {
+    let Some(stroke) = ink.stroke_list().last().cloned() else { return };
+    let _ = ink.pop_stroke();
+    let State::SessionPage { session, remaining, stale, armed, status, boxr, page, .. } = state else {
+        return;
+    };
+    let mut sb = BBox::empty();
+    for &(x, y, r) in &stroke {
+        sb.add(x, y, r);
+    }
+    match boxr.as_ref().and_then(|b| classify_mark(&stroke, &sb, b)) {
+        // A mark that hit nothing is a note. Its ink stays on the page (the
+        // stroke is already absorbed from the data, so it can never be
+        // committed) — wiping it instantly read as breakage on hardware.
+        None => return,
+        Some(PageMark::Strike) => {
+            // Only a pending action has something to reject.
+            if boxr.map(|b| b.decision) == Some(ui::Decision::Approve) {
+                *status = Some(match bridge::post_nudge(&session.id, "strike", None) {
+                    Ok(()) => "REJECTED · SENT".to_string(),
+                    Err(e) => e.to_uppercase(),
+                });
+                *armed = false;
+            }
+        }
+        Some(PageMark::Tick) if *armed => {
+            let sent = match boxr.map(|b| b.decision) {
+                Some(ui::Decision::Continue) => bridge::post_nudge(&session.id, "text", Some("continue")),
+                _ => bridge::post_nudge(&session.id, "tick", None),
+            };
+            *status = Some(match sent {
+                Ok(()) => "SENT".to_string(),
+                Err(e) => e.to_uppercase(),
+            });
+            *armed = false;
+        }
+        Some(PageMark::Tick) => {
+            *armed = true;
+            *status = None;
+        }
+    }
+    *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
+        status.as_deref(), *page);
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+}
+
+/// Flip the turn page: a downward swipe pages back to earlier turns, an
+/// upward swipe returns toward the newest. The whole page redraws (the box
+/// and its hit map ride along), and a flip past either end simply holds.
+fn session_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
+    disp: &display::Display, ui_font: &FontRef) {
+    let State::SessionPage { session, remaining, stale, armed, status, boxr, page, .. } = state else {
+        return;
+    };
+    let pages = ui::session_page_count(ui_font, session);
+    let want = if delta < 0 {
+        (*page + 1).min(pages.saturating_sub(1))
+    } else {
+        page.saturating_sub(1)
+    };
+    if want == *page {
+        return;
+    }
+    *page = want;
+    *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
+        status.as_deref(), *page);
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+}
+
+/// Anchored reading: where the mark landed, plus one cheap global property.
+/// A wide flat stroke through the box is the strike; any other deliberate
+/// mark whose center is inside the box is the tick.
+fn classify_mark(stroke: &[(i32, i32, i32)], sb: &BBox, b: &ui::DecisionBox) -> Option<PageMark> {
+    let (bx0, by0) = (b.x as i32, b.y as i32);
+    let (bx1, by1) = (bx0 + b.w as i32, by0 + b.h as i32);
+    if sb.x0 >= bx1 || sb.x1 <= bx0 || sb.y0 >= by1 || sb.y1 <= by0 {
+        return None;
+    }
+    if gesture::looks_like_send_rule(stroke, (b.w / 4) as i32) {
+        return Some(PageMark::Strike);
+    }
+    let (cx, cy) = ((sb.x0 + sb.x1) / 2, (sb.y0 + sb.y1) / 2);
+    (cx >= bx0 && cx < bx1 && cy >= by0 && cy < by1).then_some(PageMark::Tick)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1959,6 +2140,30 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
     if let ui::Action::Replay(id) = action {
         close_overlay(state, surf, disp, selection, scroll);
         if let Some(next) = conjure(reply_font, store, id, surf, disp) { *state = next; }
+        return;
+    }
+    if let ui::Action::OpenSession(i) = action {
+        // Snapshot the session before the drawer closes; a poll can land at
+        // any moment and the page should show what the row showed.
+        let held = crate::bridge::held();
+        let list = crate::bridge::readable(&held);
+        let Some(session) = list.get(i).map(|s| (*s).clone()) else { return };
+        let remaining = list.len().saturating_sub(1);
+        close_overlay(state, surf, disp, selection, scroll);
+        // A session picked from a page's own drawer REPLACES that page
+        // rather than stacking on it: the new page inherits the canvas
+        // saved underneath, so × always closes to the canvas in one step
+        // and hopping between sessions cannot pile up saved screens.
+        let (saved, old) = match std::mem::replace(state, State::Listening { last_pen: None }) {
+            State::SessionPage { saved, return_to, .. } => (saved, *return_to),
+            other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
+        };
+        let boxr = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale, false, None, 0);
+        disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+        *state = State::SessionPage {
+            session, remaining, stale: held.stale, armed: false, status: None, boxr,
+            page: 0, saved, return_to: Box::new(old),
+        };
         return;
     }
     let mut redraw = false;
@@ -2330,6 +2535,55 @@ fn step_reply_page(dir: i32, font: &FontRef, reply_w: i32, pages: &mut Vec<Strin
 #[cfg(test)]
 mod ux_tests {
     use super::*;
+
+    fn decision_box() -> ui::DecisionBox {
+        ui::DecisionBox { x: 44, y: 1600, w: 1316, h: 96, decision: ui::Decision::Approve }
+    }
+
+    fn stroke_between(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<(i32, i32, i32)> {
+        (0..=20)
+            .map(|i| (x0 + (x1 - x0) * i / 20, y0 + (y1 - y0) * i / 20, 2))
+            .collect()
+    }
+
+    fn bbox_of(stroke: &[(i32, i32, i32)]) -> BBox {
+        let mut b = BBox::empty();
+        for &(x, y, r) in stroke {
+            b.add(x, y, r);
+        }
+        b
+    }
+
+    #[test]
+    fn a_check_in_the_box_is_a_tick_and_a_flat_stroke_is_a_strike() {
+        let b = decision_box();
+        let tick = stroke_between(600, 1630, 660, 1680);
+        assert_eq!(classify_mark(&tick, &bbox_of(&tick), &b), Some(PageMark::Tick));
+        let strike = stroke_between(200, 1650, 1100, 1655);
+        assert_eq!(classify_mark(&strike, &bbox_of(&strike), &b), Some(PageMark::Strike));
+    }
+
+    #[test]
+    fn ink_outside_the_box_is_a_note_never_a_command() {
+        // The anchoring rule: the same "v" means different things in
+        // different places. Outside the box it commands nothing.
+        let b = decision_box();
+        let margin = stroke_between(600, 400, 660, 450);
+        assert_eq!(classify_mark(&margin, &bbox_of(&margin), &b), None);
+        let flat_above = stroke_between(200, 900, 1100, 905);
+        assert_eq!(classify_mark(&flat_above, &bbox_of(&flat_above), &b), None);
+    }
+
+    #[test]
+    fn a_mark_straddling_the_box_edge_counts_only_if_centered_inside() {
+        let b = decision_box();
+        // Center above the top edge: overlaps, but not aimed at the box.
+        let straddle = stroke_between(600, 1500, 620, 1620);
+        assert_eq!(classify_mark(&straddle, &bbox_of(&straddle), &b), None);
+        // Center inside: aimed.
+        let aimed = stroke_between(600, 1590, 620, 1690);
+        assert_eq!(classify_mark(&aimed, &bbox_of(&aimed), &b), Some(PageMark::Tick));
+    }
 
     #[test]
     fn reply_starts_at_the_top_writing_line() {

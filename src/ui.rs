@@ -46,6 +46,9 @@ pub enum Action {
     History,
     Corpus,
     Sessions,
+    /// Open one agent session as a full page. The index is a row on the
+    /// board, in `bridge::readable` order.
+    OpenSession(usize),
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -90,7 +93,17 @@ impl Drawer {
             if x < TAB_SESSIONS_X { return Action::Corpus; }
             return Action::Sessions;
         }
-        // Corpus and Sessions are read-only: nothing below the header is a target.
+        // The AGENTS tab is a selector: tick a row, open that session. This
+        // is navigation, which writes nothing — the read-only rule was only
+        // ever about capture (see docs/anthink-interaction.md).
+        if self.kind == DrawerKind::Sessions {
+            let total = crate::bridge::readable(&crate::bridge::held()).len();
+            return match session_index_at(y) {
+                Some(i) => Action::OpenSession(i + session_scroll(total, self.scroll)),
+                None => Action::None,
+            };
+        }
+        // Corpus is read-only: nothing below the header is a target.
         if self.kind != DrawerKind::History { return Action::None; }
         let Some(s) = store else { return Action::None };
         let convs = s.conversations();
@@ -127,7 +140,7 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
     match drawer.kind {
         DrawerKind::History => draw_history(surf, font, store, drawer),
         DrawerKind::Corpus => draw_corpus(surf, font, store, snapshot, drawer.scroll),
-        DrawerKind::Sessions => draw_sessions(surf, font, &crate::bridge::held()),
+        DrawerKind::Sessions => draw_sessions(surf, font, &crate::bridge::held(), drawer.scroll),
     }
 }
 
@@ -156,37 +169,216 @@ fn draw_history(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStore>,
 /// which measures against the whole screen rather than this half-width panel —
 /// whether reading wants the drawer or the page is the open question in
 /// `docs/claude-bridge.md`, and this is the cheap half of the answer.
-fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bridge) {
+fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bridge, scroll: i32) {
     let sessions = crate::bridge::readable(bridge);
     if sessions.is_empty() {
         let msg = if bridge.stale { "NO SESSIONS · NOT REFRESHED" } else { "NO AGENT SESSIONS" };
         text(surf, font, msg, LABEL_PX, PAD, 170, BLACK);
         return;
     }
+    let skipped = session_scroll(sessions.len(), scroll);
     let mut y = HEADER_H as usize + 16;
     let mut shown = 0usize;
-    for s in &sessions {
+    for s in &sessions[skipped..] {
         if y + CONV_ROW_H > SCREEN_H { break; }
         let meta = if s.updated.is_empty() {
             s.state.to_uppercase()
         } else {
             format!("{} · {}", s.state.to_uppercase(), s.updated)
         };
-        // The last turn is the one worth reading at a glance.
-        let last = s.turns.iter().rev().find(|t| !t.text.trim().is_empty());
-        let preview = last.map(|t| one_line(&t.text, 42)).unwrap_or_else(|| "(NOTHING YET)".into());
+        // Where the agent is working identifies a row faster than what it
+        // last said — the first hardware read found last-line previews
+        // interchangeable. An old hub sends no cwd; fall back to the preview.
+        let place = if s.cwd.is_empty() {
+            let last = s.turns.iter().rev().find(|t| !t.text.trim().is_empty());
+            last.map(|t| one_line(&t.text, 42)).unwrap_or_else(|| "(NOTHING YET)".into())
+        } else {
+            crate::page::tail(&s.cwd, 42)
+        };
         text(surf, font, &one_line(&s.title, 34), LABEL_PX, PAD, y, BLACK);
         text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
-        text(surf, font, &preview, LABEL_PX, PAD, y + 84, BLACK);
+        text(surf, font, &place, LABEL_PX, PAD, y + 84, BLACK);
         rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
         y += CONV_ROW_H;
         shown += 1;
     }
     // Say what was left out — silent truncation reads as "that was everything".
-    let label = sessions_footer(sessions.len(), shown, bridge.stale);
+    let label = sessions_footer(sessions.len() - skipped, shown, bridge.stale);
     if !label.is_empty() {
         text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
     }
+}
+
+/// The scroll offset the board actually uses: never past the last session,
+/// so the list cannot scroll into blankness. Shared by drawing and tapping,
+/// which must agree on which row is which.
+fn session_scroll(total: usize, scroll: i32) -> usize {
+    (scroll.max(0) as usize).min(total.saturating_sub(1))
+}
+
+/// Which board row a tap landed on. Mirrors `draw_sessions` geometry: rows
+/// from `HEADER_H + 16`, `CONV_ROW_H` tall, and only rows that fully fit are
+/// drawn — a tap below the drawn rows targets nothing.
+fn session_index_at(y: i32) -> Option<usize> {
+    let top = HEADER_H + 16;
+    if y < top {
+        return None;
+    }
+    let i = ((y - top) as usize) / CONV_ROW_H;
+    (top as usize + (i + 1) * CONV_ROW_H <= SCREEN_H).then_some(i)
+}
+
+/// What a tick on the decision box means for this session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    /// The session sits at a pending prompt: tick approves, strike rejects.
+    Approve,
+    /// The session finished its turn: tick nudges it forward.
+    Continue,
+}
+
+/// A rendered region and what marking it means — the hit map, returned by
+/// drawing so it can never drift from what was painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecisionBox {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub decision: Decision,
+}
+
+/// Room the decision box claims above the footer, gap included.
+const DECISION_H: usize = 170;
+/// Labels on the full page are set for the panel's density, not the drawer's.
+const PAGE_LABEL_PX: f32 = 36.0;
+
+/// What a session's state asks of the human, if anything.
+fn decision_for(state: &str) -> Option<Decision> {
+    match state {
+        "waiting" => Some(Decision::Approve),
+        "done" => Some(Decision::Continue),
+        _ => None,
+    }
+}
+
+/// How many pages a session's turn page runs to, measured exactly as
+/// `draw_session_page` will draw it — the flip handler must not step past
+/// what drawing can show.
+pub fn session_page_count(font: &FontRef, session: &crate::bridge::Session) -> usize {
+    let reserved = if decision_for(&session.state).is_some() { DECISION_H } else { 0 };
+    crate::bridge::layout_session_page(font, session, reserved, 0).pages
+}
+
+/// The turn page's header targets. `← AGENTS` on the left returns to the
+/// board; `×` on the right closes to the canvas. Everything else on the page
+/// is inert to touch — an idle finger must not throw the page away, which is
+/// exactly what tap-anywhere-closes did on hardware. The regions mirror
+/// `draw_session_page`'s header, generous around each label.
+pub fn session_page_action(x: i32, y: i32) -> Action {
+    if !(0..=100).contains(&y) {
+        return Action::None;
+    }
+    if (0..420).contains(&x) {
+        return Action::Sessions;
+    }
+    if (SCREEN_W as i32 - 240..SCREEN_W as i32).contains(&x) {
+        return Action::Close;
+    }
+    Action::None
+}
+
+/// One session, full page — the turn page of `docs/anthink-interaction.md`.
+/// The board chooses; this reads and, when the session needs a human,
+/// carries the decision box. Artifacts pin above the box because evidence
+/// must not be pushed off the page by prose. The header carries the page's
+/// only touch targets (`session_page_action`): ← AGENTS back to the board,
+/// × to the canvas.
+///
+/// `armed` is the destructive-confirmation state: the first tick arms, the
+/// box inverts, the second tick sends. `status` replaces the box label after
+/// a send — the pad never assumes a mark landed. `want_page` is which page to
+/// show, 0 the newest; the swipe pages backward through longer sessions.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::bridge::Session,
+    remaining: usize, stale: bool, armed: bool, status: Option<&str>,
+    want_page: usize) -> Option<DecisionBox> {
+    use crate::page;
+    let decision = decision_for(&session.state);
+    let reserved = if decision.is_some() { DECISION_H } else { 0 };
+    let layout = crate::bridge::layout_session_page(font, session, reserved, want_page);
+    // Full-page surface: `text` clips at the drawer's PANEL_W, which on the
+    // first hardware read left the right half of every line blank.
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    // The header is the page's only touch surface (see `session_page_action`):
+    // back to the board on the left, close to the canvas on the right.
+    full_text(surf, font, "← AGENTS", PAGE_LABEL_PX, page::PAD, 40, BLACK);
+    full_text(surf, font, "×", PAGE_LABEL_PX, SCREEN_W - page::PAD - 28, 40, BLACK);
+    rule(surf, page::PAD, 100, SCREEN_W - page::PAD * 2, 2);
+    let mut y = page::HEADER_H;
+    for line in &layout.title_lines {
+        full_text(surf, font, line, page::TITLE_PX, page::PAD, y, BLACK);
+        y += page::TITLE_LINE_H;
+    }
+    full_text(surf, font, &layout.meta.to_uppercase(), PAGE_LABEL_PX, page::PAD, y, BLUE);
+    y += page::LINE_H;
+    for t in &layout.turns {
+        // A continuation chunk has no speaker row: the turn flows on from
+        // the block (or page) before it.
+        let mut ly = y;
+        if !t.speaker.is_empty() {
+            full_text(surf, font, &t.speaker.to_uppercase(), PAGE_LABEL_PX, page::PAD, y, BLUE);
+            ly += page::LINE_H;
+        }
+        for line in &t.lines {
+            full_text(surf, font, line, page::BODY_PX, page::PAD, ly, BLACK);
+            ly += page::LINE_H;
+        }
+        y += t.height;
+    }
+    // Exactly the room the layout reserved, so drawing can never disagree
+    // with measuring: artifacts above the box, the box above the footer.
+    let mut ay = page::limit(reserved) - layout.artifacts.len() * page::LINE_H;
+    for a in &layout.artifacts {
+        full_text(surf, font, &page::tail(&a.reference, 22), page::BODY_PX, page::PAD, ay, BLUE);
+        full_text(surf, font, &one_line(&a.label, 40), page::BODY_PX, page::PAD + 470, ay, BLACK);
+        ay += page::LINE_H;
+    }
+    let footer = crate::bridge::footer_label(&layout, remaining, stale);
+    if !footer.is_empty() {
+        full_text(surf, font, &footer.to_uppercase(), PAGE_LABEL_PX, page::PAD, SCREEN_H - 66, BLUE);
+    }
+    decision.map(|d| draw_decision_box(surf, font, d, armed, status))
+}
+
+/// The box itself: a fixed, known, anchored target that requires no
+/// recognition and no precision. Armed, it inverts — the pad's stand-in for
+/// vermilion, and unmistakable on a grayscale panel.
+fn draw_decision_box(surf: &mut Surface, font: &FontRef, decision: Decision, armed: bool,
+    status: Option<&str>) -> DecisionBox {
+    use crate::page;
+    let x = page::PAD;
+    let w = SCREEN_W - page::PAD * 2;
+    let h = DECISION_H - 40; // the rest is the gap above
+    let y = page::limit(0) - h;
+    let label = match (status, armed, decision) {
+        (Some(s), _, _) => one_line(s, 56),
+        (None, false, Decision::Approve) => "PENDING ACTION · TICK TO APPROVE · STRIKE TO REJECT".into(),
+        (None, true, Decision::Approve) => "TICK AGAIN TO APPROVE — TREATED AS DESTRUCTIVE".into(),
+        (None, false, Decision::Continue) => "TURN FINISHED · TICK TO NUDGE FORWARD".into(),
+        (None, true, Decision::Continue) => "TICK AGAIN TO SEND CONTINUE".into(),
+    };
+    if armed && status.is_none() {
+        surf.fill_rect(x, y, w, h, BLACK);
+        full_text(surf, font, &label, PAGE_LABEL_PX, x + 32, y + h / 2 - 20, WHITE);
+    } else {
+        surf.fill_rect(x, y, w, 3, BLACK);
+        surf.fill_rect(x, y + h - 3, w, 3, BLACK);
+        surf.fill_rect(x, y, 3, h, BLACK);
+        surf.fill_rect(x + w - 3, y, 3, h, BLACK);
+        full_text(surf, font, &label, PAGE_LABEL_PX, x + 32, y + h / 2 - 20, BLACK);
+    }
+    DecisionBox { x, y, w, h, decision }
 }
 
 /// The drawer's footer line. Mirrors `bridge::footer_label`, but counts rows
@@ -625,15 +817,112 @@ mod tests {
     }
 
     #[test]
-    fn the_sessions_tab_is_read_only() {
+    fn a_board_row_opens_its_session_and_the_gutter_opens_nothing() {
+        // Navigation writes nothing, so it was never the thing the read-only
+        // rule protected — see docs/anthink-interaction.md.
         let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
         let ptr = bytes.as_mut_ptr();
         let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
         let mut d = Drawer::open(&surf, DrawerKind::Sessions, None, 0, None);
-        // Nothing below the header is a target: reading is not a capture path.
-        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::None);
-        assert_eq!(d.tap(PAD as i32, SCREEN_H as i32 - 40, &None), Action::None);
-        assert_eq!(d.selection, None);
+        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::OpenSession(0));
+        assert_eq!(
+            d.tap(PAD as i32, HEADER_H + 16 + CONV_ROW_H as i32 + 10, &None),
+            Action::OpenSession(1)
+        );
+        // Above the rows the header owns the tap; below the last row that
+        // fully fits, nothing does.
+        assert_eq!(d.tap(PAD as i32, 40, &None), Action::Close);
+        assert_eq!(session_index_at(10), None);
+        let last_fit = (SCREEN_H - (HEADER_H as usize + 16)) / CONV_ROW_H;
+        assert_eq!(session_index_at(HEADER_H + 16 + (last_fit * CONV_ROW_H) as i32 + 4), None);
+        assert_eq!(d.selection, None, "the board keeps no selection; a tap opens");
+    }
+
+    #[test]
+    fn the_session_page_draws_without_panicking_and_pins_artifacts() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let session = crate::bridge::Session {
+            id: "s1".into(),
+            title: "Wire the bridge board to the page".into(),
+            state: "waiting".into(),
+            updated: "14:02".into(),
+            cwd: "/Users/p/Dev/g-pad".into(),
+            turns: (0..30)
+                .map(|i| crate::bridge::Turn {
+                    speaker: if i % 2 == 0 { "you".into() } else { "claude".into() },
+                    text: format!("turn {i} with enough words to wrap across a line or two of the page"),
+                })
+                .collect(),
+            artifacts: vec![crate::bridge::Artifact {
+                reference: "/a/very/long/path/deep/in/the/tree/src/bridge.rs".into(),
+                label: "edited".into(),
+            }],
+        };
+        // Waiting: the decision box is on the page, and arming redraws it.
+        let boxr = draw_session_page(&mut surf, &font, &session, 3, true, false, None, 0);
+        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Approve));
+        let armed = draw_session_page(&mut surf, &font, &session, 3, true, true, None, 0);
+        assert_eq!(armed, boxr, "arming changes the drawing, never the hit map");
+        // Done: a tick means nudge forward. Running: nothing to decide.
+        let mut done = session.clone();
+        done.state = "done".into();
+        let boxr = draw_session_page(&mut surf, &font, &done, 0, false, false, None, 0);
+        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Continue));
+        let mut running = session.clone();
+        running.state = "running".into();
+        assert_eq!(draw_session_page(&mut surf, &font, &running, 0, false, false, None, 0), None);
+        // 30 turns run past one page; the box (and its hit map) rides every
+        // page, so a decision is never out of reach while reading earlier.
+        let pages = session_page_count(&font, &session);
+        assert!(pages > 1, "30 turns cannot fit one page");
+        let later = draw_session_page(&mut surf, &font, &session, 3, true, false, None, pages - 1);
+        assert_eq!(later.map(|b| b.decision), Some(Decision::Approve));
+    }
+
+    #[test]
+    fn the_turn_page_paints_past_the_drawer_boundary() {
+        // Regression: the page once rendered through the drawer's `text`,
+        // which clips at PANEL_W — on hardware the right half of every line
+        // was blank. A full-page surface must use the full width.
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let session = crate::bridge::Session {
+            id: "s1".into(),
+            title: "A title long enough that its glyphs must cross the halfway line of the panel".into(),
+            state: "running".into(),
+            updated: "14:02".into(),
+            cwd: String::new(),
+            turns: vec![crate::bridge::Turn {
+                speaker: "claude".into(),
+                text: "word ".repeat(120),
+            }],
+            artifacts: Vec::new(),
+        };
+        draw_session_page(&mut surf, &font, &session, 0, false, false, None, 0);
+        let dark_right = (PANEL_W..SCREEN_W).step_by(3).any(|x| {
+            (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
+        });
+        assert!(dark_right, "no ink right of PANEL_W — the page is clipped to the drawer");
+    }
+
+    #[test]
+    fn the_turn_page_header_has_two_targets_and_the_body_is_inert() {
+        // ← AGENTS on the left returns to the board.
+        assert_eq!(session_page_action(60, 40), Action::Sessions);
+        assert_eq!(session_page_action(300, 90), Action::Sessions);
+        // × on the right closes to the canvas.
+        assert_eq!(session_page_action(SCREEN_W as i32 - 60, 40), Action::Close);
+        // Everything else — header middle, page body, footer — is inert:
+        // an idle touch must not throw the page away.
+        assert_eq!(session_page_action(SCREEN_W as i32 / 2, 40), Action::None);
+        assert_eq!(session_page_action(500, 900), Action::None);
+        assert_eq!(session_page_action(60, SCREEN_H as i32 - 40), Action::None);
+        assert_eq!(session_page_action(-5, 40), Action::None);
     }
 
     #[test]
