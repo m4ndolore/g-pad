@@ -269,10 +269,30 @@ pub fn session_page_count(font: &FontRef, session: &crate::bridge::Session) -> u
     crate::bridge::layout_session_page(font, session, reserved, 0).pages
 }
 
+/// The turn page's header targets. `← AGENTS` on the left returns to the
+/// board; `×` on the right closes to the canvas. Everything else on the page
+/// is inert to touch — an idle finger must not throw the page away, which is
+/// exactly what tap-anywhere-closes did on hardware. The regions mirror
+/// `draw_session_page`'s header, generous around each label.
+pub fn session_page_action(x: i32, y: i32) -> Action {
+    if !(0..=100).contains(&y) {
+        return Action::None;
+    }
+    if (0..420).contains(&x) {
+        return Action::Sessions;
+    }
+    if (SCREEN_W as i32 - 240..SCREEN_W as i32).contains(&x) {
+        return Action::Close;
+    }
+    Action::None
+}
+
 /// One session, full page — the turn page of `docs/anthink-interaction.md`.
 /// The board chooses; this reads and, when the session needs a human,
 /// carries the decision box. Artifacts pin above the box because evidence
-/// must not be pushed off the page by prose.
+/// must not be pushed off the page by prose. The header carries the page's
+/// only touch targets (`session_page_action`): ← AGENTS back to the board,
+/// × to the canvas.
 ///
 /// `armed` is the destructive-confirmation state: the first tick arms, the
 /// box inverts, the second tick sends. `status` replaces the box label after
@@ -289,7 +309,10 @@ pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::br
     // Full-page surface: `text` clips at the drawer's PANEL_W, which on the
     // first hardware read left the right half of every line blank.
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
-    full_text(surf, font, "AGENTS", PAGE_LABEL_PX, page::PAD, 40, BLACK);
+    // The header is the page's only touch surface (see `session_page_action`):
+    // back to the board on the left, close to the canvas on the right.
+    full_text(surf, font, "← AGENTS", PAGE_LABEL_PX, page::PAD, 40, BLACK);
+    full_text(surf, font, "×", PAGE_LABEL_PX, SCREEN_W - page::PAD - 28, 40, BLACK);
     rule(surf, page::PAD, 100, SCREEN_W - page::PAD * 2, 2);
     let mut y = page::HEADER_H;
     for line in &layout.title_lines {
@@ -746,6 +769,21 @@ mod tests {
             (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
         });
         assert!(dark_right, "no ink right of PANEL_W — the page is clipped to the drawer");
+    }
+
+    #[test]
+    fn the_turn_page_header_has_two_targets_and_the_body_is_inert() {
+        // ← AGENTS on the left returns to the board.
+        assert_eq!(session_page_action(60, 40), Action::Sessions);
+        assert_eq!(session_page_action(300, 90), Action::Sessions);
+        // × on the right closes to the canvas.
+        assert_eq!(session_page_action(SCREEN_W as i32 - 60, 40), Action::Close);
+        // Everything else — header middle, page body, footer — is inert:
+        // an idle touch must not throw the page away.
+        assert_eq!(session_page_action(SCREEN_W as i32 / 2, 40), Action::None);
+        assert_eq!(session_page_action(500, 900), Action::None);
+        assert_eq!(session_page_action(60, SCREEN_H as i32 - 40), Action::None);
+        assert_eq!(session_page_action(-5, 40), Action::None);
     }
 
     #[test]

@@ -107,10 +107,13 @@ enum State {
     ExpandedConversation { panel: Option<ui::Drawer>, return_to: Box<State> },
     Settings { saved: Option<Vec<u8>>, return_to: Box<State> },
     /// One agent session read full-page (the turn page). `saved` is the whole
-    /// canvas underneath; the drawer swipe brings it back. `boxr` is the hit
-    /// map drawing returned; `armed` is the destructive-confirmation state
-    /// (first tick arms, second sends); `status` is the last nudge's outcome;
-    /// `page` is which page is open — 0 the newest, the swipe pages backward.
+    /// canvas underneath. Touch acts only on named targets: ← AGENTS returns
+    /// to the board, × (or the leftward swipe) closes to the canvas, the
+    /// vertical swipe flips pages, and the rest of the page ignores fingers —
+    /// the pen alone commands. `boxr` is the hit map drawing returned;
+    /// `armed` is the destructive-confirmation state (first tick arms, second
+    /// sends); `status` is the last nudge's outcome; `page` is which page is
+    /// open — 0 the newest, the swipe pages backward.
     SessionPage {
         session: bridge::Session,
         remaining: usize,
@@ -483,16 +486,13 @@ fn run() -> std::io::Result<()> {
                         }
                     }
                 }
-                touch::Gesture::OpenDrawer if matches!(state, State::Listening { .. } | State::Lingering { .. }) => {
+                // The drawer opens over the canvas AND over an open turn
+                // page — reading one session must not wall off the rest of
+                // the board. Whatever was open rides in `return_to`.
+                touch::Gesture::OpenDrawer if matches!(state,
+                    State::Listening { .. } | State::Lingering { .. } | State::SessionPage { .. }) => {
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
-                    let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
-                    // Agents first: the board is what the drawer is opened
-                    // for now. History and Corpus stay one tab-tap away.
-                    let panel = ui::Drawer::open(&surf, ui::DrawerKind::Sessions, drawer_selection, 0, None);
-                    let snapshot = oracle::context_snapshot(&store, memory_turns());
-                    ui::draw_drawer(&mut surf, &ui_font, &store, &snapshot, &panel);
-                    disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
-                    state = State::Drawer { panel: Some(panel), return_to: Box::new(old) };
+                    open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection);
                 }
                 touch::Gesture::CloseDrawer => {
                     close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
@@ -558,9 +558,20 @@ fn run() -> std::io::Result<()> {
                         ui::draw_settings(&mut surf, &ui_font, prefs);
                         disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
                     } else if matches!(state, State::SessionPage { .. }) {
-                        // Fingers navigate, the pen commands: a tap puts the
-                        // turn page away and the canvas returns.
-                        close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                        // Specific targets, not a whole-page trigger — the
+                        // first tap-anywhere-closes build read as breakage
+                        // on hardware: an idle touch threw the page away.
+                        // ← AGENTS returns to the board, × closes to the
+                        // canvas, and the rest of the page is inert.
+                        match ui::session_page_action(x, y) {
+                            ui::Action::Sessions => {
+                                open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection);
+                            }
+                            ui::Action::Close => {
+                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                            }
+                            _ => {}
+                        }
                     } else {
                         let action = match &mut state {
                             State::Drawer { panel: Some(p), .. } | State::ExpandedConversation { panel: Some(p), .. } => p.tap(x, y, &store),
@@ -1221,6 +1232,20 @@ fn reply_below_writing(wrote: BBox) -> (i32, bool) {
     }
 }
 
+/// Open the drawer on the AGENTS board over whatever is on screen — the
+/// canvas or an open turn page. What was open rides in `return_to`, so
+/// closing the drawer puts it back. History and Corpus stay one tab-tap
+/// away inside the drawer.
+fn open_drawer(state: &mut State, surf: &mut Surface, disp: &display::Display,
+    ui_font: &FontRef, store: &Option<memory::MemoryStore>, selection: Option<usize>) {
+    let old = std::mem::replace(state, State::Listening { last_pen: None });
+    let panel = ui::Drawer::open(surf, ui::DrawerKind::Sessions, selection, 0, None);
+    let snapshot = oracle::context_snapshot(store, memory_turns());
+    ui::draw_drawer(surf, ui_font, store, &snapshot, &panel);
+    disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
+    *state = State::Drawer { panel: Some(panel), return_to: Box::new(old) };
+}
+
 fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
     selection: &mut Option<usize>, scroll: &mut i32) {
     let old = std::mem::replace(state, State::Listening { last_pen: None });
@@ -1408,8 +1433,14 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
         let Some(session) = list.get(i).map(|s| (*s).clone()) else { return };
         let remaining = list.len().saturating_sub(1);
         close_overlay(state, surf, disp, selection, scroll);
-        let old = std::mem::replace(state, State::Listening { last_pen: None });
-        let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
+        // A session picked from a page's own drawer REPLACES that page
+        // rather than stacking on it: the new page inherits the canvas
+        // saved underneath, so × always closes to the canvas in one step
+        // and hopping between sessions cannot pile up saved screens.
+        let (saved, old) = match std::mem::replace(state, State::Listening { last_pen: None }) {
+            State::SessionPage { saved, return_to, .. } => (saved, *return_to),
+            other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
+        };
         let boxr = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale, false, None, 0);
         disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
         *state = State::SessionPage {
