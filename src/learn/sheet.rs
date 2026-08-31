@@ -560,6 +560,56 @@ pub fn draw_check(surf: &mut Surface, answer: &BBox) -> BBox {
     b
 }
 
+/// The verdict, written for its two readers at once: the cheer huge and
+/// centered for the child (stars flank it when `starred`), the hint in small
+/// print beneath for the grown-up to read aloud. Printed instantly, not
+/// handwritten — feedback should land like a teacher's stamp, and a child
+/// should never wait through an animation to learn they were right.
+pub fn draw_feedback(surf: &mut Surface, font: &FontRef, cheer: &str, hint: &str, starred: bool) -> BBox {
+    let cx = (W / 2) as i32;
+    let cheer_cy = feedback_y() + (H * 4 / 100) as i32;
+    if !cheer.is_empty() {
+        let max_w = (W - 2 * MARGIN - if starred { W * 16 / 100 } else { 0 }) as f32;
+        let mut px = 120.0;
+        let wide = script::measure(font, cheer, px);
+        if wide > max_w {
+            px = (px * max_w / wide).max(56.0);
+        }
+        print_tight_centered(surf, font, cheer, px, cx, cheer_cy, BLACK);
+        if starred {
+            let r = (W * 5 / 200) as i32;
+            let half = tight_width(font, cheer, px) / 2;
+            draw_star(surf, cx - half - 2 * r, cheer_cy, r);
+            draw_star(surf, cx + half + 2 * r, cheer_cy, r);
+        }
+    }
+    if !hint.is_empty() {
+        let hint_px = 40.0;
+        let lines = script::wrap(font, hint, hint_px, (W - 2 * MARGIN) as f32);
+        let mut y = cheer_cy + (H * 5 / 100) as i32;
+        for line in lines.iter().take(3) {
+            print_centered(surf, font, line, hint_px, cx, y, BLACK);
+            y += (hint_px * 1.3) as i32;
+        }
+    }
+    feedback_region()
+}
+
+/// A five-point star, outlined in the brush hand.
+fn draw_star(surf: &mut Surface, cx: i32, cy: i32, r: i32) {
+    let mut pts = [(0i32, 0i32); 10];
+    for (i, p) in pts.iter_mut().enumerate() {
+        let ang = std::f32::consts::PI * (i as f32) / 5.0 - std::f32::consts::FRAC_PI_2;
+        let rad = if i % 2 == 0 { r as f32 } else { r as f32 * 0.42 };
+        *p = (cx + (ang.cos() * rad) as i32, cy + (ang.sin() * rad) as i32);
+    }
+    for i in 0..10 {
+        let (x0, y0) = pts[i];
+        let (x1, y1) = pts[(i + 1) % 10];
+        surf.brush_line(x0, y0, x1, y1, 4, BLACK);
+    }
+}
+
 /// A gentle underline beneath the answer region: look here again.
 pub fn draw_look_again(surf: &mut Surface, answer: &BBox) -> BBox {
     let y = answer.y1 + 18;
@@ -734,5 +784,25 @@ mod tests {
         let f = feedback_region();
         assert!(f.y0 > (H / 2) as i32);
         assert!(f.y1 < box_top());
+    }
+
+    #[test]
+    fn feedback_stamps_inside_the_strip_and_a_hint_adds_ink() {
+        let font = ui_font();
+        let (_buf, mut surf) = page();
+        surf.fill_rect(0, 0, W, H, WHITE);
+        let region = draw_feedback(&mut surf, &font, "GREAT JOB!", "", true);
+        let cheer_only = dark_in(&surf, &region);
+        assert!(cheer_only > 400, "the big cheer and its stars must land in the strip");
+        // Everything stays inside the strip: no ink above it or in the boxes.
+        let mut whole = BBox::empty();
+        whole.add(0, 0, 0);
+        whole.add(W as i32 - 1, H as i32 - 1, 0);
+        assert_eq!(dark_in(&surf, &whole), cheer_only, "feedback must not spill out of its region");
+
+        let (_b2, mut surf2) = page();
+        surf2.fill_rect(0, 0, W, H, WHITE);
+        let r2 = draw_feedback(&mut surf2, &font, "SO CLOSE!", "Your 3 is facing the wrong way.", false);
+        assert!(dark_in(&surf2, &r2) > cheer_only / 2, "the hint must add readable ink");
     }
 }

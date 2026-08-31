@@ -79,15 +79,14 @@ impl Game {
                  from this menu that would be FUNNIEST on it: EYES, LEGS, ARMS, HAT, ANTENNA, \
                  TAIL, RAYS, CROWN, MUSTACHE, BUBBLE. Reply with that single menu word FIRST \
                  (if you pick BUBBLE, follow it with one short silly word to go in the speech \
-                 bubble), then one funny sentence of at most twelve simple words that gives the \
-                 creature a silly name or reacts to it.",
+                 bubble), then one funny caption of at most eight very simple words that gives \
+                 the creature a silly name or reacts to it.",
                 prior = if *round > 0 { " (some parts you added on earlier turns)" } else { "" }
             ),
             Game::Guess => format!(
-                "{base}The child drew something and you must guess what it is. Give two or three \
-                 short guesses in one or two sentences, starting sensible and getting sillier, \
-                 then ask the child to add one more detail so you can guess again. \
-                 At most thirty simple words."
+                "{base}The child drew something and you must guess what it is. Give two short \
+                 guesses in one sentence, first sensible then silly, and end by asking for one \
+                 more detail so you can guess again. At most fifteen very simple words."
             ),
             Game::Story { log, .. } => {
                 let mut s = format!(
@@ -103,9 +102,9 @@ impl Game {
                     s.push_str(&format!("The child chose: \"{c}\". Continue from there. "));
                 }
                 s.push_str(
-                    "Write the next beat in at most three short sentences a five-year-old \
+                    "Write the next beat in at most two short sentences a five-year-old \
                      understands. Then, on separate lines, exactly three choices numbered \
-                     1. 2. 3., each at most three words.",
+                     1. 2. 3., each at most two words in capital letters.",
                 );
                 s
             }
