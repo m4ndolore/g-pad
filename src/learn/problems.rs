@@ -183,15 +183,31 @@ const TRACE_L2: &[&str] = &["cat", "dog", "sun", "hat", "pig", "bed", "cup", "fo
 const TRACE_L3: &[&str] = &["the", "and", "you", "see", "play", "look", "here"];
 const TRACE_L4: &[&str] = &["jump", "ship", "rain", "star", "frog", "moon", "tree"];
 
-/// The activity rotation per level. Rotating (rather than sampling) guarantees
-/// variety: a math page is always followed by something different.
-fn rotation(level: u8) -> &'static [Activity] {
+/// What the menu narrows practice to: the full mix (default), math only, or
+/// handwriting only. A topic changes which activities rotate, never how any
+/// one activity is generated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Topic {
+    #[default]
+    Mix,
+    Math,
+    Writing,
+}
+
+/// The activity rotation per level and topic. Rotating (rather than sampling)
+/// guarantees variety: a math page is always followed by something different.
+fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
     use Activity::*;
-    match level {
-        1 => &[Count, Bond, Trace],
-        2 => &[Bond, MakeTen, Trace, Equation],
-        3 => &[Bond, Equation, Trace, MakeTen],
-        _ => &[Array, Equation, Share, Trace],
+    match (topic, level) {
+        (Topic::Writing, _) => &[Trace],
+        (Topic::Math, 1) => &[Count, Bond],
+        (Topic::Math, 2) => &[Bond, MakeTen, Equation],
+        (Topic::Math, 3) => &[Bond, Equation, MakeTen],
+        (Topic::Math, _) => &[Array, Equation, Share],
+        (Topic::Mix, 1) => &[Count, Bond, Trace],
+        (Topic::Mix, 2) => &[Bond, MakeTen, Trace, Equation],
+        (Topic::Mix, 3) => &[Bond, Equation, Trace, MakeTen],
+        (Topic::Mix, _) => &[Array, Equation, Share, Trace],
     }
 }
 
@@ -206,9 +222,9 @@ enum Activity {
     Trace,
 }
 
-/// Generate the `rot`-th problem at `level`.
-pub fn generate(level: u8, rot: usize, rng: &mut Rng) -> Problem {
-    let acts = rotation(level.clamp(MIN_LEVEL, MAX_LEVEL));
+/// Generate the `rot`-th problem at `level`, within `topic`'s rotation.
+pub fn generate(level: u8, topic: Topic, rot: usize, rng: &mut Rng) -> Problem {
+    let acts = rotation(level.clamp(MIN_LEVEL, MAX_LEVEL), topic);
     match acts[rot % acts.len()] {
         Activity::Count => {
             let shown = rng.range(1, 5);
@@ -288,7 +304,7 @@ mod tests {
         let mut rng = Rng::new(7);
         for level in 1..=4 {
             for rot in 0..40 {
-                if let Kind::Bond { whole, parts, .. } = generate(level, rot, &mut rng).kind {
+                if let Kind::Bond { whole, parts, .. } = generate(level, Topic::Mix, rot, &mut rng).kind {
                     assert_eq!(parts[0] + parts[1], whole);
                     assert!(parts[0] >= 1 && parts[1] >= 1, "a zero part teaches nothing");
                 }
@@ -300,10 +316,10 @@ mod tests {
     fn level_one_stays_within_five_and_level_two_within_ten() {
         let mut rng = Rng::new(3);
         for rot in 0..60 {
-            if let Kind::Bond { whole, .. } = generate(1, rot, &mut rng).kind {
+            if let Kind::Bond { whole, .. } = generate(1, Topic::Mix, rot, &mut rng).kind {
                 assert!(whole <= 5, "level 1 whole {whole} > 5");
             }
-            if let Kind::Bond { whole, .. } = generate(2, rot, &mut rng).kind {
+            if let Kind::Bond { whole, .. } = generate(2, Topic::Mix, rot, &mut rng).kind {
                 assert!(whole <= 10, "level 2 whole {whole} > 10");
             }
         }
@@ -314,7 +330,7 @@ mod tests {
         let mut rng = Rng::new(11);
         for level in 1..=4 {
             for rot in 0..80 {
-                match generate(level, rot, &mut rng).kind {
+                match generate(level, Topic::Mix, rot, &mut rng).kind {
                     Kind::Equation { a, op: Op::Sub, b } => assert!(a > b),
                     Kind::Equation { a, op: Op::Div, b } => assert_eq!(a % b, 0),
                     Kind::Share { total, groups } => assert_eq!(total % groups, 0),
@@ -366,10 +382,23 @@ mod tests {
         let mut rng = Rng::new(5);
         for level in 1..=4 {
             let kinds: Vec<_> = (0..4).map(|rot| {
-                std::mem::discriminant(&generate(level, rot, &mut rng).kind)
+                std::mem::discriminant(&generate(level, Topic::Mix, rot, &mut rng).kind)
             }).collect();
             let first = kinds[0];
             assert!(kinds.iter().any(|k| *k != first), "level {level} repeats one activity");
+        }
+    }
+
+    #[test]
+    fn topics_narrow_the_rotation() {
+        let mut rng = Rng::new(5);
+        for level in 1..=4 {
+            for rot in 0..8 {
+                let math = generate(level, Topic::Math, rot, &mut rng).kind;
+                assert!(!matches!(math, Kind::Trace { .. }), "math topic dealt {math:?}");
+                let writing = generate(level, Topic::Writing, rot, &mut rng).kind;
+                assert!(matches!(writing, Kind::Trace { .. }), "writing topic dealt {writing:?}");
+            }
         }
     }
 
@@ -378,7 +407,7 @@ mod tests {
         let mut rng = Rng::new(9);
         for level in 1..=4 {
             for rot in 0..8 {
-                let p = generate(level, rot, &mut rng);
+                let p = generate(level, Topic::Mix, rot, &mut rng);
                 assert!(
                     p.brief().contains(&p.expected()),
                     "brief must tell the tutor the correct answer: {}",

@@ -18,6 +18,8 @@ sheet returned when it was drawn; nothing is shape recognition:
   commits *only the declared answer region* to the oracle for marking. The
   mark is absorbed, never sent.
 - **NEW** (bottom left). Any mark inside it deals a fresh page.
+- **MENU** (bottom center). Any mark inside it deals the picker: every
+  topic and game as its own tick box (see "The menu" below).
 
 A child cannot commit by accident: an empty blank answers locally ("Write
 your answer first"), and the whole-page commit paths of Pad mode — the send
@@ -52,6 +54,19 @@ pad's own hand, scaled so a 'd' ascender spans the full writing height, with
 the dashed midline placed at the font's *measured* x-height — the guide
 letters genuinely touch the lines the child is told to reach.
 
+## The menu
+
+A mark in MENU deals the picker: two labeled sections of tick boxes,
+**PRACTICE** (Counting, Add to 10, Add to 20, Times & Share, Writing,
+Surprise Mix — the math rows also pin the starting level) and **PLAY**
+(Doodle Critter, Guessing Game, Story Time). A mark in a box deals that page
+at once, and the choice is *sticky*: a picked game deals itself again on
+every NEW, a picked topic narrows the practice rotation (math only, or
+tracing only) until the menu says otherwise. Surprise Mix restores the
+default deck. The mapping between box order and meaning lives in one place
+(`sheet::MENU_ITEMS` ↔ `Session::choose_menu`), and the picker page itself
+has no DONE or NEW — a mark in an entry is the only thing it understands.
+
 ## The marking round trip
 
 On a DONE mark, the answer region (only) is rasterized by `ink::region_png`
@@ -60,11 +75,22 @@ oracle with a per-turn instruction (`TurnContext::instruction`, which rides
 as user text and therefore works on both the HTTP and pi backends without
 touching the persona).
 
+The tutor's asks never use the pad's default model blindly: a capture sink
+there (Vellum's `vellum-capture`) would archive the worksheet and answer
+"Saved to Vellum" instead of marking it. Learn asks go to
+`RIDDLE_LEARN_MODEL`, else `RIDDLE_OPENAI_ASK_MODEL`, else the base model —
+on Vellum, `vellum-tutor` is the straight vision chat built for this.
+
 The tutor's protocol is one leading word — **YES**, **ALMOST**, or **NO** —
 then one cheerful sentence of at most twelve simple words. The word is for
 the sheet; the sentence is for the child:
 
-- **YES** → a drawn check beside the answer, the ladder credits it.
+- **YES** → a drawn check beside the answer, the ladder credits it, and —
+  after a dwell long enough to read the praise (`RIDDLE_LEARN_NEXT_MS`,
+  default 5000 ms, 0 disables) — the next page deals itself, so a child on a
+  roll never taps NEW. Pen-down cancels the dwell; the tutor is also asked
+  to end YES feedback with a tiny follow-up question, so the response and
+  the follow-up land on the same page.
 - **ALMOST / NO** → a gentle underline ("look here again"), the ladder
   debits it. After NO the tutor gives a tiny hint, never the answer.
 - **Anything else** → `Verdict::Unknown`: the feedback still writes itself,

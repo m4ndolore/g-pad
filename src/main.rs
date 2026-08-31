@@ -288,6 +288,16 @@ fn learn_sheets(dir: &str) -> i32 {
             session.next();
         }
     }
+    // The menu: the picker every page's MENU box deals.
+    let mut session = learn::Session::start_at(1, 99);
+    session.open_menu();
+    session.draw(&mut surf, &ui_font);
+    let path = format!("{dir}/learn-menu.png");
+    if let Err(e) = dump_page(&surf, &path) {
+        eprintln!("g-pad: write {path}: {e}");
+        return 1;
+    }
+    println!("{path}");
     // The play pages: each game's opening sheet, plus a story mid-beat.
     let mut session = learn::Session::start_at(1, 99);
     let pages: [(&str, learn::Page); 4] = [
@@ -399,7 +409,11 @@ fn learn_test(answer: Option<&str>) -> i32 {
     };
     let ctx = oracle::TurnContext { instruction: Some(session.instruction()), ..Default::default() };
     let (tx, rx) = mpsc::channel();
-    o.ask(png, &ctx, tx);
+    // Same model choice as the live tutor: never the pad's capture sink.
+    let learn_model: Option<String> = std::env::var("RIDDLE_LEARN_MODEL")
+        .ok()
+        .or_else(|| std::env::var("RIDDLE_OPENAI_ASK_MODEL").ok());
+    o.ask_with_model(png, &ctx, tx, learn_model.as_deref());
     let mut got = String::new();
     loop {
         match rx.recv() {
@@ -578,6 +592,26 @@ fn run() -> std::io::Result<()> {
     let mut send_mode: Option<CommitMode> = None;
     // Learn mode: latched when a stroke lands in a decision box.
     let mut learn_tick: Option<LearnTick> = None;
+    // Learn mode: a YES verdict deals the next page by itself once the
+    // feedback has been written and read — no second tap. The dwell leaves
+    // time to enjoy the check; pen-down cancels (the child kept writing).
+    // RIDDLE_LEARN_NEXT_MS tunes it; 0 turns auto-dealing off.
+    let learn_next_dwell: Option<Duration> = match std::env::var("RIDDLE_LEARN_NEXT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5000)
+    {
+        0 => None,
+        ms => Some(Duration::from_millis(ms)),
+    };
+    let mut learn_advance_pending = false;
+    let mut learn_auto_at: Option<Instant> = None;
+    // Learn asks must never go to a capture sink (the pad's default model may
+    // be one, archiving pages instead of marking them): prefer the dedicated
+    // learn model, else the ask model, else whatever the pad uses.
+    let learn_model: Option<String> = std::env::var("RIDDLE_LEARN_MODEL")
+        .ok()
+        .or_else(|| std::env::var("RIDDLE_OPENAI_ASK_MODEL").ok());
     let mut drawer_selection: Option<usize> = None;
     let mut drawer_scroll = 0i32;
     let mut controls_saved: Option<Vec<u8>> = None;
@@ -802,6 +836,8 @@ fn run() -> std::io::Result<()> {
                                 // Land directly on the chosen page, clean.
                                 close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
                                 user_ink.clear();
+                                learn_advance_pending = false;
+                                learn_auto_at = None;
                                 surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
                                 learn_session = match prefs.page {
                                     preferences::Page::Learn => {
@@ -1153,10 +1189,32 @@ fn run() -> std::io::Result<()> {
 
         // ---- learn mode: an absorbed decision-box mark acts here ----
         if let Some(tick) = learn_tick.take() {
+            // The child acted first: a pending auto-dealt page yields.
+            learn_auto_at = None;
+            learn_advance_pending = false;
             if matches!(state, State::Listening { .. }) {
                 if let Some(ref mut session) = learn_session {
-                    // A choice tick must name a box that exists on this page;
-                    // registering it also latches the label for the ask.
+                    // Marks the page answers locally: NEW deals, MENU opens
+                    // the picker, and a picker choice deals what it names.
+                    let deal_locally = match tick {
+                        LearnTick::New => {
+                            session.next();
+                            true
+                        }
+                        LearnTick::Menu => {
+                            session.open_menu();
+                            true
+                        }
+                        LearnTick::Choice(i) if session.is_menu() => session.choose_menu(i),
+                        _ => false,
+                    };
+                    if deal_locally {
+                        user_ink.clear();
+                        session.draw(&mut surf, &ui_font);
+                        disp.full_refresh(surf.w, surf.h);
+                    } else {
+                    // A story choice tick must name a box that exists on this
+                    // page; registering it also latches the label for the ask.
                     let tick_valid = match tick {
                         LearnTick::Choice(i) => session.choose(i).is_some(),
                         _ => true,
@@ -1165,12 +1223,7 @@ fn run() -> std::io::Result<()> {
                         // A stale mark (no such box): nothing to do.
                     } else {
                     match tick {
-                        LearnTick::New => {
-                            session.next();
-                            user_ink.clear();
-                            session.draw(&mut surf, &ui_font);
-                            disp.full_refresh(surf.w, surf.h);
-                        }
+                        LearnTick::New | LearnTick::Menu => unreachable!("dealt locally above"),
                         // A choice tick is a DONE with the chosen box latched.
                         LearnTick::Done | LearnTick::Choice(_) => {
                             clear_feedback(&mut surf, &disp);
@@ -1178,8 +1231,8 @@ fn run() -> std::io::Result<()> {
                                 // An empty blank needs no oracle to mark.
                                 turn_failed = true;
                                 let nudge = match session.page {
-                                    learn::Page::Practice(_) => "Write your answer first, then mark DONE.",
                                     learn::Page::Play(_) => "Draw something first, then mark DONE.",
+                                    _ => "Write your answer first, then mark DONE.",
                                 };
                                 let plan = plan_reply(&font, nudge, Some(learn::sheet::feedback_y()));
                                 state = State::Replying { plan, next: Instant::now(), rx: None };
@@ -1194,7 +1247,7 @@ fn run() -> std::io::Result<()> {
                                     ..Default::default()
                                 };
                                 let (tx, rx) = mpsc::channel();
-                                o.ask(PNG_PATH, &ctx, tx);
+                                o.ask_with_model(PNG_PATH, &ctx, tx, learn_model.as_deref());
                                 if std::env::var_os("RIDDLE_KEEP_PAGE").is_none() {
                                     let _ = std::fs::remove_file(PNG_PATH);
                                 }
@@ -1214,6 +1267,23 @@ fn run() -> std::io::Result<()> {
                         }
                     }
                     }
+                    }
+                }
+            }
+        }
+
+        // ---- learn mode: a correct answer deals the next page by itself ----
+        if let Some(at) = learn_auto_at {
+            if pen_down {
+                // The child went back to the page: let them.
+                learn_auto_at = None;
+            } else if at <= Instant::now() && matches!(state, State::Listening { .. }) {
+                learn_auto_at = None;
+                if let Some(ref mut session) = learn_session {
+                    session.next();
+                    user_ink.clear();
+                    session.draw(&mut surf, &ui_font);
+                    disp.full_refresh(surf.w, surf.h);
                 }
             }
         }
@@ -1468,7 +1538,12 @@ fn run() -> std::io::Result<()> {
             State::Lingering { region, more } => {
                 if learn_session.is_some() {
                     // Learn feedback stays painted; the page listens again at
-                    // once so the child can keep writing or retry.
+                    // once so the child can keep writing or retry. A YES
+                    // verdict starts the dwell that deals the next page.
+                    if learn_advance_pending {
+                        learn_advance_pending = false;
+                        learn_auto_at = learn_next_dwell.map(|d| Instant::now() + d);
+                    }
                     State::Listening { last_pen: None }
                 } else {
                     State::Lingering { region, more }
@@ -1539,6 +1614,9 @@ fn run() -> std::io::Result<()> {
                                             // DONE cannot resubmit it (or a mixture).
                                             user_ink.clear();
                                             mark_dirty = learn::sheet::draw_check(&mut surf, &answer);
+                                            // Once the praise is written, the next
+                                            // page deals itself — no second tap.
+                                            learn_advance_pending = true;
                                         }
                                         learn::Verdict::Almost | learn::Verdict::No => {
                                             // A clean retry: repaint the sheet so the
@@ -1928,6 +2006,8 @@ fn learn_flavor(session: &learn::Session) -> LearnFlavor {
         learn::Page::Play(learn::games::Game::Critter { .. }) => LearnFlavor::Critter,
         learn::Page::Play(learn::games::Game::Guess) => LearnFlavor::Guess,
         learn::Page::Play(learn::games::Game::Story { .. }) => LearnFlavor::Story,
+        // Unreachable in marking: the menu page has no DONE box to send from.
+        learn::Page::Menu => LearnFlavor::Practice,
     }
 }
 
@@ -1936,7 +2016,9 @@ fn learn_flavor(session: &learn::Session) -> LearnFlavor {
 enum LearnTick {
     Done,
     New,
-    /// A story choice box, by index.
+    /// The MENU footer box: open the topic-and-game picker.
+    Menu,
+    /// A choice box — a story path, or a picker entry — by index.
     Choice(usize),
 }
 
@@ -1951,16 +2033,23 @@ fn learn_mark(ink: &mut ink::Ink, session: &learn::Session, ui_font: &FontRef,
     let tick = match session.hits.hit(cx, cy) {
         Some(learn::Target::Done) => LearnTick::Done,
         Some(learn::Target::New) => LearnTick::New,
+        Some(learn::Target::Menu) => LearnTick::Menu,
         Some(learn::Target::Choice(i)) => LearnTick::Choice(i),
         _ => return None,
     };
     if let Some(gone) = ink.pop_stroke() {
         let (x, y, w, h) = gone.rect();
         surf.fill_rect(x.max(0) as usize, y.max(0) as usize, w as usize, h as usize, WHITE);
-        learn::sheet::refresh_boxes(surf, ui_font);
-        // A story page also has choice boxes under the mark; repaint them.
-        if let learn::Page::Play(learn::games::Game::Story { choices, .. }) = &session.page {
-            let _ = learn::games::draw_choices(surf, ui_font, choices);
+        if session.is_menu() {
+            // The menu page's furniture is its choice grid; the chosen page
+            // repaints in full right after, so only the grid needs restoring.
+            let _ = learn::sheet::draw_menu(surf, ui_font);
+        } else {
+            learn::sheet::refresh_boxes(surf, ui_font);
+            // A story page also has choice boxes under the mark; repaint them.
+            if let learn::Page::Play(learn::games::Game::Story { choices, .. }) = &session.page {
+                let _ = learn::games::draw_choices(surf, ui_font, choices);
+            }
         }
         disp.update(x, y, w, h, true);
     }

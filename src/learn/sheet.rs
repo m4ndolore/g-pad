@@ -41,7 +41,9 @@ pub enum Target {
     Answer,
     Done,
     New,
-    /// A story choice box (the play pages), by index.
+    /// The MENU footer box: opens the topic-and-game picker.
+    Menu,
+    /// A choice box — a story path, or a picker entry — by index.
     Choice(usize),
 }
 
@@ -51,7 +53,9 @@ pub struct HitMap {
     pub answer: BBox,
     pub done: BBox,
     pub new: BBox,
-    /// Story choice boxes; empty on every other page.
+    /// The MENU footer box; empty only on the menu page itself.
+    pub menu: BBox,
+    /// Choice boxes (story paths, menu entries); empty elsewhere.
     pub choices: Vec<BBox>,
 }
 
@@ -65,6 +69,9 @@ impl HitMap {
         if inside(&self.new) {
             return Some(Target::New);
         }
+        if inside(&self.menu) {
+            return Some(Target::Menu);
+        }
         for (i, c) in self.choices.iter().enumerate() {
             if inside(c) {
                 return Some(Target::Choice(i));
@@ -77,13 +84,14 @@ impl HitMap {
     }
 }
 
-/// Draw only the page footer — the DONE and NEW decision boxes — and return
-/// a hit map with everything else empty. The play pages start from this and
-/// declare their own regions.
+/// Draw only the page footer — the NEW, MENU, and DONE decision boxes — and
+/// return a hit map with everything else empty. The play pages start from
+/// this and declare their own regions.
 pub fn draw_footer(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
-    let done = draw_action_box(surf, ui_font, false);
-    let new = draw_action_box(surf, ui_font, true);
-    HitMap { answer: BBox::empty(), done, new, choices: Vec::new() }
+    let done = draw_action_box(surf, ui_font, ActionBox::Done);
+    let new = draw_action_box(surf, ui_font, ActionBox::New);
+    let menu = draw_action_box(surf, ui_font, ActionBox::Menu);
+    HitMap { answer: BBox::empty(), done, new, menu, choices: Vec::new() }
 }
 
 /// Draw the whole sheet for `problem` onto a white page and return its hit
@@ -111,16 +119,18 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, problem: &Problem, level: u8,
         Kind::Trace { word } => draw_trace(surf, ui_font, word),
     };
 
-    let done = draw_action_box(surf, ui_font, false);
-    let new = draw_action_box(surf, ui_font, true);
-    HitMap { answer, done, new, choices: Vec::new() }
+    let done = draw_action_box(surf, ui_font, ActionBox::Done);
+    let new = draw_action_box(surf, ui_font, ActionBox::New);
+    let menu = draw_action_box(surf, ui_font, ActionBox::Menu);
+    HitMap { answer, done, new, menu, choices: Vec::new() }
 }
 
-/// Repaint the two decision boxes: called after an absorbed mark's white-out,
+/// Repaint the decision boxes: called after an absorbed mark's white-out,
 /// which may have clipped a box edge or label.
 pub fn refresh_boxes(surf: &mut Surface, ui_font: &FontRef) {
-    let _ = draw_action_box(surf, ui_font, false);
-    let _ = draw_action_box(surf, ui_font, true);
+    let _ = draw_action_box(surf, ui_font, ActionBox::Done);
+    let _ = draw_action_box(surf, ui_font, ActionBox::New);
+    let _ = draw_action_box(surf, ui_font, ActionBox::Menu);
 }
 
 // ---- the figures ----------------------------------------------------------
@@ -317,20 +327,124 @@ fn answer_box(surf: &mut Surface, x: i32, y: i32, w: i32, h: i32) -> BBox {
     b
 }
 
-/// DONE (right) and NEW (left) at the foot of every sheet: the two anchored
-/// decision boxes. Any mark inside one is a command — form never matters.
-fn draw_action_box(surf: &mut Surface, font: &FontRef, is_new: bool) -> BBox {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActionBox {
+    New,
+    Menu,
+    Done,
+}
+
+/// NEW (left), MENU (center), DONE (right) at the foot of every sheet: the
+/// anchored decision boxes. Any mark inside one is a command — form never
+/// matters.
+fn draw_action_box(surf: &mut Surface, font: &FontRef, which: ActionBox) -> BBox {
     let bw = (W * 22 / 100) as i32;
     let bh = (H * 8 / 100) as i32;
     let y = box_top();
-    let x = if is_new { MARGIN as i32 } else { (W - MARGIN) as i32 - bw };
+    let x = match which {
+        ActionBox::New => MARGIN as i32,
+        ActionBox::Menu => (W as i32 - bw) / 2,
+        ActionBox::Done => (W - MARGIN) as i32 - bw,
+    };
     rect_outline(surf, x, y, bw, bh, 4, BLACK);
-    let label = if is_new { "NEW" } else { "DONE" };
+    let label = match which {
+        ActionBox::New => "NEW",
+        ActionBox::Menu => "MENU",
+        ActionBox::Done => "DONE",
+    };
     print_tight_centered(surf, font, label, 42.0, x + bw / 2, y + bh / 2, BLACK);
     let mut b = BBox::empty();
     b.add(x, y, 0);
     b.add(x + bw, y + bh, 0);
     b
+}
+
+// ---- the menu page --------------------------------------------------------
+
+/// The picker's entries, in choice-index order. `Session::choose_menu`
+/// interprets the index, so the two must move together: 0–3 are the math
+/// levels, 4 writing, 5 the full mix, 6–8 the games.
+pub const MENU_ITEMS: &[&str] = &[
+    "COUNTING",
+    "ADD TO 10",
+    "ADD TO 20",
+    "TIMES & SHARE",
+    "WRITING",
+    "SURPRISE MIX",
+    "DOODLE CRITTER",
+    "GUESSING GAME",
+    "STORY TIME",
+];
+
+/// How many leading MENU_ITEMS are practice topics (the rest are games).
+const MENU_PRACTICE: usize = 6;
+
+/// Draw the topic-and-game picker and return its hit map: every entry is a
+/// choice box, and there is deliberately no DONE, NEW, or MENU here — a mark
+/// in an entry is the only thing this page understands.
+pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
+    surf.fill_rect(0, 0, W, H, WHITE);
+    print(surf, ui_font, "LEARN · MENU", 32.0, MARGIN, 40, BLACK);
+    print_centered(surf, ui_font, "MARK A BOX TO CHOOSE", 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
+
+    let gap_x = (W * 4 / 100) as i32;
+    let bw = ((W - 2 * MARGIN) as i32 - gap_x) / 2;
+    let bh = (H * 8 / 100) as i32;
+    let row_h = bh + (H * 25 / 1000) as i32;
+    let mut choices = Vec::new();
+
+    let section = |surf: &mut Surface, label: &str, y: i32, items: &[&str], base: usize, choices: &mut Vec<BBox>| {
+        print(surf, ui_font, label, 30.0, MARGIN, y as usize, BLACK);
+        let top = y + 50;
+        for (i, item) in items.iter().enumerate() {
+            let (row, col) = ((i / 2) as i32, (i % 2) as i32);
+            let x = MARGIN as i32 + col * (bw + gap_x);
+            let by = top + row * row_h;
+            rect_outline(surf, x, by, bw, bh, 4, BLACK);
+            let px = fit_px(ui_font, item, 40.0, (bw - 40) as f32);
+            print_tight_centered(surf, ui_font, item, px, x + bw / 2, by + bh / 2, BLACK);
+            let mut b = BBox::empty();
+            b.add(x, by, 0);
+            b.add(x + bw, by + bh, 0);
+            debug_assert_eq!(choices.len(), base + i);
+            choices.push(b);
+        }
+        top + items.len().div_ceil(2) as i32 * row_h
+    };
+
+    let after_practice = section(
+        surf,
+        "PRACTICE",
+        (H * 14 / 100) as i32,
+        &MENU_ITEMS[..MENU_PRACTICE],
+        0,
+        &mut choices,
+    );
+    section(
+        surf,
+        "PLAY",
+        after_practice + (H * 4 / 100) as i32,
+        &MENU_ITEMS[MENU_PRACTICE..],
+        MENU_PRACTICE,
+        &mut choices,
+    );
+
+    HitMap {
+        answer: BBox::empty(),
+        done: BBox::empty(),
+        new: BBox::empty(),
+        menu: BBox::empty(),
+        choices,
+    }
+}
+
+fn fit_px(font: &FontRef, text: &str, px: f32, max_w: f32) -> f32 {
+    let w = script::measure(font, text, px);
+    if w > max_w {
+        px * max_w / w
+    } else {
+        px
+    }
 }
 
 // ---- primitives -----------------------------------------------------------
@@ -459,7 +573,7 @@ pub fn draw_look_again(surf: &mut Surface, answer: &BBox) -> BBox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::learn::problems::{generate, Rng};
+    use crate::learn::problems::{generate, Rng, Topic};
     use crate::surface::PixFmt;
 
     fn page() -> (Vec<u8>, Surface) {
@@ -492,9 +606,9 @@ mod tests {
         let mut rng = Rng::new(42);
         for level in 1..=4 {
             for rot in 0..6 {
-                let p = generate(level, rot, &mut rng);
+                let p = generate(level, Topic::Mix, rot, &mut rng);
                 let map = draw(&mut surf, &font, &p, level, 2);
-                for b in [&map.answer, &map.done, &map.new] {
+                for b in [&map.answer, &map.done, &map.new, &map.menu] {
                     assert!(!b.is_empty(), "empty region for {:?}", p.kind);
                     assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < H as i32);
                 }
@@ -502,7 +616,7 @@ mod tests {
                 // be unambiguous.
                 assert!(map.answer.y1 < map.done.y0, "{:?}", p.kind);
                 assert!(map.answer.y1 < map.new.y0, "{:?}", p.kind);
-                assert!(map.done.x0 > map.new.x1);
+                assert!(map.done.x0 > map.menu.x1 && map.menu.x0 > map.new.x1);
             }
         }
     }
@@ -528,12 +642,42 @@ mod tests {
                 b.add(400, 1830, 0);
                 b
             },
+            menu: {
+                let mut b = BBox::empty();
+                b.add(550, 1700, 0);
+                b.add(850, 1830, 0);
+                b
+            },
             choices: Vec::new(),
         };
         assert_eq!(map.hit(250, 250), Some(Target::Answer));
         assert_eq!(map.hit(1000, 1750), Some(Target::Done));
         assert_eq!(map.hit(200, 1750), Some(Target::New));
+        assert_eq!(map.hit(700, 1750), Some(Target::Menu));
         assert_eq!(map.hit(700, 900), None);
+    }
+
+    #[test]
+    fn the_menu_offers_every_item_as_a_disjoint_box_and_nothing_else() {
+        let font = ui_font();
+        let (_buf, mut surf) = page();
+        let map = draw_menu(&mut surf, &font);
+        assert_eq!(map.choices.len(), MENU_ITEMS.len());
+        assert!(map.done.is_empty() && map.new.is_empty() && map.menu.is_empty() && map.answer.is_empty());
+        for (i, b) in map.choices.iter().enumerate() {
+            assert!(!b.is_empty());
+            assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < H as i32);
+            assert!(dark_in(&surf, b) > 100, "menu box {i} must be visibly drawn");
+            for other in &map.choices[i + 1..] {
+                let apart = b.x1 < other.x0 || other.x1 < b.x0 || b.y1 < other.y0 || other.y1 < b.y0;
+                assert!(apart, "menu boxes {i} must not overlap");
+            }
+        }
+        // Every box resolves to its own choice index.
+        for (i, b) in map.choices.iter().enumerate() {
+            let (cx, cy) = ((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+            assert_eq!(map.hit(cx, cy), Some(Target::Choice(i)));
+        }
     }
 
     #[test]
