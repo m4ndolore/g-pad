@@ -69,6 +69,10 @@ pub struct TouchDevice {
     frame_y: Option<i32>,
     total_motion: i32,
     five_finger_hold_frames: usize,
+    /// Finger count of the previous frame; motion only accumulates while the
+    /// count is stable, so the averaged point jumping as fingers land or lift
+    /// is not mistaken for movement.
+    frame_fingers: usize,
 }
 
 impl TouchDevice {
@@ -95,6 +99,7 @@ impl TouchDevice {
                         frame_y: None,
                         total_motion: 0,
                         five_finger_hold_frames: 0,
+                        frame_fingers: 0,
                     });
                 }
             }
@@ -112,6 +117,7 @@ impl TouchDevice {
         self.frame_y = None;
         self.total_motion = 0;
         self.five_finger_hold_frames = 0;
+        self.frame_fingers = 0;
     }
 
     /// Compatibility helper for takeover apps that only use five-finger exit.
@@ -172,19 +178,25 @@ impl TouchDevice {
 
         let average_x = (count > 0).then(|| active.iter().map(|s| s.x).sum::<i32>() / count as i32);
         let average_y = (count > 0).then(|| active.iter().map(|s| s.y).sum::<i32>() / count as i32);
-        if let (Some(previous), Some(current)) = (self.frame_x, average_x) {
-            self.total_motion += (previous - current).abs();
-        }
-        if let (Some(previous), Some(current)) = (self.frame_y, average_y) {
-            let raw_delta = previous - current;
-            self.total_motion += raw_delta.abs();
-            if count == 2 {
-                let pixels = raw_delta * fb::SCREEN_H as i32 / TOUCH_MAX_Y;
-                if pixels != 0 {
-                    out.push(Gesture::Scroll(pixels));
+        // A finger landing or lifting yanks the averaged point sideways; that
+        // jump is a count change, not motion. Only frames with a stable count
+        // accumulate motion or scroll.
+        if count == self.frame_fingers {
+            if let (Some(previous), Some(current)) = (self.frame_x, average_x) {
+                self.total_motion += (previous - current).abs();
+            }
+            if let (Some(previous), Some(current)) = (self.frame_y, average_y) {
+                let raw_delta = previous - current;
+                self.total_motion += raw_delta.abs();
+                if count == 2 {
+                    let pixels = raw_delta * fb::SCREEN_H as i32 / TOUCH_MAX_Y;
+                    if pixels != 0 {
+                        out.push(Gesture::Scroll(pixels));
+                    }
                 }
             }
         }
+        self.frame_fingers = count;
         self.frame_y = average_y;
         self.frame_x = average_x;
 
@@ -276,6 +288,67 @@ fn five_finger_release_is_quit(max_fingers: usize, hold_frames: usize, motion: i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_device() -> TouchDevice {
+        TouchDevice {
+            fd: -1,
+            slots: [Slot::default(); MAX_SLOTS],
+            cur: 0,
+            max_fingers: 0,
+            frame_x: None,
+            frame_y: None,
+            total_motion: 0,
+            five_finger_hold_frames: 0,
+            frame_fingers: 0,
+        }
+    }
+
+    fn land(dev: &mut TouchDevice, slot: usize, x: i32, y: i32, out: &mut Vec<Gesture>) {
+        dev.slots[slot] = Slot { active: true, start_x: x, start_y: y, x, y };
+        dev.finish_frame(out);
+    }
+
+    // Fingers never land or lift simultaneously. The averaged contact point
+    // jumps by hundreds of raw units as each finger joins or leaves, and that
+    // jump must not count as motion, or a real hand can never hold still
+    // enough to quit.
+    #[test]
+    fn five_fingers_landing_one_per_frame_still_quit() {
+        let mut dev = test_device();
+        let mut out = Vec::new();
+        let xs = [200, 500, 800, 1100, 1300];
+        for (i, &x) in xs.iter().enumerate() {
+            land(&mut dev, i, x, 900 + i as i32 * 40, &mut out);
+        }
+        for _ in 0..FIVE_FINGER_HOLD_FRAMES + 5 {
+            dev.finish_frame(&mut out);
+        }
+        for i in 0..5 {
+            dev.slots[i].active = false;
+            dev.finish_frame(&mut out);
+        }
+        assert!(out.contains(&Gesture::Quit), "gestures were {out:?}");
+    }
+
+    #[test]
+    fn five_fingers_dragging_do_not_quit() {
+        let mut dev = test_device();
+        let mut out = Vec::new();
+        for i in 0..5 {
+            land(&mut dev, i, 200 + i as i32 * 250, 900, &mut out);
+        }
+        for step in 0..FIVE_FINGER_HOLD_FRAMES + 5 {
+            for i in 0..5 {
+                dev.slots[i].y = 900 + step as i32 * 8;
+            }
+            dev.finish_frame(&mut out);
+        }
+        for i in 0..5 {
+            dev.slots[i].active = false;
+            dev.finish_frame(&mut out);
+        }
+        assert!(!out.contains(&Gesture::Quit), "gestures were {out:?}");
+    }
 
     #[test]
     fn five_finger_quit_requires_a_stationary_hold() {
