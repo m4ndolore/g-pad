@@ -31,7 +31,7 @@ pub fn feedback_region() -> BBox {
     b
 }
 
-fn box_top() -> i32 {
+pub fn box_top() -> i32 {
     (H - H * 8 / 100 - 40) as i32
 }
 
@@ -41,14 +41,18 @@ pub enum Target {
     Answer,
     Done,
     New,
+    /// A story choice box (the play pages), by index.
+    Choice(usize),
 }
 
 /// The rendered regions of the current sheet.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct HitMap {
     pub answer: BBox,
     pub done: BBox,
     pub new: BBox,
+    /// Story choice boxes; empty on every other page.
+    pub choices: Vec<BBox>,
 }
 
 impl HitMap {
@@ -56,15 +60,30 @@ impl HitMap {
     pub fn hit(&self, x: i32, y: i32) -> Option<Target> {
         let inside = |b: &BBox| !b.is_empty() && x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
         if inside(&self.done) {
-            Some(Target::Done)
-        } else if inside(&self.new) {
-            Some(Target::New)
-        } else if inside(&self.answer) {
-            Some(Target::Answer)
-        } else {
-            None
+            return Some(Target::Done);
         }
+        if inside(&self.new) {
+            return Some(Target::New);
+        }
+        for (i, c) in self.choices.iter().enumerate() {
+            if inside(c) {
+                return Some(Target::Choice(i));
+            }
+        }
+        if inside(&self.answer) {
+            return Some(Target::Answer);
+        }
+        None
     }
+}
+
+/// Draw only the page footer — the DONE and NEW decision boxes — and return
+/// a hit map with everything else empty. The play pages start from this and
+/// declare their own regions.
+pub fn draw_footer(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
+    let done = draw_action_box(surf, ui_font, false);
+    let new = draw_action_box(surf, ui_font, true);
+    HitMap { answer: BBox::empty(), done, new, choices: Vec::new() }
 }
 
 /// Draw the whole sheet for `problem` onto a white page and return its hit
@@ -94,7 +113,7 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, problem: &Problem, level: u8,
 
     let done = draw_action_box(surf, ui_font, false);
     let new = draw_action_box(surf, ui_font, true);
-    HitMap { answer, done, new }
+    HitMap { answer, done, new, choices: Vec::new() }
 }
 
 /// Repaint the two decision boxes: called after an absorbed mark's white-out,
@@ -509,6 +528,7 @@ mod tests {
                 b.add(400, 1830, 0);
                 b
             },
+            choices: Vec::new(),
         };
         assert_eq!(map.hit(250, 250), Some(Target::Answer));
         assert_eq!(map.hit(1000, 1750), Some(Target::Done));

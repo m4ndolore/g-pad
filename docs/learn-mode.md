@@ -75,6 +75,35 @@ Feedback writes itself in the reply hand in a reserved strip above the
 decision boxes, wiped before each new reply so encouragement never stacks
 into clutter. Learn turns never enter the diary's memory.
 
+## The play deck
+
+Every couple of correct answers earns a **play page** — the treat that keeps
+the worksheets moving (`RIDDLE_LEARN_PLAY` = `earned` (default) | `always` |
+`never`). Three games rotate, all on the same marks, all shaped by one
+hardware truth: the pad cannot fetch pictures, but it can draw geometry
+anchored to the child's ink, and it can write.
+
+- **Doodle critter** — turn-taking drawing. The child doodles anything and
+  marks DONE; the model picks ONE decoration from a fixed menu (googly eyes,
+  stick legs, arms, a party hat, antennae, a curly tail, sun rays, a crown, a
+  mustache, a speech bubble with a word of its choosing), the pad draws it
+  anchored to the ink bbox and writes a one-line christening ("His name is
+  Kevin and he is late for soup."). Add more, mark again, it escalates. The
+  model's choice travels as a leading menu word — the same
+  parse-a-word-or-degrade-gracefully protocol as the verdicts, so a chatty
+  model still lands its caption and the game never stalls.
+- **The pad guesses** — reverse Pictionary. The child draws, marks DONE, and
+  the pad guesses — starting sensible, getting sillier — then asks for one
+  more detail. Pure prose; nothing to parse.
+- **Story paths** — a choose-your-own-adventure. The child draws the hero
+  first (an empty page just means the pad invents one); each beat writes
+  itself and ends in three choice boxes, new anchored targets in the hit map.
+  A mark in one picks the path; prior beats ride the oracle's existing
+  history transport so the tale stays coherent. A model that forgets its
+  choices degrades to GO ON / LOOK AROUND / GO HOME — a beat can never
+  render without a way onward. The child can doodle each scene; the ink goes
+  along with the next choice.
+
 ## Entry and exit
 
 Settings gains a **KIDS LEARN MODE** row. The page choice persists

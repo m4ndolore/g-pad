@@ -288,6 +288,63 @@ fn learn_sheets(dir: &str) -> i32 {
             session.next();
         }
     }
+    // The play pages: each game's opening sheet, plus a story mid-beat.
+    let mut session = learn::Session::start_at(1, 99);
+    let pages: [(&str, learn::Page); 4] = [
+        ("critter", learn::Page::Play(learn::games::Game::Critter { round: 0 })),
+        ("guess", learn::Page::Play(learn::games::Game::Guess)),
+        ("story-start", learn::Page::Play(learn::games::Game::story())),
+        (
+            "story-beat",
+            learn::Page::Play(learn::games::Game::Story {
+                log: vec![(String::new(), "A brave sock puppet set out at dawn.".into())],
+                choices: vec!["EAT IT".into(), "RUN AWAY".into(), "ASK NICELY".into()],
+                pending: None,
+            }),
+        ),
+    ];
+    for (name, page) in pages {
+        session.page = page;
+        session.draw(&mut surf, &ui_font);
+        let path = format!("{dir}/play-{name}.png");
+        if let Err(e) = dump_page(&surf, &path) {
+            eprintln!("g-pad: write {path}: {e}");
+            return 1;
+        }
+        println!("{path}");
+    }
+    // One critter mid-game, so the pad's turns can be judged: a child-ish
+    // blob wearing three of the pad's decorations.
+    session.page = learn::Page::Play(learn::games::Game::Critter { round: 3 });
+    session.draw(&mut surf, &ui_font);
+    let (cx, cy, r0) = (SCREEN_W as i32 / 2, SCREEN_H as i32 * 2 / 5, 220.0f32);
+    let mut prev: Option<(i32, i32)> = None;
+    for i in 0..=72 {
+        let a = i as f32 * std::f32::consts::TAU / 72.0;
+        let r = r0 + (a * 5.0).sin() * 26.0; // a wobbly hand-drawn circle
+        let (x, y) = (cx + (r * a.cos()) as i32, cy + (r * a.sin()) as i32);
+        if let Some((px, py)) = prev {
+            surf.brush_line(px, py, x, y, 4, BLACK);
+        }
+        prev = Some((x, y));
+    }
+    let mut blob = BBox::empty();
+    blob.add(cx - 250, cy - 250, 0);
+    blob.add(cx + 250, cy + 250, 0);
+    for deco in [
+        learn::games::Deco::Eyes,
+        learn::games::Deco::Hat,
+        learn::games::Deco::Legs,
+        learn::games::Deco::Bubble("MOO".into()),
+    ] {
+        learn::games::draw_deco(&mut surf, &blob, &deco, &ui_font);
+    }
+    let path = format!("{dir}/play-critter-demo.png");
+    if let Err(e) = dump_page(&surf, &path) {
+        eprintln!("g-pad: write {path}: {e}");
+        return 1;
+    }
+    println!("{path}");
     0
 }
 
@@ -308,9 +365,10 @@ fn learn_test(answer: Option<&str>) -> i32 {
     let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
     let mut session = learn::Session::start_at(2, 7);
     session.draw(&mut surf, &ui_font);
-    let expected = session.problem.expected();
+    let problem = session.as_practice().expect("start_at deals a practice page").clone();
+    let expected = problem.expected();
     let written = answer.unwrap_or(&expected);
-    println!("exercise: {}", session.problem.brief());
+    println!("exercise: {}", problem.brief());
     println!("child writes: {written}");
 
     // "Handwrite" the answer into the blank with the reply pipeline.
@@ -1095,6 +1153,15 @@ fn run() -> std::io::Result<()> {
         if let Some(tick) = learn_tick.take() {
             if matches!(state, State::Listening { .. }) {
                 if let Some(ref mut session) = learn_session {
+                    // A choice tick must name a box that exists on this page;
+                    // registering it also latches the label for the ask.
+                    let tick_valid = match tick {
+                        LearnTick::Choice(i) => session.choose(i).is_some(),
+                        _ => true,
+                    };
+                    if !tick_valid {
+                        // A stale mark (no such box): nothing to do.
+                    } else {
                     match tick {
                         LearnTick::New => {
                             session.next();
@@ -1102,13 +1169,17 @@ fn run() -> std::io::Result<()> {
                             session.draw(&mut surf, &ui_font);
                             disp.full_refresh(surf.w, surf.h);
                         }
-                        LearnTick::Done => {
+                        // A choice tick is a DONE with the chosen box latched.
+                        LearnTick::Done | LearnTick::Choice(_) => {
                             clear_feedback(&mut surf, &disp);
-                            if !user_ink.has_ink_in(&session.hits.answer) {
+                            if session.needs_ink() && !user_ink.has_ink_in(&session.hits.answer) {
                                 // An empty blank needs no oracle to mark.
                                 turn_failed = true;
-                                let plan = plan_reply(&font, "Write your answer first, then mark DONE.",
-                                    Some(learn::sheet::feedback_y()));
+                                let nudge = match session.page {
+                                    learn::Page::Practice(_) => "Write your answer first, then mark DONE.",
+                                    learn::Page::Play(_) => "Draw something first, then mark DONE.",
+                                };
+                                let plan = plan_reply(&font, nudge, Some(learn::sheet::feedback_y()));
                                 state = State::Replying { plan, next: Instant::now(), rx: None };
                             } else if let Some(ref o) = oracle {
                                 if let Err(e) = ink::region_png(&surf, session.hits.answer, PNG_PATH) {
@@ -1116,6 +1187,8 @@ fn run() -> std::io::Result<()> {
                                 }
                                 let ctx = oracle::TurnContext {
                                     instruction: Some(session.instruction()),
+                                    // Story beats stay coherent across turns.
+                                    history: session.story_history(),
                                     ..Default::default()
                                 };
                                 let (tx, rx) = mpsc::channel();
@@ -1137,6 +1210,7 @@ fn run() -> std::io::Result<()> {
                                 state = State::Replying { plan, next: Instant::now(), rx: None };
                             }
                         }
+                    }
                     }
                 }
             }
@@ -1447,52 +1521,98 @@ fn run() -> std::io::Result<()> {
                     }
                     Err(mpsc::TryRecvError::Disconnected) => {
                         clear_blot(&mut surf, &disp);
-                        let (verdict, feedback) = learn::verdict::parse(got.trim());
-                        let mut mark_dirty = BBox::empty();
+                        let mut text = String::new();
+                        let mut text_y = learn::sheet::feedback_y();
                         if let Some(ref mut session) = learn_session {
-                            session.record(verdict);
-                            let answer = session.hits.answer;
-                            match verdict {
-                                learn::Verdict::Yes => {
-                                    // The winning answer stays on show, but the
-                                    // tracked ink is dropped so a second DONE
-                                    // cannot resubmit it (or a mixture).
-                                    user_ink.clear();
-                                    mark_dirty = learn::sheet::draw_check(&mut surf, &answer);
+                            match learn_flavor(session) {
+                                LearnFlavor::Practice => {
+                                    let (verdict, feedback) = learn::verdict::parse(got.trim());
+                                    session.record(verdict);
+                                    let answer = session.hits.answer;
+                                    let mut mark_dirty = BBox::empty();
+                                    match verdict {
+                                        learn::Verdict::Yes => {
+                                            // The winning answer stays on show, but
+                                            // the tracked ink is dropped so a second
+                                            // DONE cannot resubmit it (or a mixture).
+                                            user_ink.clear();
+                                            mark_dirty = learn::sheet::draw_check(&mut surf, &answer);
+                                        }
+                                        learn::Verdict::Almost | learn::Verdict::No => {
+                                            // A clean retry: repaint the sheet so the
+                                            // next attempt is written into an empty
+                                            // blank, never on top of the last one —
+                                            // the tutor must only ever be shown one
+                                            // answer at a time.
+                                            user_ink.clear();
+                                            session.draw(&mut surf, &ui_font);
+                                            learn::sheet::draw_look_again(&mut surf, &answer);
+                                            disp.full_refresh(surf.w, surf.h);
+                                        }
+                                        // An unreadable verdict moves nothing: the ink
+                                        // stays, and DONE can simply be marked again.
+                                        learn::Verdict::Unknown => {}
+                                    }
+                                    if !mark_dirty.is_empty() {
+                                        let (x, y, w, h) = mark_dirty.rect();
+                                        disp.update(x, y, w, h, true);
+                                    }
+                                    text = if feedback.trim().is_empty() {
+                                        match verdict {
+                                            learn::Verdict::Yes => "Yes! Well done.".to_string(),
+                                            learn::Verdict::Almost => "So close! Look once more.".to_string(),
+                                            learn::Verdict::No => "Not yet. Try again!".to_string(),
+                                            learn::Verdict::Unknown => oracle_excuse("empty reply"),
+                                        }
+                                    } else {
+                                        feedback
+                                    };
                                 }
-                                learn::Verdict::Almost | learn::Verdict::No => {
-                                    // A clean retry: repaint the sheet so the
-                                    // next attempt is written into an empty
-                                    // blank, never on top of the last one —
-                                    // the tutor must only ever be shown one
-                                    // answer at a time.
+                                LearnFlavor::Critter => {
+                                    // The pad's turn: one decoration on the
+                                    // doodle, one line of commentary.
+                                    let (deco, caption) = learn::games::parse_critter(got.trim());
+                                    if let Some(d) = deco {
+                                        let dirty = learn::games::draw_deco(&mut surf, &user_ink.bbox, &d, &ui_font);
+                                        if !dirty.is_empty() {
+                                            let (x, y, w, h) = dirty.rect();
+                                            disp.update(x, y, w, h, true);
+                                        }
+                                    }
+                                    session.critter_turn();
+                                    text = if caption.trim().is_empty() {
+                                        "There. Much better.".to_string()
+                                    } else {
+                                        caption
+                                    };
+                                }
+                                LearnFlavor::Guess => {
+                                    text = if got.trim().is_empty() {
+                                        "Hmm. Draw one more clue!".to_string()
+                                    } else {
+                                        got.trim().to_string()
+                                    };
+                                }
+                                LearnFlavor::Story => {
+                                    // A fresh scene: log the beat, offer the next
+                                    // three doors, clear the stage for doodling.
+                                    let (beat, choices) = learn::games::parse_story(got.trim());
+                                    session.story_advance(beat.clone(), choices);
                                     user_ink.clear();
                                     session.draw(&mut surf, &ui_font);
-                                    learn::sheet::draw_look_again(&mut surf, &answer);
                                     disp.full_refresh(surf.w, surf.h);
+                                    text_y = learn::games::story_text_y();
+                                    text = if beat.trim().is_empty() {
+                                        "And then... hmm. Mark a box!".to_string()
+                                    } else {
+                                        beat
+                                    };
                                 }
-                                // An unreadable verdict moves nothing: the ink
-                                // stays, and DONE can simply be marked again.
-                                learn::Verdict::Unknown => {}
                             }
                         }
-                        if !mark_dirty.is_empty() {
-                            let (x, y, w, h) = mark_dirty.rect();
-                            disp.update(x, y, w, h, true);
-                        }
-                        let text = if feedback.trim().is_empty() {
-                            match verdict {
-                                learn::Verdict::Yes => "Yes! Well done.".to_string(),
-                                learn::Verdict::Almost => "So close! Look once more.".to_string(),
-                                learn::Verdict::No => "Not yet. Try again!".to_string(),
-                                learn::Verdict::Unknown => oracle_excuse("empty reply"),
-                            }
-                        } else {
-                            feedback
-                        };
-                        // A worksheet turn never enters the diary's memory.
+                        // A Learn turn never enters the diary's memory.
                         turn_failed = true;
-                        let plan = plan_reply(&font, &text, Some(learn::sheet::feedback_y()));
+                        let plan = plan_reply(&font, &text, Some(text_y));
                         State::Replying { plan, next: Instant::now(), rx: None }
                     }
                 }
@@ -1790,11 +1910,32 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
     }
 }
 
+/// What kind of page a Learn reply resolves against — a copyable snapshot so
+/// resolution can branch without holding a borrow of the session's page.
+#[derive(Clone, Copy)]
+enum LearnFlavor {
+    Practice,
+    Critter,
+    Guess,
+    Story,
+}
+
+fn learn_flavor(session: &learn::Session) -> LearnFlavor {
+    match &session.page {
+        learn::Page::Practice(_) => LearnFlavor::Practice,
+        learn::Page::Play(learn::games::Game::Critter { .. }) => LearnFlavor::Critter,
+        learn::Page::Play(learn::games::Game::Guess) => LearnFlavor::Guess,
+        learn::Page::Play(learn::games::Game::Story { .. }) => LearnFlavor::Story,
+    }
+}
+
 /// Which decision box a Learn-mode mark landed in.
 #[derive(Clone, Copy)]
 enum LearnTick {
     Done,
     New,
+    /// A story choice box, by index.
+    Choice(usize),
 }
 
 /// An anchored Learn-mode mark: if the just-finished stroke's centroid landed
@@ -1808,12 +1949,17 @@ fn learn_mark(ink: &mut ink::Ink, session: &learn::Session, ui_font: &FontRef,
     let tick = match session.hits.hit(cx, cy) {
         Some(learn::Target::Done) => LearnTick::Done,
         Some(learn::Target::New) => LearnTick::New,
+        Some(learn::Target::Choice(i)) => LearnTick::Choice(i),
         _ => return None,
     };
     if let Some(gone) = ink.pop_stroke() {
         let (x, y, w, h) = gone.rect();
         surf.fill_rect(x.max(0) as usize, y.max(0) as usize, w as usize, h as usize, WHITE);
         learn::sheet::refresh_boxes(surf, ui_font);
+        // A story page also has choice boxes under the mark; repaint them.
+        if let learn::Page::Play(learn::games::Game::Story { choices, .. }) = &session.page {
+            let _ = learn::games::draw_choices(surf, ui_font, choices);
+        }
         disp.update(x, y, w, h, true);
     }
     Some(tick)
