@@ -40,9 +40,14 @@ pub struct SessionData {
 /// or is a shape this reader does not know, contributes nothing rather than
 /// failing the file.
 pub fn parse(id: &str, text: &str) -> SessionData {
-    let mut s = SessionData { id: id.to_string(), ..Default::default() };
+    let mut s = SessionData {
+        id: id.to_string(),
+        ..Default::default()
+    };
     for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         if let Some(cwd) = v.get("cwd").and_then(Value::as_str) {
             s.cwd = cwd.to_string();
         }
@@ -56,7 +61,9 @@ pub fn parse(id: &str, text: &str) -> SessionData {
         if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        let Some(msg) = v.get("message") else { continue };
+        let Some(msg) = v.get("message") else {
+            continue;
+        };
         match msg.get("role").and_then(Value::as_str) {
             Some("user") => read_user(&v, msg, &mut s),
             Some("assistant") => read_assistant(msg, &mut s),
@@ -67,7 +74,11 @@ pub fn parse(id: &str, text: &str) -> SessionData {
         // No human spoke plainly (a skill launch, a probe). The project's
         // name reads; a UUID does not.
         let dir = s.cwd.rsplit('/').next().unwrap_or("");
-        s.title = if dir.is_empty() { s.id.clone() } else { dir.to_string() };
+        s.title = if dir.is_empty() {
+            s.id.clone()
+        } else {
+            dir.to_string()
+        };
     }
     s
 }
@@ -105,11 +116,16 @@ fn push_human(text: &str, s: &mut SessionData) {
     if s.title.is_empty() {
         s.title = first_line_capped(text, 72);
     }
-    s.turns.push(Turn { speaker: "you".to_string(), text: text.to_string() });
+    s.turns.push(Turn {
+        speaker: "you".to_string(),
+        text: text.to_string(),
+    });
 }
 
 fn read_assistant(msg: &Value, s: &mut SessionData) {
-    let Some(Value::Array(blocks)) = msg.get("content") else { return };
+    let Some(Value::Array(blocks)) = msg.get("content") else {
+        return;
+    };
     let mut prose = String::new();
     for b in blocks {
         match b.get("type").and_then(Value::as_str) {
@@ -137,21 +153,31 @@ fn read_assistant(msg: &Value, s: &mut SessionData) {
             return;
         }
     }
-    s.turns.push(Turn { speaker: "claude".to_string(), text: prose });
+    s.turns.push(Turn {
+        speaker: "claude".to_string(),
+        text: prose,
+    });
 }
 
 /// A file the agent wrote is a fact with an address. The path is the
 /// reference; which tool touched it is the label.
 fn read_tool_use(b: &Value, s: &mut SessionData) {
-    let Some(name) = b.get("name").and_then(Value::as_str) else { return };
+    let Some(name) = b.get("name").and_then(Value::as_str) else {
+        return;
+    };
     if !matches!(name, "Write" | "Edit" | "NotebookEdit") {
         return;
     }
-    let Some(path) = b.pointer("/input/file_path").and_then(Value::as_str) else { return };
+    let Some(path) = b.pointer("/input/file_path").and_then(Value::as_str) else {
+        return;
+    };
     if s.artifacts.iter().any(|a| a.reference == path) {
         return;
     }
-    s.artifacts.push(Artifact { reference: path.to_string(), label: "edited".to_string() });
+    s.artifacts.push(Artifact {
+        reference: path.to_string(),
+        label: "edited".to_string(),
+    });
 }
 
 /// Find `[branch abc1234] subject` commit lines in tool-result text.
@@ -171,7 +197,10 @@ fn scan_commits(text: &str, s: &mut SessionData) {
                 // Tool results arrive JSON-escaped; a subject that still
                 // carries escapes reads as noise, so keep it plain.
                 let label = label.split('\\').next().unwrap_or("").trim().to_string();
-                s.artifacts.push(Artifact { reference: sha, label });
+                s.artifacts.push(Artifact {
+                    reference: sha,
+                    label,
+                });
             }
         }
     }
@@ -203,10 +232,16 @@ fn first_line_capped(text: &str, cap: usize) -> String {
 /// The transcript writes UTC; the reviewer reads a wall clock. Date math
 /// stays trivial because only the clock is shown, never the day.
 pub fn clock(iso: &str, tz_offset_hours: i64) -> String {
-    let Some(t) = iso.find('T') else { return String::new() };
+    let Some(t) = iso.find('T') else {
+        return String::new();
+    };
     let hhmm = &iso[t + 1..];
-    let (Some(h), Some(m)) = (hhmm.get(0..2), hhmm.get(3..5)) else { return String::new() };
-    let (Ok(h), Ok(m)) = (h.parse::<i64>(), m.parse::<i64>()) else { return String::new() };
+    let (Some(h), Some(m)) = (hhmm.get(0..2), hhmm.get(3..5)) else {
+        return String::new();
+    };
+    let (Ok(h), Ok(m)) = (h.parse::<i64>(), m.parse::<i64>()) else {
+        return String::new();
+    };
     let h = (h + tz_offset_hours).rem_euclid(24);
     format!("{h:02}:{m:02}")
 }
@@ -277,7 +312,10 @@ mod tests {
     #[test]
     fn long_titles_are_capped() {
         let long = "a ".repeat(100);
-        let s = parse("x", &format!(r#"{{"type":"user","message":{{"role":"user","content":"{long}"}}}}"#));
+        let s = parse(
+            "x",
+            &format!(r#"{{"type":"user","message":{{"role":"user","content":"{long}"}}}}"#),
+        );
         assert!(s.title.chars().count() <= 72);
         assert!(s.title.ends_with('…'));
     }

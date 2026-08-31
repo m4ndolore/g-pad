@@ -10,10 +10,11 @@
 //!
 //! Runs on the machine the pad can reach. The pad never learns tmux exists.
 
-mod transcript;
 mod tmux;
+mod transcript;
 
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -39,7 +40,10 @@ struct Hub {
 }
 
 fn main() {
-    let port = std::env::var("HUB_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(9707u16);
+    let port = std::env::var("HUB_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(9707u16);
     let projects_root = std::env::var("HUB_PROJECTS")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home().join(".claude/projects"));
@@ -56,27 +60,40 @@ fn main() {
             std::process::exit(1);
         }
     };
-    eprintln!("anthink-hub: serving {} on :{port}", hub.projects_root.display());
+    eprintln!(
+        "anthink-hub: serving {} on :{port}",
+        hub.projects_root.display()
+    );
 
+    // One thread per request: a stalled client must not block the pad's next
+    // poll. The Hub is all Mutex-guarded state, so sharing it is safe.
+    let hub = std::sync::Arc::new(hub);
     for mut request in server.incoming_requests() {
-        let method = request.method().to_string();
-        let url = request.url().to_string();
-        let response = match (method.as_str(), url.as_str()) {
-            ("GET", "/sessions") => ok_json(hub.board()),
-            ("POST", _) => match nudge_target(&url) {
-                Some(id) => {
-                    let mut body = String::new();
-                    let _ = request.as_reader().read_to_string(&mut body);
-                    match hub.nudge(&id, &body) {
-                        Ok(()) => ok_json(json!({"ok": true})),
-                        Err(e) => err_json(409, &e),
+        let hub = hub.clone();
+        std::thread::spawn(move || {
+            let method = request.method().to_string();
+            let url = request.url().to_string();
+            let response = match (method.as_str(), url.as_str()) {
+                ("GET", "/sessions") => ok_json(hub.board()),
+                ("POST", _) => match nudge_target(&url) {
+                    Some(id) => {
+                        // A nudge body is tiny; anything larger is not a nudge.
+                        let mut body = String::new();
+                        let _ = request
+                            .as_reader()
+                            .take(16 * 1024)
+                            .read_to_string(&mut body);
+                        match hub.nudge(&id, &body) {
+                            Ok(()) => ok_json(json!({"ok": true})),
+                            Err(e) => err_json(409, &e),
+                        }
                     }
-                }
-                None => err_json(404, "unknown path"),
-            },
-            _ => err_json(404, "unknown path"),
-        };
-        let _ = request.respond(response);
+                    None => err_json(404, "unknown path"),
+                },
+                _ => err_json(404, "unknown path"),
+            };
+            let _ = request.respond(response);
+        });
     }
 }
 
@@ -91,26 +108,23 @@ impl Hub {
     /// The board: every fresh session, the neediest first.
     fn board(&self) -> Value {
         let mut sessions = self.fresh_sessions();
-        let panes = tmux::claude_panes();
-        // One capture per distinct pane, not per session sharing it.
-        let mut pane_states: HashMap<String, tmux::PaneState> = HashMap::new();
+        let panes = classified_panes();
         let mut rows: Vec<(u8, String, Value)> = sessions
             .drain(..)
             .map(|s| {
                 let state = pane_for(&panes, &s.cwd)
-                    .map(|p| {
-                        *pane_states
-                            .entry(p.id.clone())
-                            .or_insert_with(|| tmux::classify(&tmux::capture(&p.id)))
-                    })
-                    .map(tmux::PaneState::word)
+                    .map(|(_, st)| st.word())
                     .unwrap_or("done");
                 let rank = match state {
                     "waiting" => 0,
                     "running" => 1,
                     _ => 2,
                 };
-                (rank, s.updated_iso.clone(), row(&s, state, self.tz_offset_hours))
+                (
+                    rank,
+                    s.updated_iso.clone(),
+                    row(&s, state, self.tz_offset_hours),
+                )
             })
             .collect();
         rows.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
@@ -125,7 +139,11 @@ impl Hub {
             "tick" => tmux::Nudge::Tick,
             "strike" => tmux::Nudge::Strike,
             "text" => {
-                let t = v.get("text").and_then(Value::as_str).unwrap_or_default().trim();
+                let t = v
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
                 if t.is_empty() {
                     return Err("a text nudge needs text".to_string());
                 }
@@ -138,8 +156,8 @@ impl Hub {
             .into_iter()
             .find(|s| s.id == id)
             .ok_or_else(|| format!("no fresh session {id}"))?;
-        let panes = tmux::claude_panes();
-        let pane = pane_for(&panes, &session.cwd)
+        let panes = classified_panes();
+        let (pane, _) = pane_for(&panes, &session.cwd)
             .ok_or_else(|| format!("no pane is running claude in {}", session.cwd))?;
         tmux::nudge(pane, &n)
     }
@@ -148,10 +166,14 @@ impl Hub {
     /// where the file has not changed).
     fn fresh_sessions(&self) -> Vec<SessionData> {
         let mut out = Vec::new();
-        let Ok(projects) = std::fs::read_dir(&self.projects_root) else { return out };
+        let Ok(projects) = std::fs::read_dir(&self.projects_root) else {
+            return out;
+        };
         let now = SystemTime::now();
         for project in projects.flatten() {
-            let Ok(files) = std::fs::read_dir(project.path()) else { continue };
+            let Ok(files) = std::fs::read_dir(project.path()) else {
+                continue;
+            };
             for f in files.flatten() {
                 let path = f.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
@@ -159,7 +181,11 @@ impl Hub {
                 }
                 let Ok(meta) = f.metadata() else { continue };
                 let Ok(mtime) = meta.modified() else { continue };
-                if now.duration_since(mtime).map(|d| d > FRESH_WINDOW).unwrap_or(true) {
+                if now
+                    .duration_since(mtime)
+                    .map(|d| d > FRESH_WINDOW)
+                    .unwrap_or(true)
+                {
                     continue;
                 }
                 if let Some(s) = self.parse_cached(&path, (mtime, meta.len())) {
@@ -192,15 +218,32 @@ impl Hub {
     }
 }
 
+/// Every claude pane with its state read once. One capture per pane per
+/// request, not per session sharing it.
+fn classified_panes() -> Vec<(tmux::Pane, tmux::PaneState)> {
+    tmux::claude_panes()
+        .into_iter()
+        .map(|p| {
+            let st = tmux::classify(&tmux::capture(&p.id));
+            (p, st)
+        })
+        .collect()
+}
+
 /// The pane whose working directory is the session's. The picker shares a
-/// directory with real work, so a session that also matches a non-picker
-/// pane must get the real one — callers get the first match after panes are
-/// filtered here; picker refusal happens at nudge time.
-fn pane_for<'a>(panes: &'a [tmux::Pane], cwd: &str) -> Option<&'a tmux::Pane> {
+/// directory with real work, so it can never represent a session: only
+/// non-picker panes match, and a session whose sole pane is the picker gets
+/// none (its state reads as done, and a nudge to it is refused).
+fn pane_for<'a>(
+    panes: &'a [(tmux::Pane, tmux::PaneState)],
+    cwd: &str,
+) -> Option<&'a (tmux::Pane, tmux::PaneState)> {
     if cwd.is_empty() {
         return None;
     }
-    panes.iter().find(|p| p.path == cwd)
+    panes
+        .iter()
+        .find(|(p, st)| p.path == cwd && *st != tmux::PaneState::Picker)
 }
 
 fn row(s: &SessionData, state: &str, tz: i64) -> Value {
@@ -242,11 +285,17 @@ fn json_response(code: u16, v: Value) -> tiny_http::Response<std::io::Cursor<Vec
     let body = v.to_string().into_bytes();
     tiny_http::Response::from_data(body)
         .with_status_code(code)
-        .with_header("Content-Type: application/json".parse::<tiny_http::Header>().unwrap())
+        .with_header(
+            "Content-Type: application/json"
+                .parse::<tiny_http::Header>()
+                .unwrap(),
+        )
 }
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/"))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 /// The machine's UTC offset, read once at startup from `date +%z`.
@@ -267,7 +316,10 @@ mod tests {
 
     #[test]
     fn nudge_paths_parse_and_reject() {
-        assert_eq!(nudge_target("/sessions/abc-123/nudge").as_deref(), Some("abc-123"));
+        assert_eq!(
+            nudge_target("/sessions/abc-123/nudge").as_deref(),
+            Some("abc-123")
+        );
         assert_eq!(nudge_target("/sessions//nudge"), None);
         assert_eq!(nudge_target("/sessions/a/b/nudge"), None);
         assert_eq!(nudge_target("/other"), None);
@@ -280,8 +332,14 @@ mod tests {
             title: "Wire the bridge".into(),
             cwd: "/x".into(),
             updated_iso: "2026-08-30T18:04:00.000Z".into(),
-            turns: vec![transcript::Turn { speaker: "you".into(), text: "go".into() }],
-            artifacts: vec![transcript::Artifact { reference: "a1b2c3d".into(), label: "l".into() }],
+            turns: vec![transcript::Turn {
+                speaker: "you".into(),
+                text: "go".into(),
+            }],
+            artifacts: vec![transcript::Artifact {
+                reference: "a1b2c3d".into(),
+                label: "l".into(),
+            }],
         };
         let r = row(&s, "waiting", -10);
         assert_eq!(r["state"], "waiting");
@@ -293,9 +351,15 @@ mod tests {
     #[test]
     fn only_the_last_turns_ride_and_order_survives() {
         let turns: Vec<transcript::Turn> = (0..20)
-            .map(|i| transcript::Turn { speaker: "claude".into(), text: format!("t{i}") })
+            .map(|i| transcript::Turn {
+                speaker: "claude".into(),
+                text: format!("t{i}"),
+            })
             .collect();
-        let s = SessionData { turns, ..Default::default() };
+        let s = SessionData {
+            turns,
+            ..Default::default()
+        };
         let r = row(&s, "running", 0);
         let sent = r["turns"].as_array().unwrap();
         assert_eq!(sent.len(), MAX_TURNS);

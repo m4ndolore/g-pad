@@ -43,7 +43,12 @@ impl PaneState {
 /// Every pane on the server that is running the claude CLI.
 pub fn claude_panes() -> Vec<Pane> {
     let out = Command::new("tmux")
-        .args(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}"])
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}",
+        ])
         .output();
     let Ok(out) = out else { return Vec::new() };
     String::from_utf8_lossy(&out.stdout)
@@ -106,7 +111,10 @@ pub enum Nudge {
 /// must never become a new task in the fleet UI.
 pub fn nudge(pane: &Pane, n: &Nudge) -> Result<(), String> {
     if classify(&capture(&pane.id)) == PaneState::Picker {
-        return Err(format!("pane {} is the session picker, not a session", pane.id));
+        return Err(format!(
+            "pane {} is the session picker, not a session",
+            pane.id
+        ));
     }
     let status = match n {
         Nudge::Tick => send_keys(&pane.id, &["1"], false),
