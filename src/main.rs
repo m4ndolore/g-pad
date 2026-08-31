@@ -383,6 +383,30 @@ fn learn_sheets(dir: &str) -> i32 {
         return 1;
     }
     println!("{path}");
+    // The three verdict stamps a child actually sees, on a real sheet.
+    let mut session = learn::Session::start_at(2, 7);
+    let samples: [(&str, &str, &str, bool); 3] = [
+        ("yes", "GREAT JOB!", "", true),
+        ("almost", "SO CLOSE!", "Your 3 is facing the wrong way.", false),
+        ("no", "TRY AGAIN!", "Count the dots one by one.", false),
+    ];
+    for (name, cheer, hint, starred) in samples {
+        session.draw(&mut surf, &ui_font);
+        let answer = session.hits.answer;
+        if starred {
+            learn::sheet::draw_check(&mut surf, &answer);
+        } else {
+            learn::sheet::draw_look_again(&mut surf, &answer);
+        }
+        learn::sheet::draw_feedback(&mut surf, &ui_font, cheer, hint, starred);
+        let path = format!("{dir}/learn-verdict-{name}.png");
+        if let Err(e) = dump_page(&surf, &path) {
+            eprintln!("g-pad: write {path}: {e}");
+            return 1;
+        }
+        println!("{path}");
+        session.next();
+    }
     0
 }
 
@@ -459,9 +483,10 @@ fn learn_test(answer: Option<&str>) -> i32 {
             Err(_) => break,
         }
     }
-    let (verdict, feedback) = learn::verdict::parse(got.trim());
+    let (verdict, fb) = learn::verdict::parse(got.trim());
     println!("verdict: {verdict:?}");
-    println!("feedback: {feedback}");
+    println!("cheer: {}", fb.cheer);
+    println!("hint: {}", fb.hint);
     i32::from(verdict == learn::Verdict::Unknown)
 }
 
@@ -1670,10 +1695,13 @@ fn run() -> std::io::Result<()> {
                         clear_blot(&mut surf, &disp);
                         let mut text = String::new();
                         let mut text_y = learn::sheet::feedback_y();
+                        // Practice verdicts are stamped in print, not written
+                        // in the reply hand — no animation to sit through.
+                        let mut stamped = false;
                         if let Some(ref mut session) = learn_session {
                             match learn_flavor(session) {
                                 LearnFlavor::Practice => {
-                                    let (verdict, feedback) = learn::verdict::parse(got.trim());
+                                    let (verdict, fb) = learn::verdict::parse(got.trim());
                                     session.record(verdict);
                                     let answer = session.hits.answer;
                                     let mut mark_dirty = BBox::empty();
@@ -1707,16 +1735,20 @@ fn run() -> std::io::Result<()> {
                                         let (x, y, w, h) = mark_dirty.rect();
                                         disp.update(x, y, w, h, true);
                                     }
-                                    text = if feedback.trim().is_empty() {
-                                        match verdict {
-                                            learn::Verdict::Yes => "Yes! Well done.".to_string(),
-                                            learn::Verdict::Almost => "So close! Look once more.".to_string(),
-                                            learn::Verdict::No => "Not yet. Try again!".to_string(),
-                                            learn::Verdict::Unknown => oracle_excuse("empty reply"),
-                                        }
+                                    // The child's channel is the marks and the
+                                    // big cheer; the hint line is the grown-up's.
+                                    let hint = if verdict == learn::Verdict::Unknown && fb.hint.trim().is_empty() {
+                                        oracle_excuse("empty reply")
                                     } else {
-                                        feedback
+                                        fb.hint.clone()
                                     };
+                                    let region = learn::sheet::draw_feedback(
+                                        &mut surf, &ui_font, &fb.cheer, &hint,
+                                        verdict == learn::Verdict::Yes,
+                                    );
+                                    let (x, y, w, h) = region.rect();
+                                    disp.update(x, y, w, h, true);
+                                    stamped = true;
                                 }
                                 LearnFlavor::Critter => {
                                     // The pad's turn: one decoration on the
@@ -1762,8 +1794,18 @@ fn run() -> std::io::Result<()> {
                         }
                         // A Learn turn never enters the diary's memory.
                         turn_failed = true;
-                        let plan = plan_reply(&font, &text, Some(text_y));
-                        State::Replying { plan, next: Instant::now(), rx: None }
+                        if stamped {
+                            // Feedback is already on the page; listen again at
+                            // once, and a YES starts the deal-next dwell.
+                            if learn_advance_pending {
+                                learn_advance_pending = false;
+                                learn_auto_at = learn_next_dwell.map(|d| Instant::now() + d);
+                            }
+                            State::Listening { last_pen: None }
+                        } else {
+                            let plan = plan_reply(&font, &text, Some(text_y));
+                            State::Replying { plan, next: Instant::now(), rx: None }
+                        }
                     }
                 }
             }

@@ -82,24 +82,32 @@ there (Vellum's `vellum-capture`) would archive the worksheet and answer
 on Vellum, `vellum-tutor` is the straight vision chat built for this.
 
 The tutor's protocol is one leading word — **YES**, **ALMOST**, or **NO** —
-then one cheerful sentence of at most twelve simple words. The word is for
-the sheet; the sentence is for the child:
+then one to three capital **cheer words** on the same line, then (after
+ALMOST or NO only) one short **hint line**. The verdict word is for the
+sheet; the cheer is the child's channel; the hint is the grown-up's, read
+aloud. The session assumes an adult nearby, but the child must get the
+payload — right, almost, try again — with zero reading help:
 
-- **YES** → a drawn check beside the answer, the ladder credits it, and —
-  after a dwell long enough to read the praise (`RIDDLE_LEARN_NEXT_MS`,
-  default 5000 ms, 0 disables) — the next page deals itself, so a child on a
-  roll never taps NEW. Pen-down cancels the dwell; the tutor is also asked
-  to end YES feedback with a tiny follow-up question, so the response and
-  the follow-up land on the same page.
+- **YES** → a drawn check beside the answer, stars flanking the cheer, the
+  ladder credits it, and — after a dwell long enough to enjoy the stamp
+  (`RIDDLE_LEARN_NEXT_MS`, default 5000 ms, 0 disables) — the next page
+  deals itself, so a child on a roll never taps NEW. Pen-down cancels the
+  dwell.
 - **ALMOST / NO** → a gentle underline ("look here again"), the ladder
-  debits it. After NO the tutor gives a tiny hint, never the answer.
-- **Anything else** → `Verdict::Unknown`: the feedback still writes itself,
-  but no mark is drawn and the ladder holds still. A misread verdict must
+  debits it. The hint suggests, never tells the answer.
+- **Anything else** → `Verdict::Unknown`: the text still shows small, but
+  no mark is drawn and the ladder holds still. A misread verdict must
   never move consequence — the same rule the marking vocabulary lives by.
 
-Feedback writes itself in the reply hand in a reserved strip above the
-decision boxes, wiped before each new reply so encouragement never stacks
-into clutter. Learn turns never enter the diary's memory.
+The parser enforces the register the model is asked for: a "cheer" longer
+than three words is demoted to the hint and a fixed cheer stands in
+(GREAT JOB! / SO CLOSE! / TRY AGAIN!), so what the child reads alone is
+always at most three capital words. Feedback is stamped in print — the
+cheer huge and centered, the hint small beneath — in a reserved strip
+above the decision boxes, wiped before each new reply so encouragement
+never stacks into clutter. Practice verdicts skip the handwriting
+animation entirely; a child should not wait to learn they were right.
+Learn turns never enter the diary's memory.
 
 ## The play deck
 
