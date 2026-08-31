@@ -32,8 +32,10 @@ use transcript::SessionData;
 const FRESH_WINDOW: Duration = Duration::from_secs(48 * 3600);
 /// The window in `find -mmin` units, kept in lockstep with FRESH_WINDOW.
 const FRESH_MMIN: &str = "-2880";
-/// The pad's page caps what it shows; sending more than this is waste.
-const MAX_TURNS: usize = 8;
+/// The pad pages backward through a session now, so it can read more than
+/// one screen — but a board poll every 20s is not the place for a whole
+/// transcript. Two dozen turns covers a sitting.
+const MAX_TURNS: usize = 24;
 const MAX_ARTIFACTS: usize = 5;
 
 /// (mtime, len): the fingerprint that decides whether a transcript re-parses.
@@ -289,6 +291,9 @@ impl Hub {
             "title": s.title,
             "state": state,
             "updated": transcript::clock(&s.updated_iso, self.tz_offset_hours),
+            // Where the session works. The pad shows it on the board — which
+            // project an agent is in beats its last sentence at a glance.
+            "cwd": s.cwd,
             "turns": turns,
             "artifacts": artifacts,
         })
@@ -501,6 +506,7 @@ mod tests {
         assert_eq!(r["id"], "laptop:s1");
         assert_eq!(r["state"], "waiting");
         assert_eq!(r["updated"], "08:04");
+        assert_eq!(r["cwd"], "/x");
         assert_eq!(r["turns"][0]["speaker"], "you");
         assert_eq!(r["artifacts"][0]["ref"], "a1b2c3d");
     }
@@ -508,7 +514,7 @@ mod tests {
     #[test]
     fn only_the_last_turns_ride_and_order_survives() {
         let hub = hub_with(vec![client("laptop")]);
-        let turns: Vec<transcript::Turn> = (0..20)
+        let turns: Vec<transcript::Turn> = (0..30)
             .map(|i| transcript::Turn {
                 speaker: "claude".into(),
                 text: format!("t{i}"),
@@ -521,8 +527,8 @@ mod tests {
         let r = hub.row(&hub.clients[0], &s, "running");
         let sent = r["turns"].as_array().unwrap();
         assert_eq!(sent.len(), MAX_TURNS);
-        assert_eq!(sent[0]["text"], "t12");
-        assert_eq!(sent[MAX_TURNS - 1]["text"], "t19");
+        assert_eq!(sent[0]["text"], "t6");
+        assert_eq!(sent[MAX_TURNS - 1]["text"], "t29");
     }
 
     #[test]

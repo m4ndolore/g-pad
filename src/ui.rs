@@ -185,12 +185,18 @@ fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bri
         } else {
             format!("{} · {}", s.state.to_uppercase(), s.updated)
         };
-        // The last turn is the one worth reading at a glance.
-        let last = s.turns.iter().rev().find(|t| !t.text.trim().is_empty());
-        let preview = last.map(|t| one_line(&t.text, 42)).unwrap_or_else(|| "(NOTHING YET)".into());
+        // Where the agent is working identifies a row faster than what it
+        // last said — the first hardware read found last-line previews
+        // interchangeable. An old hub sends no cwd; fall back to the preview.
+        let place = if s.cwd.is_empty() {
+            let last = s.turns.iter().rev().find(|t| !t.text.trim().is_empty());
+            last.map(|t| one_line(&t.text, 42)).unwrap_or_else(|| "(NOTHING YET)".into())
+        } else {
+            crate::page::tail(&s.cwd, 42)
+        };
         text(surf, font, &one_line(&s.title, 34), LABEL_PX, PAD, y, BLACK);
         text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
-        text(surf, font, &preview, LABEL_PX, PAD, y + 84, BLACK);
+        text(surf, font, &place, LABEL_PX, PAD, y + 84, BLACK);
         rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
         y += CONV_ROW_H;
         shown += 1;
@@ -246,6 +252,23 @@ const DECISION_H: usize = 170;
 /// Labels on the full page are set for the panel's density, not the drawer's.
 const PAGE_LABEL_PX: f32 = 36.0;
 
+/// What a session's state asks of the human, if anything.
+fn decision_for(state: &str) -> Option<Decision> {
+    match state {
+        "waiting" => Some(Decision::Approve),
+        "done" => Some(Decision::Continue),
+        _ => None,
+    }
+}
+
+/// How many pages a session's turn page runs to, measured exactly as
+/// `draw_session_page` will draw it — the flip handler must not step past
+/// what drawing can show.
+pub fn session_page_count(font: &FontRef, session: &crate::bridge::Session) -> usize {
+    let reserved = if decision_for(&session.state).is_some() { DECISION_H } else { 0 };
+    crate::bridge::layout_session_page(font, session, reserved, 0).pages
+}
+
 /// One session, full page — the turn page of `docs/anthink-interaction.md`.
 /// The board chooses; this reads and, when the session needs a human,
 /// carries the decision box. Artifacts pin above the box because evidence
@@ -253,17 +276,16 @@ const PAGE_LABEL_PX: f32 = 36.0;
 ///
 /// `armed` is the destructive-confirmation state: the first tick arms, the
 /// box inverts, the second tick sends. `status` replaces the box label after
-/// a send — the pad never assumes a mark landed.
+/// a send — the pad never assumes a mark landed. `want_page` is which page to
+/// show, 0 the newest; the swipe pages backward through longer sessions.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::bridge::Session,
-    remaining: usize, stale: bool, armed: bool, status: Option<&str>) -> Option<DecisionBox> {
+    remaining: usize, stale: bool, armed: bool, status: Option<&str>,
+    want_page: usize) -> Option<DecisionBox> {
     use crate::page;
-    let decision = match session.state.as_str() {
-        "waiting" => Some(Decision::Approve),
-        "done" => Some(Decision::Continue),
-        _ => None,
-    };
+    let decision = decision_for(&session.state);
     let reserved = if decision.is_some() { DECISION_H } else { 0 };
-    let layout = crate::bridge::layout_session_reserving(font, session, reserved);
+    let layout = crate::bridge::layout_session_page(font, session, reserved, want_page);
     // Full-page surface: `text` clips at the drawer's PANEL_W, which on the
     // first hardware read left the right half of every line blank.
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
@@ -277,8 +299,13 @@ pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::br
     full_text(surf, font, &layout.meta.to_uppercase(), PAGE_LABEL_PX, page::PAD, y, BLUE);
     y += page::LINE_H;
     for t in &layout.turns {
-        full_text(surf, font, &t.speaker.to_uppercase(), PAGE_LABEL_PX, page::PAD, y, BLUE);
-        let mut ly = y + page::LINE_H;
+        // A continuation chunk has no speaker row: the turn flows on from
+        // the block (or page) before it.
+        let mut ly = y;
+        if !t.speaker.is_empty() {
+            full_text(surf, font, &t.speaker.to_uppercase(), PAGE_LABEL_PX, page::PAD, y, BLUE);
+            ly += page::LINE_H;
+        }
         for line in &t.lines {
             full_text(surf, font, line, page::BODY_PX, page::PAD, ly, BLACK);
             ly += page::LINE_H;
@@ -289,7 +316,7 @@ pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::br
     // with measuring: artifacts above the box, the box above the footer.
     let mut ay = page::limit(reserved) - layout.artifacts.len() * page::LINE_H;
     for a in &layout.artifacts {
-        full_text(surf, font, &tail(&a.reference, 22), page::BODY_PX, page::PAD, ay, BLUE);
+        full_text(surf, font, &page::tail(&a.reference, 22), page::BODY_PX, page::PAD, ay, BLUE);
         full_text(surf, font, &one_line(&a.label, 40), page::BODY_PX, page::PAD + 470, ay, BLACK);
         ay += page::LINE_H;
     }
@@ -328,17 +355,6 @@ fn draw_decision_box(surf: &mut Surface, font: &FontRef, decision: Decision, arm
         full_text(surf, font, &label, PAGE_LABEL_PX, x + 32, y + h / 2 - 20, BLACK);
     }
     DecisionBox { x, y, w, h, decision }
-}
-
-/// The end of a reference is the part that identifies it — a path's file, a
-/// sha. Keep the tail, mark the cut.
-fn tail(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max {
-        return s.to_string();
-    }
-    let kept: String = s.chars().skip(n - (max - 1)).collect();
-    format!("…{kept}")
 }
 
 /// The drawer's footer line. Mirrors `bridge::footer_label`, but counts rows
@@ -671,6 +687,7 @@ mod tests {
             title: "Wire the bridge board to the page".into(),
             state: "waiting".into(),
             updated: "14:02".into(),
+            cwd: "/Users/p/Dev/g-pad".into(),
             turns: (0..30)
                 .map(|i| crate::bridge::Turn {
                     speaker: if i % 2 == 0 { "you".into() } else { "claude".into() },
@@ -683,18 +700,24 @@ mod tests {
             }],
         };
         // Waiting: the decision box is on the page, and arming redraws it.
-        let boxr = draw_session_page(&mut surf, &font, &session, 3, true, false, None);
+        let boxr = draw_session_page(&mut surf, &font, &session, 3, true, false, None, 0);
         assert_eq!(boxr.map(|b| b.decision), Some(Decision::Approve));
-        let armed = draw_session_page(&mut surf, &font, &session, 3, true, true, None);
+        let armed = draw_session_page(&mut surf, &font, &session, 3, true, true, None, 0);
         assert_eq!(armed, boxr, "arming changes the drawing, never the hit map");
         // Done: a tick means nudge forward. Running: nothing to decide.
         let mut done = session.clone();
         done.state = "done".into();
-        let boxr = draw_session_page(&mut surf, &font, &done, 0, false, false, None);
+        let boxr = draw_session_page(&mut surf, &font, &done, 0, false, false, None, 0);
         assert_eq!(boxr.map(|b| b.decision), Some(Decision::Continue));
         let mut running = session.clone();
         running.state = "running".into();
-        assert_eq!(draw_session_page(&mut surf, &font, &running, 0, false, false, None), None);
+        assert_eq!(draw_session_page(&mut surf, &font, &running, 0, false, false, None, 0), None);
+        // 30 turns run past one page; the box (and its hit map) rides every
+        // page, so a decision is never out of reach while reading earlier.
+        let pages = session_page_count(&font, &session);
+        assert!(pages > 1, "30 turns cannot fit one page");
+        let later = draw_session_page(&mut surf, &font, &session, 3, true, false, None, pages - 1);
+        assert_eq!(later.map(|b| b.decision), Some(Decision::Approve));
     }
 
     #[test]
@@ -711,26 +734,18 @@ mod tests {
             title: "A title long enough that its glyphs must cross the halfway line of the panel".into(),
             state: "running".into(),
             updated: "14:02".into(),
+            cwd: String::new(),
             turns: vec![crate::bridge::Turn {
                 speaker: "claude".into(),
                 text: "word ".repeat(120),
             }],
             artifacts: Vec::new(),
         };
-        draw_session_page(&mut surf, &font, &session, 0, false, false, None);
+        draw_session_page(&mut surf, &font, &session, 0, false, false, None, 0);
         let dark_right = (PANEL_W..SCREEN_W).step_by(3).any(|x| {
             (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
         });
         assert!(dark_right, "no ink right of PANEL_W — the page is clipped to the drawer");
-    }
-
-    #[test]
-    fn a_reference_keeps_its_tail_when_cut() {
-        assert_eq!(tail("a1b2c3d", 22), "a1b2c3d");
-        let cut = tail("/Users/p/Dev/g-pad/src/bridge.rs", 22);
-        assert!(cut.starts_with('…'));
-        assert!(cut.ends_with("bridge.rs"));
-        assert_eq!(cut.chars().count(), 22);
     }
 
     #[test]

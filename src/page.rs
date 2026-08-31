@@ -106,6 +106,51 @@ pub fn fit<T>(blocks: Vec<T>, start_y: usize, limit: usize, fill: Fill, height: 
     (taken, omitted)
 }
 
+/// Split measured blocks into pages, newest page first.
+///
+/// The single-page discipline stays: nothing scrolls, and the first screen
+/// still shows the newest content. But a reader must be able to reach what
+/// was left out — the first hardware read (2026-08-31) found a summary cut
+/// off with no way to continue. So the leftovers become further pages, and
+/// the swipe flips between them.
+///
+/// Page 0 holds the last blocks that fit between `start_y` and `limit`;
+/// page 1 the blocks before those, and so on backward. Every block lands on
+/// exactly one page — a block taller than the page itself gets a page alone
+/// rather than vanishing.
+pub fn paginate<T>(blocks: &[T], start_y: usize, limit: usize, height: impl Fn(&T) -> usize) -> Vec<std::ops::Range<usize>> {
+    let mut pages = Vec::new();
+    let mut end = blocks.len();
+    while end > 0 {
+        let mut y = start_y;
+        let mut start = end;
+        while start > 0 && y + height(&blocks[start - 1]) <= limit {
+            y += height(&blocks[start - 1]);
+            start -= 1;
+        }
+        if start == end {
+            start = end - 1;
+        }
+        pages.push(start..end);
+        end = start;
+    }
+    if pages.is_empty() {
+        pages.push(0..0);
+    }
+    pages
+}
+
+/// The end of a reference is the part that identifies it — a path's file, a
+/// sha, a project directory. Keep the tail, mark the cut.
+pub fn tail(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        return s.to_string();
+    }
+    let kept: String = s.chars().skip(n - (max - 1)).collect();
+    format!("…{kept}")
+}
+
 /// Join footer fragments with `·`, dropping the empty ones. Empty when
 /// everything fit — no need to say "0 more".
 pub fn footer(parts: &[String]) -> String {
@@ -157,6 +202,49 @@ mod tests {
         let (taken, omitted) = fit(vec![10usize; 3], HEADER_H, limit(0), Fill::Front, |b| *b);
         assert_eq!(taken.len(), 3);
         assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn pages_cover_every_block_once_and_the_newest_page_is_first() {
+        let blocks = vec![300usize; 20];
+        let pages = paginate(&blocks, HEADER_H, limit(0), |b| *b);
+        assert!(pages.len() > 1, "20 blocks of 300px cannot be one page");
+        // Page 0 ends at the newest block; walking the pages backward covers
+        // the whole sequence with no gaps and no overlaps.
+        assert_eq!(pages[0].end, blocks.len());
+        assert_eq!(pages.last().unwrap().start, 0);
+        for w in pages.windows(2) {
+            assert_eq!(w[1].end, w[0].start);
+        }
+        // Every page fits between start and limit.
+        for p in &pages {
+            let used: usize = HEADER_H + blocks[p.clone()].iter().sum::<usize>();
+            assert!(used <= limit(0), "a page must not run into the footer");
+        }
+    }
+
+    #[test]
+    fn an_oversized_block_gets_a_page_alone_and_nothing_vanishes() {
+        let blocks = vec![100, SCREEN_H * 2, 100];
+        let pages = paginate(&blocks, HEADER_H, limit(0), |b| *b);
+        let covered: usize = pages.iter().map(|p| p.len()).sum();
+        assert_eq!(covered, 3, "every block must land on exactly one page");
+        assert!(pages.iter().any(|p| p.len() == 1 && blocks[p.start] > SCREEN_H));
+    }
+
+    #[test]
+    fn no_blocks_still_reads_as_one_empty_page() {
+        let pages = paginate(&Vec::<usize>::new(), HEADER_H, limit(0), |b| *b);
+        assert_eq!(pages, vec![0..0]);
+    }
+
+    #[test]
+    fn a_reference_keeps_its_tail_when_cut() {
+        assert_eq!(tail("a1b2c3d", 22), "a1b2c3d");
+        let cut = tail("/Users/p/Dev/g-pad/src/bridge.rs", 22);
+        assert!(cut.starts_with('…'));
+        assert!(cut.ends_with("bridge.rs"));
+        assert_eq!(cut.chars().count(), 22);
     }
 
     #[test]

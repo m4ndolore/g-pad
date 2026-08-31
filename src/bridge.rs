@@ -48,6 +48,9 @@ pub struct Session {
     pub state: String,
     /// Clock time of the last turn, e.g. "14:02".
     pub updated: String,
+    /// The working directory the session runs in. Which project an agent is
+    /// touching says more at a glance than its last sentence does.
+    pub cwd: String,
     pub turns: Vec<Turn>,
     pub artifacts: Vec<Artifact>,
 }
@@ -73,89 +76,124 @@ pub struct Bridge {
 /// bridge's own rhythm.
 const TURN_GAP: usize = 26;
 
-/// Agent turns run long. Cap them so one turn cannot take the page — the
-/// brief's `MAX_BODY_LINES`, loosened because there is one session per page
-/// rather than a list of items.
-const MAX_TURN_LINES: usize = 6;
+/// Agent turns run long. They are no longer cut — a summary the reader chose
+/// must be readable to its end — but a turn is split into chunks of this many
+/// lines so a page boundary can fall inside it.
+const TURN_CHUNK_LINES: usize = 6;
 /// Artifacts are references, not reading. A page that ends in a wall of shas
 /// has stopped being a page.
 const MAX_ARTIFACTS: usize = 3;
 
-/// A laid-out turn: the wrapped lines and the height they occupy.
+/// A laid-out block: wrapped lines and the height they occupy. Usually one
+/// whole turn; a long turn is split into chunks, and only the first chunk
+/// carries the speaker — the rest read as the same block continuing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TurnLayout {
+    /// Empty on a continuation chunk: no speaker row is drawn.
     pub speaker: String,
     pub lines: Vec<String>,
     pub height: usize,
 }
 
-/// One session's page, measured.
+/// One page of a session, measured.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PageLayout {
     pub title_lines: Vec<String>,
     pub meta: String,
     /// Newest-last, so the page reads downward like the conversation did.
     pub turns: Vec<TurnLayout>,
-    /// Turns that did not fit. Counted, never dropped silently.
-    pub turns_omitted: usize,
+    /// Which page this is. 0 is the newest; the swipe pages backward.
+    pub page: usize,
+    /// How many pages the session runs to.
+    pub pages: usize,
     pub artifacts: Vec<Artifact>,
     pub artifacts_omitted: usize,
 }
 
-pub fn layout_turn(font: &FontRef, turn: &Turn) -> TurnLayout {
-    let lines = page::wrap_capped(font, &turn.text, BODY_PX, MAX_TURN_LINES);
-    let height = LINE_H // speaker row
-        + lines.len() * LINE_H
-        + TURN_GAP;
-    TurnLayout { speaker: turn.speaker.clone(), lines, height }
+/// Lay out one turn as one or more blocks. The speaker row rides only the
+/// first chunk and the gap under the turn only the last, so mid-turn chunks
+/// read as one continuous block — a page boundary may fall between them.
+pub fn layout_turn(font: &FontRef, turn: &Turn) -> Vec<TurnLayout> {
+    let lines = crate::script::wrap(font, &turn.text, BODY_PX, page::content_width() as f32);
+    let total = lines.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < total {
+        let end = (i + TURN_CHUNK_LINES).min(total);
+        let first = i == 0;
+        let last = end == total;
+        let chunk: Vec<String> = lines[i..end].to_vec();
+        let height = if first { LINE_H } else { 0 } // speaker row
+            + chunk.len() * LINE_H
+            + if last { TURN_GAP } else { 0 };
+        out.push(TurnLayout {
+            speaker: if first { turn.speaker.clone() } else { String::new() },
+            lines: chunk,
+            height,
+        });
+        i = end;
+    }
+    out
 }
 
-/// Lay out one session: the most recent turns that fit above the footer.
-///
-/// Turns are taken from the end — the last exchange is the one worth reading —
-/// and then put back in order so the page reads downward.
+/// Lay out the newest page of a session — what a tap on the board shows.
 pub fn layout_session(font: &FontRef, session: &Session) -> PageLayout {
-    layout_session_reserving(font, session, 0)
+    layout_session_page(font, session, 0, 0)
 }
 
-/// Lay out one session leaving `extra` pixels above the footer untouched —
-/// the room the decision box claims when the session is waiting on a human.
-pub fn layout_session_reserving(font: &FontRef, session: &Session, extra: usize) -> PageLayout {
+/// Lay out one page of a session, leaving `extra` pixels above the footer
+/// untouched — the room the decision box claims when the session is waiting
+/// on a human. `want_page` is clamped to what exists; 0 is the newest.
+pub fn layout_session_page(font: &FontRef, session: &Session, extra: usize, want_page: usize) -> PageLayout {
     let title_lines = page::title_lines(font, &session.title);
-    let meta = page::meta_line(&session.state, &session.updated);
+    let mut meta = page::meta_line(&session.state, &session.updated);
+    if !session.cwd.is_empty() {
+        meta = page::meta_line(&meta, &page::tail(&session.cwd, 28));
+    }
 
     let artifacts: Vec<Artifact> = session.artifacts.iter().take(MAX_ARTIFACTS).cloned().collect();
     let artifacts_omitted = session.artifacts.len().saturating_sub(artifacts.len());
 
     let y = page::HEADER_H + title_lines.len() * TITLE_LINE_H + LINE_H;
     // Artifacts are pinned: they are the evidence on the page, so they claim
-    // their room before prose does.
+    // their room before prose does — on every page.
     let artifact_room = artifacts.len() * LINE_H;
 
-    let readable: Vec<&Turn> = session.turns.iter().filter(|t| !t.text.trim().is_empty()).collect();
-    let measured: Vec<TurnLayout> = readable.iter().map(|t| layout_turn(font, t)).collect();
-    // Taken from the end — the last exchange is the one worth reading — and
-    // restored to order, so the page still reads downward.
-    let (turns, turns_omitted) =
-        page::fit(measured, y, page::limit(artifact_room + extra), page::Fill::Back, |t| t.height);
+    let blocks: Vec<TurnLayout> = session
+        .turns
+        .iter()
+        .filter(|t| !t.text.trim().is_empty())
+        .flat_map(|t| layout_turn(font, t))
+        .collect();
+    let ranges = page::paginate(&blocks, y, page::limit(artifact_room + extra), |t| t.height);
+    let pages = ranges.len();
+    let page = want_page.min(pages - 1);
+    let turns = blocks[ranges[page].clone()].to_vec();
 
-    PageLayout { title_lines, meta, turns, turns_omitted, artifacts, artifacts_omitted }
+    PageLayout { title_lines, meta, turns, page, pages, artifacts, artifacts_omitted }
 }
 
-/// The footer line. Empty when everything fit — no need to say "0 more".
+/// The footer line. Empty when everything fit on one page — no need to say
+/// "page 1 of 1".
 ///
 /// `remaining` is sessions not shown, which the caller knows and the layout
 /// does not.
 pub fn footer_label(layout: &PageLayout, remaining: usize, stale: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
+    if layout.pages > 1 {
+        let mut p = format!("page {} of {}", layout.page + 1, layout.pages);
+        if layout.page == 0 {
+            // The first hardware read found content cut off with no visible
+            // way onward — the page must teach the gesture, not assume it.
+            p.push_str(" · swipe down for earlier");
+        }
+        parts.push(p);
+    }
     if remaining > 0 {
         parts.push(format!(
             "{remaining} more session{}",
             if remaining == 1 { "" } else { "s" }
         ));
-    }
-    if layout.turns_omitted > 0 {
-        parts.push(format!("{} earlier", layout.turns_omitted));
     }
     if layout.artifacts_omitted > 0 {
         parts.push(format!("{} more changed", layout.artifacts_omitted));
@@ -299,6 +337,7 @@ pub fn parse_sessions(json: &str) -> Vec<Session> {
             title,
             state: json_field(&block, "state").unwrap_or_default(),
             updated: json_field(&block, "updated").unwrap_or_default(),
+            cwd: json_field(&block, "cwd").unwrap_or_default(),
             turns: parse_turns(&block),
             artifacts: parse_artifacts(&block),
         });
@@ -352,6 +391,7 @@ mod tests {
             title: "Direct Claude Code from the pad".to_string(),
             state: "running".to_string(),
             updated: "14:02".to_string(),
+            cwd: String::new(),
             turns,
             artifacts: Vec::new(),
         }
@@ -359,6 +399,7 @@ mod tests {
 
     const LIVE: &str = r#"{"sessions":[
         {"id":"s1","title":"Wire the bridge","state":"running","updated":"14:02",
+         "cwd":"/Users/p/Dev/g-pad",
          "turns":[{"speaker":"you","text":"read the docs first"},
                   {"speaker":"claude","text":"Baseline is green — 58 passed."}],
          "artifacts":[{"ref":"a1b2c3d","label":"docs: the Claude bridge"}]},
@@ -375,6 +416,8 @@ mod tests {
         assert_eq!(s[0].turns.len(), 2);
         assert_eq!(s[0].turns[1].speaker, "claude");
         assert_eq!(s[0].artifacts[0].reference, "a1b2c3d");
+        assert_eq!(s[0].cwd, "/Users/p/Dev/g-pad");
+        assert_eq!(s[1].cwd, "", "a hub that sends no cwd still parses");
     }
 
     #[test]
@@ -418,10 +461,73 @@ mod tests {
             .collect();
         let layout = layout_session(&f, &session(many));
         assert!(!layout.turns.is_empty());
-        assert!(layout.turns_omitted > 0, "40 turns cannot fit one page");
+        assert!(layout.pages > 1, "40 turns cannot fit one page");
         // The last turn is the one worth reading, and it must be last on the page.
         let last = layout.turns.last().unwrap();
         assert!(last.lines[0].contains("turn number 39"));
+    }
+
+    #[test]
+    fn a_long_turn_is_chunked_and_readable_to_its_end() {
+        let f = font();
+        // One turn far taller than a page — the overnight-summary shape that
+        // was unreadable on the first hardware read.
+        let long = "a sentence with enough words to certainly wrap onto the next line. ".repeat(60);
+        let s = session(vec![turn("claude", &long)]);
+        let chunks = layout_turn(&f, &s.turns[0]);
+        assert!(chunks.len() > 1, "a long turn must split into chunks");
+        assert_eq!(chunks[0].speaker, "claude");
+        assert!(chunks[1..].iter().all(|c| c.speaker.is_empty()),
+            "only the first chunk carries the speaker");
+        // Nothing is cut: every wrapped line appears on exactly one page.
+        let total_lines: usize = chunks.iter().map(|c| c.lines.len()).sum();
+        let layout0 = layout_session(&f, &s);
+        assert!(layout0.pages > 1);
+        let mut seen = 0usize;
+        for p in 0..layout0.pages {
+            let l = layout_session_page(&f, &s, 0, p);
+            seen += l.turns.iter().map(|t| t.lines.len()).sum::<usize>();
+        }
+        assert_eq!(seen, total_lines, "paging must reach every line of the turn");
+    }
+
+    #[test]
+    fn a_page_request_past_the_end_clamps_to_the_oldest() {
+        let f = font();
+        let many: Vec<Turn> = (0..40)
+            .map(|i| turn("claude", &format!("turn {i} with enough text to occupy a line or two here")))
+            .collect();
+        let s = session(many);
+        let last = layout_session_page(&f, &s, 0, usize::MAX);
+        assert_eq!(last.page, last.pages - 1);
+        // The oldest page starts at the first turn.
+        assert!(last.turns[0].lines[0].contains("turn 0"));
+    }
+
+    #[test]
+    fn the_footer_teaches_the_page_gesture_on_the_first_page_only() {
+        let f = font();
+        let many: Vec<Turn> = (0..40)
+            .map(|i| turn("claude", &format!("turn {i} with enough text to occupy a line or two here")))
+            .collect();
+        let s = session(many);
+        let first = layout_session_page(&f, &s, 0, 0);
+        let label = footer_label(&first, 0, false);
+        assert!(label.starts_with("page 1 of"), "got {label:?}");
+        assert!(label.contains("swipe down for earlier"));
+        let second = layout_session_page(&f, &s, 0, 1);
+        let label = footer_label(&second, 0, false);
+        assert!(label.starts_with("page 2 of"));
+        assert!(!label.contains("swipe"), "the hint earned its keep on page 1");
+    }
+
+    #[test]
+    fn the_meta_row_carries_the_project_directory() {
+        let f = font();
+        let mut s = session(vec![turn("you", "hi")]);
+        s.cwd = "/Users/p/Dev/g-pad".to_string();
+        let layout = layout_session(&f, &s);
+        assert!(layout.meta.ends_with("Dev/g-pad"), "got {:?}", layout.meta);
     }
 
     #[test]
@@ -442,7 +548,7 @@ mod tests {
     fn everything_fitting_leaves_no_footer() {
         let f = font();
         let layout = layout_session(&f, &session(vec![turn("you", "short"), turn("claude", "also short")]));
-        assert_eq!(layout.turns_omitted, 0);
+        assert_eq!(layout.pages, 1);
         assert_eq!(footer_label(&layout, 0, false), "");
     }
 

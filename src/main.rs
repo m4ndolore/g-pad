@@ -109,7 +109,8 @@ enum State {
     /// One agent session read full-page (the turn page). `saved` is the whole
     /// canvas underneath; the drawer swipe brings it back. `boxr` is the hit
     /// map drawing returned; `armed` is the destructive-confirmation state
-    /// (first tick arms, second sends); `status` is the last nudge's outcome.
+    /// (first tick arms, second sends); `status` is the last nudge's outcome;
+    /// `page` is which page is open — 0 the newest, the swipe pages backward.
     SessionPage {
         session: bridge::Session,
         remaining: usize,
@@ -117,6 +118,7 @@ enum State {
         armed: bool,
         status: Option<String>,
         boxr: Option<ui::DecisionBox>,
+        page: usize,
         saved: Vec<u8>,
         return_to: Box<State>,
     },
@@ -484,8 +486,9 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::OpenDrawer if matches!(state, State::Listening { .. } | State::Lingering { .. }) => {
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
                     let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
-                    let thread = store.as_ref().and_then(|s| s.conversations().len().checked_sub(1));
-                    let panel = ui::Drawer::open(&surf, ui::DrawerKind::History, drawer_selection, 0, thread);
+                    // Agents first: the board is what the drawer is opened
+                    // for now. History and Corpus stay one tab-tap away.
+                    let panel = ui::Drawer::open(&surf, ui::DrawerKind::Sessions, drawer_selection, 0, None);
                     let snapshot = oracle::context_snapshot(&store, memory_turns());
                     ui::draw_drawer(&mut surf, &ui_font, &store, &snapshot, &panel);
                     disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
@@ -497,6 +500,12 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::Page(delta) if matches!(state, State::Lingering { .. }) => {
                     let _ = step_reply_page(delta, &font, reply_w, &mut reply_pages, &mut reply_page,
                         &mut state, &mut surf, &disp);
+                }
+                // The turn page flips on the swipe alone (not the two-finger
+                // scroll, which fires once per frame and would tear through
+                // every page in one drag).
+                touch::Gesture::Page(delta) if matches!(state, State::SessionPage { .. }) => {
+                    session_page_flip(delta, &mut state, &mut surf, &disp, &ui_font);
                 }
                 touch::Gesture::Scroll(delta) | touch::Gesture::Page(delta) => {
                     let panel = match &mut state {
@@ -1242,7 +1251,7 @@ fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
     disp: &display::Display, ui_font: &FontRef) {
     let Some(stroke) = ink.stroke_list().last().cloned() else { return };
     let _ = ink.pop_stroke();
-    let State::SessionPage { session, remaining, stale, armed, status, boxr, .. } = state else {
+    let State::SessionPage { session, remaining, stale, armed, status, boxr, page, .. } = state else {
         return;
     };
     let mut sb = BBox::empty();
@@ -1281,7 +1290,30 @@ fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
         }
     }
     *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
-        status.as_deref());
+        status.as_deref(), *page);
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+}
+
+/// Flip the turn page: a downward swipe pages back to earlier turns, an
+/// upward swipe returns toward the newest. The whole page redraws (the box
+/// and its hit map ride along), and a flip past either end simply holds.
+fn session_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
+    disp: &display::Display, ui_font: &FontRef) {
+    let State::SessionPage { session, remaining, stale, armed, status, boxr, page, .. } = state else {
+        return;
+    };
+    let pages = ui::session_page_count(ui_font, session);
+    let want = if delta < 0 {
+        (*page + 1).min(pages.saturating_sub(1))
+    } else {
+        page.saturating_sub(1)
+    };
+    if want == *page {
+        return;
+    }
+    *page = want;
+    *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
+        status.as_deref(), *page);
     disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
 }
 
@@ -1376,11 +1408,11 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
         close_overlay(state, surf, disp, selection, scroll);
         let old = std::mem::replace(state, State::Listening { last_pen: None });
         let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
-        let boxr = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale, false, None);
+        let boxr = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale, false, None, 0);
         disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
         *state = State::SessionPage {
             session, remaining, stale: held.stale, armed: false, status: None, boxr,
-            saved, return_to: Box::new(old),
+            page: 0, saved, return_to: Box::new(old),
         };
         return;
     }
