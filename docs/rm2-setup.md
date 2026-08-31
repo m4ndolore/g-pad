@@ -5,10 +5,6 @@ latency floor and is the only mode with touch gestures (history, settings,
 five-finger exit) and power handling. See "Takeover build" below, and keep
 SSH available as a recovery path the first time you launch it.
 
-The quick path below still installs the retired windowed/qtfb build alongside
-the xovi/AppLoad plumbing — use it for the plumbing, then install the takeover
-bundle over it. The windowed mode itself is abandoned and kept only as
-build-system history.
 
 The rM2 needs no "developer mode": SSH as root is built into every unit.
 You need: the tablet, its USB-C cable, and ~15 minutes.
@@ -22,10 +18,17 @@ You need: the tablet, its USB-C cable, and ~15 minutes.
 3. Build and install everything:
 
 ```sh
-rustup target add armv7-unknown-linux-musleabihf   # once; needs zig + cargo-zigbuild
-cd g-pad && ./build-rm2.sh && cd ..
+rustup target add armv7-unknown-linux-gnueabihf     # once
+scp -O root@10.11.99.1:/usr/lib/plugins/scenegraph/libqsgepaper.so \
+    quill/vendor/armv7-unknown-linux-gnueabihf/     # once, from YOUR tablet
+DEVICE=rm2 ./build-takeover.sh                      # once, needs the SDK (libquill.so)
+./build-takeover-zig.sh                             # rebuilds; zig + cargo-zigbuild, no SDK
+DEVICE=rm2 ./scripts/make-bundle.sh
 ./scripts/install-rm2.sh
 ```
+
+(Once `libquill.so` exists, day-to-day rebuilds are just the last three
+commands. The "Takeover build" section below explains each artifact.)
 
 The installer connects over SSH (asking for that password once, then installing
 your key), confirms the device is an rM2, installs
@@ -103,9 +106,8 @@ DEVICE=rm2 ./scripts/make-bundle.sh
 scp -O -r dist/rm2-takeover/g-pad root@10.11.99.1:/home/root/xovi/exthome/appload/
 ```
 
-The two bundles carry different AppLoad ids (`g-pad` for takeover,
-`g-pad-windowed` for qtfb) so both can be installed side by side. Leave
-takeover with a **five-finger hold**; if it ever exits badly,
+The bundle's AppLoad id is `g-pad`. Leave takeover with a **five-finger
+hold** (or the LEAVE row in settings); if it ever exits badly,
 `ssh root@10.11.99.1 'systemctl start xochitl'` restores the stock UI.
 
 ## The oracle key
@@ -152,8 +154,6 @@ If you prefer to run each step yourself:
   off for your unit. The qtfb pen fallback (used automatically when the raw
   device can't be opened) is always correctly mapped — compare against it and
   open an issue with what you see.
-- **"qtfb server rejected init"** — AppLoad missing or old; re-run the
-  installer, then Reload in AppLoad.
 - **No reply, ink blot pulses forever** — oracle problem: re-run
   `--oracle-test`; check Wi-Fi, key, and that the model supports images.
 - **Tablet acting up** — `ssh rm2 'systemctl restart xochitl'` restores the

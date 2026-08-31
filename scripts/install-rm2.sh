@@ -10,7 +10,8 @@
 #   1. your SSH key (so you type that password once)
 #   2. xovi + AppLoad (arm32, from asivery's official releases)
 #   3. xovi-tripletap persistence (triple-press power = toggle xovi)
-#   4. the g-pad bundle from dist/rm2/g-pad (build-rm2.sh output)
+#   4. the g-pad takeover bundle from dist/rm2-takeover/g-pad
+#      (./build-takeover-zig.sh && DEVICE=rm2 ./scripts/make-bundle.sh)
 # and asks for your API key to write oracle.env.
 #
 # Everything is reversible: `ssh root@10.11.99.1 /home/root/xovi/stock`
@@ -25,7 +26,7 @@ APPLOAD_URL="https://github.com/asivery/rm-appload/releases/download/${APPLOAD_T
 TRIPLETAP_INSTALL_URL="https://raw.githubusercontent.com/rmitchellscott/xovi-tripletap/main/install.sh"
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-BUNDLE="$HERE/dist/rm2/g-pad"
+BUNDLE="$HERE/dist/rm2-takeover/g-pad"
 
 say()  { printf '\033[1m== %s\033[0m\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -50,7 +51,8 @@ cleanup() { ssh "${SSH_OPTS[@]}" -O exit "root@$RM_HOST" 2>/dev/null; rm -rf "$W
 trap cleanup EXIT
 
 # --- 0. g-pad bundle must exist locally -------------------------------------
-[ -x "$BUNDLE/g-pad" ] || die "no rM2 bundle at $BUNDLE — run ./build-rm2.sh first"
+[ -x "$BUNDLE/g-pad" ] || die "no takeover bundle at $BUNDLE — run \
+./build-takeover-zig.sh && DEVICE=rm2 ./scripts/make-bundle.sh (see docs/rm2-setup.md)"
 
 # --- 1. reach the tablet, install our key, confirm it is an rM2 --------------
 # BatchMode probe: succeeds only with key auth, so a password-only tablet
@@ -128,7 +130,10 @@ RIDDLE_OPENAI_BASE=$BASE
 RIDDLE_OPENAI_MODEL=$MODEL
 EOF
         say "Verifying the oracle (needs tablet Wi-Fi)"
+        # The takeover binary links libquill/libqsgepaper; give it the same
+        # library path g-pad-takeover.sh uses at launch.
         rm_ssh 'cd /home/root/xovi/exthome/appload/g-pad && set -a && . ./oracle.env && set +a && \
+                LD_LIBRARY_PATH="$PWD:/home/root/quill:/usr/lib/plugins/scenegraph" \
                 ./g-pad --oracle-test icon.png' \
             || echo "   oracle test failed — check Wi-Fi/key/model, then re-run: g-pad --oracle-test"
     fi
@@ -141,9 +146,11 @@ rm_ssh 'systemd-run --unit=xovi-firststart --collect --service-type=oneshot /hom
 
 cat <<EOF
 
-  Done. On the tablet, open AppLoad and tap "g-pad".
+  Done. On the tablet, open AppLoad and tap "g-pad" (takeover: it stops the
+  stock UI and restores it when you leave).
   Write something, rest the pen ~3 s, and watch the page write back.
 
-  Toggle xovi:   triple-press the power button
-  Stock UI:      ssh root@$RM_HOST /home/root/xovi/stock   (or reboot)
+  Leave g-pad:   hold five fingers, or the LEAVE row in settings
+  Toggle xovi:   triple-press the power button (while awake)
+  Stock UI:      ssh root@$RM_HOST 'systemctl start xochitl'   (or reboot)
 EOF
