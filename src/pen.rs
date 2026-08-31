@@ -104,6 +104,7 @@ impl PenDevice {
         })
     }
 
+    #[allow(dead_code)]
     pub fn raw_fd(&self) -> RawFd {
         self.fd
     }

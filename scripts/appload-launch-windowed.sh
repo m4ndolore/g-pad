@@ -1,7 +1,8 @@
 #!/bin/sh
-# AppLoad entry point for windowed (qtfb) mode — used on the reMarkable 2,
-# where the takeover backend does not exist. AppLoad sets QTFB_KEY for us;
-# g-pad sees it and picks the qtfb display backend.
+# AppLoad entry point for windowed (qtfb) mode — the fallback build for the
+# reMarkable 2. Takeover (build-takeover.sh) is the better path where it is
+# available: qtfb has a latency floor and no touch or power input at all.
+# AppLoad sets QTFB_KEY for us; g-pad sees it and picks the qtfb backend.
 HERE=$(cd "$(dirname "$0")" && pwd)
 
 # Oracle config: put your API key in oracle.env next to this script.

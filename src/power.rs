@@ -81,6 +81,25 @@ pub fn suspend_count() -> u64 {
         .unwrap_or(0)
 }
 
+/// How long to wait after asking logind to suspend before giving up.
+///
+/// `systemctl suspend` returns as soon as logind accepts the D-Bus request —
+/// measured on-device (rM2, 5.4.70) as a same-second return, with the kernel's
+/// "PM: suspend entry" arriving several seconds later. The success counter
+/// therefore does not move until we are already awake again, so this deadline
+/// must be far longer than the teardown, not a tight poll around it.
+///
+/// A short deadline here is what caused the sleep bug: a 6s window expired
+/// mid-teardown, the code read that as a failed suspend, and retried — driving
+/// eight real suspend/resume cycles that each looked like a failure.
+pub const SUSPEND_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The longest plausible logind teardown before the kernel actually freezes.
+/// Any wait shorter than this races the suspend it is trying to observe.
+/// Referenced by the regression test that pins SUSPEND_WAIT above it.
+#[allow(dead_code)]
+pub const TEARDOWN_HEADROOM: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// After resume, Wi-Fi is often stranded: wpa_supplicant fails a few attempts
 /// while the radio settles and marks the network TEMP-DISABLED, and with
 /// xochitl stopped nobody clears it. Nudge it back, detached, best-effort.
@@ -98,4 +117,49 @@ pub fn wifi_heal() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Regression: the suspend wait must not race logind's teardown.
+    ///
+    /// `systemctl suspend` is asynchronous, so the success counter stays flat
+    /// for the whole teardown. The original code waited 6s per attempt and
+    /// then declared the suspend aborted — a window shorter than the teardown
+    /// itself, which turned every successful sleep into a retry. Fails against
+    /// the old 6s budget; passes with SUSPEND_WAIT.
+    #[test]
+    fn suspend_wait_outlasts_logind_teardown() {
+        assert!(
+            SUSPEND_WAIT > TEARDOWN_HEADROOM,
+            "suspend wait {SUSPEND_WAIT:?} races logind teardown ({TEARDOWN_HEADROOM:?}); \
+             a wait this short reads a successful suspend as a failure and retries"
+        );
+        // The specific budget the bug shipped with.
+        let old_budget = Duration::from_secs(6);
+        assert!(
+            old_budget < TEARDOWN_HEADROOM,
+            "test is not meaningful unless the old 6s budget sits inside the teardown window"
+        );
+        assert!(SUSPEND_WAIT >= Duration::from_secs(60));
+    }
+
+    /// The counter parses the kernel's trailing-newline format ("26\n").
+    /// A parse failure would read as "never slept" and strand the wait.
+    #[test]
+    fn suspend_count_parses_kernel_format() {
+        assert_eq!("26\n".trim().parse::<u64>().ok(), Some(26));
+        assert_eq!("0\n".trim().parse::<u64>().ok(), Some(0));
+        // Absent file (kernels without wakelock/suspend_stats) degrades to 0.
+        assert_eq!(
+            std::fs::read_to_string("/nonexistent/suspend_stats/success")
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(0),
+            0
+        );
+    }
 }

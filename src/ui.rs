@@ -21,9 +21,14 @@ const THREAD_Y0: i32 = 148;
 const CONV_ROW_H: usize = 168;
 const THREAD_FOOTER: i32 = 150;
 const SCROLL_STEP: i32 = 80;
+/// Three tabs across the drawer header. The labels are drawn at these same
+/// x positions, so a tap always lands on the word it looks like it hit.
+const TAB_HISTORY_X: usize = 105;
+const TAB_CORPUS_X: i32 = (PANEL_W / 3) as i32 + 40;
+const TAB_SESSIONS_X: i32 = (PANEL_W * 2 / 3) as i32 + 30;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DrawerKind { History, Corpus }
+pub enum DrawerKind { History, Corpus, Sessions }
 
 pub struct Drawer {
     pub kind: DrawerKind,
@@ -40,6 +45,7 @@ pub enum Action {
     Close,
     History,
     Corpus,
+    Sessions,
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -51,6 +57,7 @@ pub enum Action {
     Dismiss,
     SetMode(Mode),
     ToggleIdle,
+    Quit,
 }
 
 impl Drawer {
@@ -78,10 +85,12 @@ impl Drawer {
                     Action::Close
                 };
             }
-            if x < PANEL_W as i32 / 2 { return Action::History; }
-            return Action::Corpus;
+            if x < TAB_CORPUS_X { return Action::History; }
+            if x < TAB_SESSIONS_X { return Action::Corpus; }
+            return Action::Sessions;
         }
-        if self.kind == DrawerKind::Corpus { return Action::None; }
+        // Corpus and Sessions are read-only: nothing below the header is a target.
+        if self.kind != DrawerKind::History { return Action::None; }
         let Some(s) = store else { return Action::None };
         let convs = s.conversations();
         if let Some(ti) = self.thread {
@@ -107,14 +116,17 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
     surf.fill_rect(PANEL_W - 2, 0, 2, SCREEN_H, BLACK);
     let close = if drawer.kind == DrawerKind::History && drawer.thread.is_some() { "←" } else { "×" };
     text(surf, font, close, LABEL_PX, PAD, 36, BLACK);
-    text(surf, font, "HISTORY", LABEL_PX, 105, 36,
+    text(surf, font, "HISTORY", LABEL_PX, TAB_HISTORY_X, 36,
         if drawer.kind == DrawerKind::History { BLUE } else { BLACK });
-    text(surf, font, "CORPUS", LABEL_PX, PANEL_W / 2 + 18, 36,
+    text(surf, font, "CORPUS", LABEL_PX, TAB_CORPUS_X as usize, 36,
         if drawer.kind == DrawerKind::Corpus { BLUE } else { BLACK });
+    text(surf, font, "AGENTS", LABEL_PX, TAB_SESSIONS_X as usize, 36,
+        if drawer.kind == DrawerKind::Sessions { BLUE } else { BLACK });
     rule(surf, 0, 104, PANEL_W, 2);
     match drawer.kind {
         DrawerKind::History => draw_history(surf, font, store, drawer),
         DrawerKind::Corpus => draw_corpus(surf, font, store, snapshot, drawer.scroll),
+        DrawerKind::Sessions => draw_sessions(surf, font, &crate::bridge::held()),
     }
 }
 
@@ -134,6 +146,58 @@ fn draw_history(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStore>,
         return;
     }
     draw_selector(surf, font, &convs, drawer.scroll);
+}
+
+/// The agent sessions the bridge is holding.
+///
+/// A selector, not a reader: which sessions exist, what state they are in, and
+/// the last line of each. The full page belongs to `bridge::layout_session`,
+/// which measures against the whole screen rather than this half-width panel —
+/// whether reading wants the drawer or the page is the open question in
+/// `docs/claude-bridge.md`, and this is the cheap half of the answer.
+fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bridge) {
+    let sessions = crate::bridge::readable(bridge);
+    if sessions.is_empty() {
+        let msg = if bridge.stale { "NO SESSIONS · NOT REFRESHED" } else { "NO AGENT SESSIONS" };
+        text(surf, font, msg, LABEL_PX, PAD, 170, BLACK);
+        return;
+    }
+    let mut y = HEADER_H as usize + 16;
+    let mut shown = 0usize;
+    for s in &sessions {
+        if y + CONV_ROW_H > SCREEN_H { break; }
+        let meta = if s.updated.is_empty() {
+            s.state.to_uppercase()
+        } else {
+            format!("{} · {}", s.state.to_uppercase(), s.updated)
+        };
+        // The last turn is the one worth reading at a glance.
+        let last = s.turns.iter().rev().find(|t| !t.text.trim().is_empty());
+        let preview = last.map(|t| one_line(&t.text, 42)).unwrap_or_else(|| "(NOTHING YET)".into());
+        text(surf, font, &one_line(&s.title, 34), LABEL_PX, PAD, y, BLACK);
+        text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
+        text(surf, font, &preview, LABEL_PX, PAD, y + 84, BLACK);
+        rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
+        y += CONV_ROW_H;
+        shown += 1;
+    }
+    // Say what was left out — silent truncation reads as "that was everything".
+    let label = sessions_footer(sessions.len(), shown, bridge.stale);
+    if !label.is_empty() {
+        text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
+    }
+}
+
+/// The drawer's footer line. Mirrors `bridge::footer_label`, but counts rows
+/// this panel could not fit rather than turns a page could not fit.
+fn sessions_footer(total: usize, shown: usize, stale: bool) -> String {
+    let hidden = total.saturating_sub(shown);
+    match (hidden, stale) {
+        (0, false) => String::new(),
+        (0, true) => "NOT REFRESHED".to_string(),
+        (n, false) => format!("{n} MORE"),
+        (n, true) => format!("{n} MORE · NOT REFRESHED"),
+    }
 }
 
 fn draw_selector(surf: &mut Surface, font: &FontRef, convs: &[crate::memory::Conversation], scroll: i32) {
@@ -325,18 +389,32 @@ pub fn draw_settings(surf: &mut Surface, font: &FontRef, prefs: Preferences) -> 
     text(surf, font, "OPTIONAL IDLE-SEND", LABEL_PX, PAD, 510, BLACK);
     text(surf, font, if prefs.idle_send_ms == 0 { "OFF" } else { "ON" }, LABEL_PX, PAD, 570,
         if prefs.idle_send_ms == 0 { BLACK } else { BLUE });
+
+    // Leaving is a five-finger hold, which is not discoverable — nothing on
+    // the page says so. Give it a tapped row too, and say what the gesture is
+    // so the pad teaches it rather than hiding it.
+    rule(surf, PAD, 690, PANEL_W - 2 * PAD, 2);
+    text(surf, font, "LEAVE G-PAD", LABEL_PX, PAD, 755, BLACK);
+    text(surf, font, "OR HOLD FIVE FINGERS", LABEL_PX, PAD, 805, BLACK);
+
+    // Signature, at the foot of the one panel that is already a settled
+    // surface rather than the writing page.
+    text(surf, font, "G-PAD", LABEL_PX, PAD, SCREEN_H - 120, BLACK);
+    text(surf, font, "BY MERGE COMBINATOR", LABEL_PX, PAD, SCREEN_H - 70, BLACK);
     saved
 }
 
 pub fn settings_action(x: i32, y: i32) -> Action {
     if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
     if y < HEADER_H { return Action::Close; }
-    // Labels sit at 310 / 390 / 570; give each a full row so a slightly
-    // off tap still hits the control it is over.
+    // Labels sit at 310 / 390 / 570 / 755; give each a full row so a slightly
+    // off tap still hits the control it is over. Leaving stops short of the
+    // signature at the foot so a tap down there cannot quit the pad.
     match y {
         250..=355 => Action::SetMode(Mode::Stealth),
         356..=470 => Action::SetMode(Mode::Guided),
         480..=680 => Action::ToggleIdle,
+        700..=860 => Action::Quit,
         _ => Action::None,
     }
 }
@@ -392,6 +470,42 @@ mod tests {
         assert_eq!(settings_action(40, 570), Action::ToggleIdle);
         assert_eq!(settings_action(40, 36), Action::Close);
         assert_eq!(settings_action(PANEL_W as i32 + 8, 310), Action::Close);
+    }
+
+    #[test]
+    fn the_header_splits_three_ways_and_each_tab_is_reachable() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let mut d = Drawer::open(&surf, DrawerKind::History, None, 0, None);
+        // A tap on each label reaches its own tab, and the close box still closes.
+        assert_eq!(d.tap(TAB_HISTORY_X as i32 + 4, 36, &None), Action::History);
+        assert_eq!(d.tap(TAB_CORPUS_X + 4, 36, &None), Action::Corpus);
+        assert_eq!(d.tap(TAB_SESSIONS_X + 4, 36, &None), Action::Sessions);
+        assert_eq!(d.tap(20, 36, &None), Action::Close);
+    }
+
+    #[test]
+    fn the_sessions_tab_is_read_only() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let mut d = Drawer::open(&surf, DrawerKind::Sessions, None, 0, None);
+        // Nothing below the header is a target: reading is not a capture path.
+        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::None);
+        assert_eq!(d.tap(PAD as i32, SCREEN_H as i32 - 40, &None), Action::None);
+        assert_eq!(d.selection, None);
+    }
+
+    #[test]
+    fn a_bridge_with_nothing_readable_draws_no_rows() {
+        // The brief's rule: a header with no exchange under it reads as broken.
+        let empty = crate::bridge::Bridge::default();
+        assert!(crate::bridge::readable(&empty).is_empty());
+        assert_eq!(sessions_footer(0, 0, false), "");
+        assert_eq!(sessions_footer(0, 0, true), "NOT REFRESHED");
+        assert_eq!(sessions_footer(5, 2, false), "3 MORE");
+        assert_eq!(sessions_footer(5, 2, true), "3 MORE · NOT REFRESHED");
     }
 
     #[test]

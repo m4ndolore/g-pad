@@ -14,8 +14,7 @@
 
 use ab_glyph::FontRef;
 
-use crate::fb::{SCREEN_H, SCREEN_W};
-use crate::script;
+use crate::page::{self, BODY_PX, LINE_H, TITLE_LINE_H};
 
 /// One item on the brief.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,24 +40,10 @@ pub struct Brief {
     pub stale: bool,
 }
 
-/// Margins and type sizes. The brief uses the same grotesque as the other
-/// read-only surfaces; the pad's handwriting never appears here.
-const PAD: usize = 44;
-const HEADER_PX: f32 = 40.0;
-const TITLE_PX: f32 = 38.0;
-const META_PX: f32 = 26.0;
-const BODY_PX: f32 = 28.0;
-const LINE_H: usize = 38;
-const TITLE_LINE_H: usize = 46;
+/// The gap under each item. Page geometry is shared (see `page`); this is the
+/// brief's own rhythm, because a list of items breathes differently from a
+/// single session.
 const ITEM_GAP: usize = 30;
-const HEADER_H: usize = 110;
-/// Leave the footer clear: it carries the "N more" count.
-const FOOTER_H: usize = 70;
-
-/// The widest a line of body text may run.
-pub fn content_width() -> usize {
-    SCREEN_W - PAD * 2
-}
 
 /// A laid-out item: the wrapped lines and the height they occupy.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -80,23 +65,11 @@ pub struct PageLayout {
 /// How many lines of excerpt an item gets. Enough to be worth reading, few
 /// enough that one item cannot take the page.
 const MAX_BODY_LINES: usize = 3;
-const MAX_TITLE_LINES: usize = 2;
 
 pub fn layout_item(font: &FontRef, item: &Item) -> ItemLayout {
-    let width = content_width() as f32;
-    let title_lines: Vec<String> = script::wrap(font, &item.title, TITLE_PX, width)
-        .into_iter()
-        .take(MAX_TITLE_LINES)
-        .collect();
-    let meta = if item.date.is_empty() {
-        item.source.clone()
-    } else {
-        format!("{} · {}", item.source, item.date)
-    };
-    let body_lines: Vec<String> = script::wrap(font, &item.excerpt, BODY_PX, width)
-        .into_iter()
-        .take(MAX_BODY_LINES)
-        .collect();
+    let title_lines = page::title_lines(font, &item.title);
+    let meta = page::meta_line(&item.source, &item.date);
+    let body_lines = page::wrap_capped(font, &item.excerpt, BODY_PX, MAX_BODY_LINES);
     let height = title_lines.len() * TITLE_LINE_H
         + LINE_H // meta row
         + body_lines.len() * LINE_H
@@ -110,44 +83,26 @@ pub fn layout_item(font: &FontRef, item: &Item) -> ItemLayout {
 /// as broken, and on paper you cannot scroll past it. (Hacker News items are
 /// the live example — their RSS description is only the word "Comments".)
 pub fn layout_page(font: &FontRef, brief: &Brief) -> PageLayout {
-    let mut y = HEADER_H;
+    let mut y = page::HEADER_H;
     if brief.summary.is_some() {
         y += LINE_H * 2;
     }
-    let limit = SCREEN_H - FOOTER_H;
-
-    let mut laid_out = Vec::new();
-    let mut considered = 0usize;
-    for item in &brief.items {
-        if item.excerpt.trim().is_empty() {
-            continue;
-        }
-        considered += 1;
-        let layout = layout_item(font, item);
-        if y + layout.height > limit {
-            break;
-        }
-        y += layout.height;
-        laid_out.push(layout);
-    }
-
-    let showable = brief
-        .items
-        .iter()
-        .filter(|i| !i.excerpt.trim().is_empty())
-        .count();
-    let _ = considered;
-    let remaining = showable.saturating_sub(laid_out.len());
+    // An item with no excerpt never reaches the page, so it is not "left out"
+    // either — it is not showable at all.
+    let showable: Vec<&Item> = brief.items.iter().filter(|i| !i.excerpt.trim().is_empty()).collect();
+    let measured: Vec<ItemLayout> = showable.iter().map(|i| layout_item(font, i)).collect();
+    let (laid_out, remaining) = page::fit(measured, y, page::limit(0), page::Fill::Front, |l| l.height);
     PageLayout { laid_out, remaining }
 }
 
 /// The footer line. Empty when everything fit — no need to say "0 more".
 pub fn footer_label(layout: &PageLayout, stale: bool) -> String {
+    let more = page::counted(layout.remaining, "more", "more");
     match (layout.remaining, stale) {
         (0, false) => String::new(),
-        (0, true) => "last brief · not refreshed".to_string(),
-        (n, false) => format!("{n} more"),
-        (n, true) => format!("{n} more · last brief"),
+        (0, true) => page::footer(&["last brief".into(), "not refreshed".into()]),
+        (_, false) => more,
+        (_, true) => page::footer(&[more, "last brief".into()]),
     }
 }
 
@@ -157,7 +112,7 @@ pub fn footer_label(layout: &PageLayout, stale: bool) -> String {
 /// an item missing a title or excerpt is skipped rather than rendered blank.
 pub fn parse_feed(json: &str) -> Vec<Item> {
     let mut items = Vec::new();
-    for block in split_objects(json) {
+    for block in split_objects(json, "articles") {
         let title = json_field(&block, "title").unwrap_or_default();
         let excerpt = json_field(&block, "excerpt").unwrap_or_default();
         if title.trim().is_empty() || excerpt.trim().is_empty() {
@@ -174,10 +129,13 @@ pub fn parse_feed(json: &str) -> Vec<Item> {
     items
 }
 
-/// Split the `articles` array into per-object slices. A hand-rolled scan keeps
-/// the binary free of a JSON dependency for one endpoint.
-fn split_objects(json: &str) -> Vec<String> {
-    let Some(start) = json.find("\"articles\"") else { return Vec::new() };
+/// Split the named array into per-object slices. A hand-rolled scan keeps the
+/// binary free of a JSON dependency for two endpoints.
+///
+/// Shared with the Claude bridge, which reads the same shape under different
+/// keys — one scanner, so a fix to the escape handling lands on both readers.
+pub(crate) fn split_objects(json: &str, array_key: &str) -> Vec<String> {
+    let Some(start) = json.find(&format!("\"{array_key}\"")) else { return Vec::new() };
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut current = String::new();
@@ -236,7 +194,9 @@ fn split_objects(json: &str) -> Vec<String> {
 }
 
 /// Read one string field out of a flat JSON object slice.
-fn json_field(block: &str, key: &str) -> Option<String> {
+///
+/// Shared with the Claude bridge for the same reason as `split_objects`.
+pub(crate) fn json_field(block: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\"");
     let at = block.find(&needle)? + needle.len();
     let rest = block[at..].trim_start();
@@ -364,7 +324,7 @@ mod tests {
         assert_eq!(page.laid_out.len() + page.remaining, 40);
 
         let used: usize = page.laid_out.iter().map(|l| l.height).sum();
-        assert!(used + HEADER_H <= SCREEN_H - FOOTER_H, "page overflows the footer");
+        assert!(used + page::HEADER_H <= page::limit(0), "page overflows the footer");
     }
 
     #[test]
@@ -408,7 +368,7 @@ mod tests {
         let f = font();
         let long = "word ".repeat(200);
         let layout = layout_item(&f, &item(&long, &long));
-        assert!(layout.title_lines.len() <= MAX_TITLE_LINES);
+        assert!(layout.title_lines.len() <= page::MAX_TITLE_LINES);
         assert!(layout.body_lines.len() <= MAX_BODY_LINES);
     }
 }
