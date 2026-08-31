@@ -73,6 +73,9 @@ usage:
   g-pad --learn-sheets [DIR]  render sample Learn-mode worksheets for every
                               level into DIR (default /tmp/learn-sheets) as
                               PNGs; no display or oracle needed
+  g-pad --learn-test [ANS]    one Learn-mode tutor round trip with a simulated
+                              child answer (default: the correct one); prints
+                              the verdict; verifies key + endpoint + model
   g-pad --version             print the version
 
 configuration lives in oracle.env next to the binary — see
@@ -189,6 +192,14 @@ fn main() {
             let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/learn-sheets");
             std::process::exit(learn_sheets(dir));
         }
+        // Diagnostic: one full tutor round trip with a simulated child answer
+        // — draws a number bond, writes ANSWER into the blank in the reply
+        // hand, sends the answer region, prints the verdict. Verifies the
+        // whole Learn pipeline short of a pen. Needs oracle credentials.
+        Some("--learn-test") => {
+            let answer = args.get(2).map(String::as_str);
+            std::process::exit(learn_test(answer));
+        }
         Some("--version" | "-V") => {
             println!("riddle {}", env!("CARGO_PKG_VERSION"));
             return;
@@ -278,6 +289,80 @@ fn learn_sheets(dir: &str) -> i32 {
         }
     }
     0
+}
+
+/// One tutor round trip against a simulated child: draw a bond sheet, write
+/// `answer` (default: the correct one) into the blank in the reply hand, send
+/// the answer region with the tutor instruction, print verdict + feedback.
+fn learn_test(answer: Option<&str>) -> i32 {
+    let Ok(ui_font) = FontRef::try_from_slice(ui::UI_FONT_TTF) else {
+        eprintln!("g-pad: bundled UI font unreadable");
+        return 1;
+    };
+    let Ok(hand) = FontRef::try_from_slice(FONT_TTF) else {
+        eprintln!("g-pad: bundled hand font unreadable");
+        return 1;
+    };
+    let mut buf = vec![0xFFu8; SCREEN_W * SCREEN_H * 4];
+    let ptr = buf.as_mut_ptr();
+    let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
+    let mut session = learn::Session::start_at(2, 7);
+    session.draw(&mut surf, &ui_font);
+    let expected = session.problem.expected();
+    let written = answer.unwrap_or(&expected);
+    println!("exercise: {}", session.problem.brief());
+    println!("child writes: {written}");
+
+    // "Handwrite" the answer into the blank with the reply pipeline.
+    let b = session.hits.answer;
+    let mut raster = script::rasterize_line(&hand, written, 110.0);
+    script::thin(&mut raster);
+    let (cx, cy) = ((b.x0 + b.x1) / 2 - raster.width as i32 / 2, (b.y0 + b.y1) / 2 - raster.height as i32 / 2);
+    for stroke in script::trace(&raster) {
+        for (i, &(sx, sy)) in stroke.iter().enumerate() {
+            if i > 0 {
+                let (px, py) = stroke[i - 1];
+                surf.brush_line(cx + px, cy + py, cx + sx, cy + sy, 3, BLACK);
+            }
+        }
+    }
+
+    let png = "/tmp/g-pad-learn-test.png";
+    if let Err(e) = ink::region_png(&surf, b, png) {
+        eprintln!("g-pad: region png failed: {e}");
+        return 1;
+    }
+    let o = match oracle::Oracle::spawn(false) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("oracle spawn failed: {e}");
+            return 1;
+        }
+    };
+    let ctx = oracle::TurnContext { instruction: Some(session.instruction()), ..Default::default() };
+    let (tx, rx) = mpsc::channel();
+    o.ask(png, &ctx, tx);
+    let mut got = String::new();
+    loop {
+        match rx.recv() {
+            Ok(Ok(Event::Ink(chunk))) => {
+                if !got.is_empty() {
+                    got.push(' ');
+                }
+                got.push_str(&chunk);
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                eprintln!("oracle error: {e}");
+                return 1;
+            }
+            Err(_) => break,
+        }
+    }
+    let (verdict, feedback) = learn::verdict::parse(got.trim());
+    println!("verdict: {verdict:?}");
+    println!("feedback: {feedback}");
+    i32::from(verdict == learn::Verdict::Unknown)
 }
 
 /// Write the whole page as an 8-bit grayscale PNG (full resolution).

@@ -157,11 +157,12 @@ stays the blank page.
 
 ### Learn mode
 
-Deferred. Recording only what the vocabulary implies, so the design does not
-have to be revisited later: a challenge renders, the child answers in their own
-hand, and the tick/strike primitives serve self-marking and retry. The
-interesting problem there is pedagogical (progress, tailoring, reporting), not
-gestural, and it should be designed when it is actually next.
+Built — see `docs/learn-mode.md`. It landed exactly on the vocabulary this
+document predicted: a challenge renders with its hit map, the child answers in
+their own hand, and an anchored mark in a decision box (DONE / NEW) carries
+every command; nothing is shape recognition. The part this document said to
+defer — progress, tailoring, reporting — remains deferred beyond a small
+in-sitting difficulty ladder, for the reasons given there.
 
 ## Switching modes
 
