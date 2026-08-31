@@ -652,7 +652,7 @@ fn run() -> std::io::Result<()> {
 
     eprintln!("g-pad: the pad is open");
 
-    loop {
+    'pad: loop {
         if sigterm.load(Ordering::Relaxed) {
             break;
         }
@@ -820,8 +820,10 @@ fn run() -> std::io::Result<()> {
                                 continue;
                             }
                             ui::Action::Quit => {
+                                // A bare break here only leaves the gesture
+                                // loop — the pad shrugs and keeps running.
                                 eprintln!("g-pad: leave from settings");
-                                break;
+                                break 'pad;
                             }
                             _ => {}
                         }
