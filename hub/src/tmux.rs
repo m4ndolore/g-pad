@@ -8,9 +8,13 @@
 //!
 //! Nudges land here too. The pad POSTs a mark; what keystrokes that becomes
 //! is this module's business alone, so a future hooks-based transport can
-//! replace it without the pad changing.
+//! replace it without the pad changing. Every operation takes an `Access`:
+//! the same tmux verbs run locally or over ssh, and nothing above this
+//! module knows the difference.
 
 use std::process::Command;
+
+use crate::config::Access;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pane {
@@ -40,18 +44,42 @@ impl PaneState {
     }
 }
 
-/// Every pane on the server that is running the claude CLI.
-pub fn claude_panes() -> Vec<Pane> {
-    let out = Command::new("tmux")
-        .args([
+/// Run a command on the client. Local execs directly; ssh carries the argv
+/// as one quoted line, BatchMode so a missing key fails instead of hanging.
+pub fn run(access: &Access, argv: &[&str]) -> Option<std::process::Output> {
+    match access {
+        Access::Local => Command::new(argv[0]).args(&argv[1..]).output().ok(),
+        Access::Ssh(dest) => Command::new("ssh")
+            .args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=3", dest])
+            .arg(argv.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
+            .output()
+            .ok(),
+    }
+}
+
+/// Single-quote one argument for the remote shell. `'` becomes `'\''`.
+fn quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', r"'\''"))
+}
+
+/// Every pane on the client that is running the claude CLI. `None` when the
+/// client cannot be reached — which is different from "no panes".
+pub fn claude_panes(access: &Access) -> Option<Vec<Pane>> {
+    let out = run(
+        access,
+        &[
+            "tmux",
             "list-panes",
             "-a",
             "-F",
             "#{pane_id}\t#{pane_current_command}\t#{pane_current_path}",
-        ])
-        .output();
-    let Ok(out) = out else { return Vec::new() };
-    String::from_utf8_lossy(&out.stdout)
+        ],
+    )?;
+    if !out.status.success() {
+        // No tmux server is an ordinary state, not unreachability.
+        return Some(Vec::new());
+    }
+    let panes = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| {
             let mut f = l.split('\t');
@@ -62,17 +90,18 @@ pub fn claude_panes() -> Vec<Pane> {
                 path: path.to_string(),
             })
         })
-        .collect()
+        .collect();
+    Some(panes)
 }
 
 /// The last screenful of a pane, which is where every prompt lives.
-pub fn capture(pane_id: &str) -> String {
-    let out = Command::new("tmux")
-        .args(["capture-pane", "-p", "-t", pane_id, "-S", "-40"])
-        .output();
-    match out {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
-        Err(_) => String::new(),
+pub fn capture(access: &Access, pane_id: &str) -> String {
+    match run(
+        access,
+        &["tmux", "capture-pane", "-p", "-t", pane_id, "-S", "-40"],
+    ) {
+        Some(o) => String::from_utf8_lossy(&o.stdout).into_owned(),
+        None => String::new(),
     }
 }
 
@@ -109,36 +138,34 @@ pub enum Nudge {
 
 /// Carry a nudge into a pane. Refuses the picker: a mark aimed at a session
 /// must never become a new task in the fleet UI.
-pub fn nudge(pane: &Pane, n: &Nudge) -> Result<(), String> {
-    if classify(&capture(&pane.id)) == PaneState::Picker {
+pub fn nudge(access: &Access, pane: &Pane, n: &Nudge) -> Result<(), String> {
+    if classify(&capture(access, &pane.id)) == PaneState::Picker {
         return Err(format!(
             "pane {} is the session picker, not a session",
             pane.id
         ));
     }
-    let status = match n {
-        Nudge::Tick => send_keys(&pane.id, &["1"], false),
-        Nudge::Strike => send_keys(&pane.id, &["Escape"], false),
+    match n {
+        Nudge::Tick => send_keys(access, &pane.id, &["1"], false),
+        Nudge::Strike => send_keys(access, &pane.id, &["Escape"], false),
         Nudge::Text(t) => {
-            send_keys(&pane.id, &[t.as_str()], true)?;
-            send_keys(&pane.id, &["Enter"], false)
+            send_keys(access, &pane.id, &[t.as_str()], true)?;
+            send_keys(access, &pane.id, &["Enter"], false)
         }
-    };
-    status
+    }
 }
 
 /// `literal` sends the argument as characters; otherwise tmux reads key names.
-fn send_keys(pane_id: &str, keys: &[&str], literal: bool) -> Result<(), String> {
-    let mut cmd = Command::new("tmux");
-    cmd.args(["send-keys", "-t", pane_id]);
+fn send_keys(access: &Access, pane_id: &str, keys: &[&str], literal: bool) -> Result<(), String> {
+    let mut argv = vec!["tmux", "send-keys", "-t", pane_id];
     if literal {
-        cmd.arg("-l");
+        argv.push("-l");
     }
-    cmd.args(keys);
-    match cmd.status() {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("tmux send-keys exited {s}")),
-        Err(e) => Err(format!("tmux send-keys: {e}")),
+    argv.extend_from_slice(keys);
+    match run(access, &argv) {
+        Some(o) if o.status.success() => Ok(()),
+        Some(o) => Err(format!("tmux send-keys exited {}", o.status)),
+        None => Err("client unreachable".to_string()),
     }
 }
 
@@ -171,5 +198,11 @@ mod tests {
         // The picker's "awaiting input" lines describe other sessions; the
         // pane itself must not surface as a session needing a human.
         assert_eq!(PaneState::Picker.word(), "done");
+    }
+
+    #[test]
+    fn remote_arguments_survive_quoting() {
+        assert_eq!(quote("continue"), "'continue'");
+        assert_eq!(quote("don't stop"), r"'don'\''t stop'");
     }
 }
