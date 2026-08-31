@@ -212,13 +212,47 @@ fn session_index_at(y: i32) -> Option<usize> {
     (top as usize + (i + 1) * CONV_ROW_H <= SCREEN_H).then_some(i)
 }
 
+/// What a tick on the decision box means for this session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Decision {
+    /// The session sits at a pending prompt: tick approves, strike rejects.
+    Approve,
+    /// The session finished its turn: tick nudges it forward.
+    Continue,
+}
+
+/// A rendered region and what marking it means — the hit map, returned by
+/// drawing so it can never drift from what was painted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecisionBox {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub decision: Decision,
+}
+
+/// Room the decision box claims above the footer, gap included.
+const DECISION_H: usize = 130;
+
 /// One session, full page — the turn page of `docs/anthink-interaction.md`.
-/// The board chooses; this reads. Artifacts pin above the footer because
-/// evidence must not be pushed off the page by prose.
+/// The board chooses; this reads and, when the session needs a human,
+/// carries the decision box. Artifacts pin above the box because evidence
+/// must not be pushed off the page by prose.
+///
+/// `armed` is the destructive-confirmation state: the first tick arms, the
+/// box inverts, the second tick sends. `status` replaces the box label after
+/// a send — the pad never assumes a mark landed.
 pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::bridge::Session,
-    remaining: usize, stale: bool) {
+    remaining: usize, stale: bool, armed: bool, status: Option<&str>) -> Option<DecisionBox> {
     use crate::page;
-    let layout = crate::bridge::layout_session(font, session);
+    let decision = match session.state.as_str() {
+        "waiting" => Some(Decision::Approve),
+        "done" => Some(Decision::Continue),
+        _ => None,
+    };
+    let reserved = if decision.is_some() { DECISION_H } else { 0 };
+    let layout = crate::bridge::layout_session_reserving(font, session, reserved);
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
     text(surf, font, "AGENTS", LABEL_PX, page::PAD, 36, BLACK);
     rule(surf, page::PAD, 92, SCREEN_W - page::PAD * 2, 2);
@@ -239,8 +273,8 @@ pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::br
         y += t.height;
     }
     // Exactly the room the layout reserved, so drawing can never disagree
-    // with measuring.
-    let mut ay = page::limit(0) - layout.artifacts.len() * page::LINE_H;
+    // with measuring: artifacts above the box, the box above the footer.
+    let mut ay = page::limit(reserved) - layout.artifacts.len() * page::LINE_H;
     for a in &layout.artifacts {
         text(surf, font, &tail(&a.reference, 22), page::BODY_PX, page::PAD, ay, BLUE);
         text(surf, font, &one_line(&a.label, 44), page::BODY_PX, page::PAD + 330, ay, BLACK);
@@ -250,6 +284,37 @@ pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::br
     if !footer.is_empty() {
         text(surf, font, &footer.to_uppercase(), LABEL_PX, page::PAD, SCREEN_H - 60, BLUE);
     }
+    decision.map(|d| draw_decision_box(surf, font, d, armed, status))
+}
+
+/// The box itself: a fixed, known, anchored target that requires no
+/// recognition and no precision. Armed, it inverts — the pad's stand-in for
+/// vermilion, and unmistakable on a grayscale panel.
+fn draw_decision_box(surf: &mut Surface, font: &FontRef, decision: Decision, armed: bool,
+    status: Option<&str>) -> DecisionBox {
+    use crate::page;
+    let x = page::PAD;
+    let w = SCREEN_W - page::PAD * 2;
+    let h = DECISION_H - 34; // the rest is the gap above
+    let y = page::limit(0) - h;
+    let label = match (status, armed, decision) {
+        (Some(s), _, _) => one_line(s, 60),
+        (None, false, Decision::Approve) => "PENDING ACTION · TICK TO APPROVE · STRIKE TO REJECT".into(),
+        (None, true, Decision::Approve) => "TICK AGAIN TO APPROVE — TREATED AS DESTRUCTIVE".into(),
+        (None, false, Decision::Continue) => "TURN FINISHED · TICK TO NUDGE FORWARD".into(),
+        (None, true, Decision::Continue) => "TICK AGAIN TO SEND CONTINUE".into(),
+    };
+    if armed && status.is_none() {
+        surf.fill_rect(x, y, w, h, BLACK);
+        text(surf, font, &label, LABEL_PX, x + 28, y + h / 2 - 18, WHITE);
+    } else {
+        surf.fill_rect(x, y, w, 3, BLACK);
+        surf.fill_rect(x, y + h - 3, w, 3, BLACK);
+        surf.fill_rect(x, y, 3, h, BLACK);
+        surf.fill_rect(x + w - 3, y, 3, h, BLACK);
+        text(surf, font, &label, LABEL_PX, x + 28, y + h / 2 - 18, BLACK);
+    }
+    DecisionBox { x, y, w, h, decision }
 }
 
 /// The end of a reference is the part that identifies it — a path's file, a
@@ -604,7 +669,19 @@ mod tests {
                 label: "edited".into(),
             }],
         };
-        draw_session_page(&mut surf, &font, &session, 3, true);
+        // Waiting: the decision box is on the page, and arming redraws it.
+        let boxr = draw_session_page(&mut surf, &font, &session, 3, true, false, None);
+        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Approve));
+        let armed = draw_session_page(&mut surf, &font, &session, 3, true, true, None);
+        assert_eq!(armed, boxr, "arming changes the drawing, never the hit map");
+        // Done: a tick means nudge forward. Running: nothing to decide.
+        let mut done = session.clone();
+        done.state = "done".into();
+        let boxr = draw_session_page(&mut surf, &font, &done, 0, false, false, None);
+        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Continue));
+        let mut running = session.clone();
+        running.state = "running".into();
+        assert_eq!(draw_session_page(&mut surf, &font, &running, 0, false, false, None), None);
     }
 
     #[test]

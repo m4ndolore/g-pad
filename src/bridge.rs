@@ -115,6 +115,12 @@ pub fn layout_turn(font: &FontRef, turn: &Turn) -> TurnLayout {
 /// Turns are taken from the end — the last exchange is the one worth reading —
 /// and then put back in order so the page reads downward.
 pub fn layout_session(font: &FontRef, session: &Session) -> PageLayout {
+    layout_session_reserving(font, session, 0)
+}
+
+/// Lay out one session leaving `extra` pixels above the footer untouched —
+/// the room the decision box claims when the session is waiting on a human.
+pub fn layout_session_reserving(font: &FontRef, session: &Session, extra: usize) -> PageLayout {
     let title_lines = page::title_lines(font, &session.title);
     let meta = page::meta_line(&session.state, &session.updated);
 
@@ -131,7 +137,7 @@ pub fn layout_session(font: &FontRef, session: &Session) -> PageLayout {
     // Taken from the end — the last exchange is the one worth reading — and
     // restored to order, so the page still reads downward.
     let (turns, turns_omitted) =
-        page::fit(measured, y, page::limit(artifact_room), page::Fill::Back, |t| t.height);
+        page::fit(measured, y, page::limit(artifact_room + extra), page::Fill::Back, |t| t.height);
 
     PageLayout { title_lines, meta, turns, turns_omitted, artifacts, artifacts_omitted }
 }
@@ -231,6 +237,48 @@ pub fn spawn_poll() {
             std::thread::sleep(std::time::Duration::from_secs(every));
         }
     });
+}
+
+/// Carry one mark to the hub. Synchronous and short-fused: the hub is one
+/// LAN hop away, and the page redraw right after this reports the outcome.
+///
+/// The pad only ever says what the writer did — `tick`, `strike`, or words.
+/// What keystrokes that becomes is the hub's business (see the design doc);
+/// swapping the hub's transport never touches this.
+pub fn post_nudge(id: &str, mark: &str, text: Option<&str>) -> Result<(), String> {
+    let base = std::env::var("RIDDLE_BRIDGE_URL").map_err(|_| "no hub configured".to_string())?;
+    let body = match text {
+        Some(t) => format!(r#"{{"mark":"{mark}","text":"{}"}}"#, escape_json(t)),
+        None => format!(r#"{{"mark":"{mark}"}}"#),
+    };
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(5)).build();
+    match agent
+        .post(&nudge_url(&base, id))
+        .set("Content-Type", "application/json")
+        .send_string(&body)
+    {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(code, r)) => {
+            let detail = r.into_string().unwrap_or_default();
+            Err(format!("hub {code}: {}", detail.trim()))
+        }
+        Err(e) => Err(format!("hub unreachable: {e}")),
+    }
+}
+
+fn escape_json(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' | '\t' => out.push(' '),
+            c if (c as u32) < 0x20 => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Parse the bridge payload.

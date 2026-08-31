@@ -107,8 +107,26 @@ enum State {
     ExpandedConversation { panel: Option<ui::Drawer>, return_to: Box<State> },
     Settings { saved: Option<Vec<u8>>, return_to: Box<State> },
     /// One agent session read full-page (the turn page). `saved` is the whole
-    /// canvas underneath; the drawer swipe brings it back.
-    SessionPage { saved: Vec<u8>, return_to: Box<State> },
+    /// canvas underneath; the drawer swipe brings it back. `boxr` is the hit
+    /// map drawing returned; `armed` is the destructive-confirmation state
+    /// (first tick arms, second sends); `status` is the last nudge's outcome.
+    SessionPage {
+        session: bridge::Session,
+        remaining: usize,
+        stale: bool,
+        armed: bool,
+        status: Option<String>,
+        boxr: Option<ui::DecisionBox>,
+        saved: Vec<u8>,
+        return_to: Box<State>,
+    },
+}
+
+/// What a pen stroke on the turn page meant, once anchored to the hit map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageMark {
+    Tick,
+    Strike,
 }
 
 #[derive(Clone, Copy)]
@@ -654,6 +672,8 @@ fn run() -> std::io::Result<()> {
                             if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
                             }
+                        } else if matches!(state, State::SessionPage { .. }) {
+                            session_page_mark(&mut state, &mut user_ink, &mut surf, &disp, &ui_font);
                         }
                     }
                     continue;
@@ -666,7 +686,7 @@ fn run() -> std::io::Result<()> {
                     continue;
                 }
                 if matches!(state, State::Settings { .. } | State::Drawer { .. }
-                    | State::ExpandedConversation { .. } | State::SessionPage { .. }) {
+                    | State::ExpandedConversation { .. }) {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
                         control_pen_latched = true;
@@ -695,6 +715,20 @@ fn run() -> std::io::Result<()> {
                         } else if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Page(1));
                             control_pen_latched = true;
+                        }
+                    }
+                    // The turn page: the pen marks. Ink lands like anywhere
+                    // else; pen-up reads it against the hit map and the
+                    // redraw absorbs it.
+                    State::SessionPage { .. } => {
+                        pen_down = true;
+                        if s.tool == pen::Tool::Pen {
+                            let r = 2 + s.pressure * 3 / pen::MAX_PRESSURE;
+                            let d = user_ink.pen_point(&mut surf, s.x, s.y, r);
+                            if !d.is_empty() {
+                                ink_dirty.add(d.x0, d.y0, 0);
+                                ink_dirty.add(d.x1, d.y1, 0);
+                            }
                         }
                     }
                     _ => {}
@@ -1099,7 +1133,7 @@ fn run() -> std::io::Result<()> {
                 None => *return_to,
             },
             // The turn page rests until the reader closes it.
-            State::SessionPage { saved, return_to } => State::SessionPage { saved, return_to },
+            s @ State::SessionPage { .. } => s,
 
             State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
@@ -1183,12 +1217,80 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes);
             disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
-        State::SessionPage { saved, return_to } => {
+        State::SessionPage { saved, return_to, .. } => {
             surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
             disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
         other => *state = other,
     }
+}
+
+/// Read the stroke just finished on the turn page against the hit map, act,
+/// and redraw — the redraw absorbs the ink, so a command leaves no mark.
+///
+/// Approval is tiered by consequence, and until the hub reports tiers every
+/// pending action counts as destructive: the first tick arms the box, the
+/// second sends. Reject is always cheaper — a strike takes effect at once.
+/// See docs/anthink-interaction.md.
+fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
+    disp: &display::Display, ui_font: &FontRef) {
+    let Some(stroke) = ink.stroke_list().last().cloned() else { return };
+    let _ = ink.pop_stroke();
+    let State::SessionPage { session, remaining, stale, armed, status, boxr, .. } = state else {
+        return;
+    };
+    let mut sb = BBox::empty();
+    for &(x, y, r) in &stroke {
+        sb.add(x, y, r);
+    }
+    match boxr.as_ref().and_then(|b| classify_mark(&stroke, &sb, b)) {
+        Some(PageMark::Strike) => {
+            // Only a pending action has something to reject.
+            if boxr.map(|b| b.decision) == Some(ui::Decision::Approve) {
+                *status = Some(match bridge::post_nudge(&session.id, "strike", None) {
+                    Ok(()) => "REJECTED · SENT".to_string(),
+                    Err(e) => e.to_uppercase(),
+                });
+                *armed = false;
+            }
+        }
+        Some(PageMark::Tick) if *armed => {
+            let sent = match boxr.map(|b| b.decision) {
+                Some(ui::Decision::Continue) => bridge::post_nudge(&session.id, "text", Some("continue")),
+                _ => bridge::post_nudge(&session.id, "tick", None),
+            };
+            *status = Some(match sent {
+                Ok(()) => "SENT".to_string(),
+                Err(e) => e.to_uppercase(),
+            });
+            *armed = false;
+        }
+        Some(PageMark::Tick) => {
+            *armed = true;
+            *status = None;
+        }
+        // A mark that hit nothing is stray ink; the redraw clears it.
+        None => {}
+    }
+    *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
+        status.as_deref());
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+}
+
+/// Anchored reading: where the mark landed, plus one cheap global property.
+/// A wide flat stroke through the box is the strike; any other deliberate
+/// mark whose center is inside the box is the tick.
+fn classify_mark(stroke: &[(i32, i32, i32)], sb: &BBox, b: &ui::DecisionBox) -> Option<PageMark> {
+    let (bx0, by0) = (b.x as i32, b.y as i32);
+    let (bx1, by1) = (bx0 + b.w as i32, by0 + b.h as i32);
+    if sb.x0 >= bx1 || sb.x1 <= bx0 || sb.y0 >= by1 || sb.y1 <= by0 {
+        return None;
+    }
+    if gesture::looks_like_send_rule(stroke, (b.w / 4) as i32) {
+        return Some(PageMark::Strike);
+    }
+    let (cx, cy) = ((sb.x0 + sb.x1) / 2, (sb.y0 + sb.y1) / 2);
+    (cx >= bx0 && cx < bx1 && cy >= by0 && cy < by1).then_some(PageMark::Tick)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1266,9 +1368,12 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
         close_overlay(state, surf, disp, selection, scroll);
         let old = std::mem::replace(state, State::Listening { last_pen: None });
         let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
-        ui::draw_session_page(surf, ui_font, &session, remaining, held.stale);
+        let boxr = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale, false, None);
         disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
-        *state = State::SessionPage { saved, return_to: Box::new(old) };
+        *state = State::SessionPage {
+            session, remaining, stale: held.stale, armed: false, status: None, boxr,
+            saved, return_to: Box::new(old),
+        };
         return;
     }
     let mut redraw = false;
@@ -1566,6 +1671,55 @@ fn step_reply_page(dir: i32, font: &FontRef, reply_w: i32, pages: &mut Vec<Strin
 #[cfg(test)]
 mod ux_tests {
     use super::*;
+
+    fn decision_box() -> ui::DecisionBox {
+        ui::DecisionBox { x: 44, y: 1600, w: 1316, h: 96, decision: ui::Decision::Approve }
+    }
+
+    fn stroke_between(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<(i32, i32, i32)> {
+        (0..=20)
+            .map(|i| (x0 + (x1 - x0) * i / 20, y0 + (y1 - y0) * i / 20, 2))
+            .collect()
+    }
+
+    fn bbox_of(stroke: &[(i32, i32, i32)]) -> BBox {
+        let mut b = BBox::empty();
+        for &(x, y, r) in stroke {
+            b.add(x, y, r);
+        }
+        b
+    }
+
+    #[test]
+    fn a_check_in_the_box_is_a_tick_and_a_flat_stroke_is_a_strike() {
+        let b = decision_box();
+        let tick = stroke_between(600, 1630, 660, 1680);
+        assert_eq!(classify_mark(&tick, &bbox_of(&tick), &b), Some(PageMark::Tick));
+        let strike = stroke_between(200, 1650, 1100, 1655);
+        assert_eq!(classify_mark(&strike, &bbox_of(&strike), &b), Some(PageMark::Strike));
+    }
+
+    #[test]
+    fn ink_outside_the_box_is_a_note_never_a_command() {
+        // The anchoring rule: the same "v" means different things in
+        // different places. Outside the box it commands nothing.
+        let b = decision_box();
+        let margin = stroke_between(600, 400, 660, 450);
+        assert_eq!(classify_mark(&margin, &bbox_of(&margin), &b), None);
+        let flat_above = stroke_between(200, 900, 1100, 905);
+        assert_eq!(classify_mark(&flat_above, &bbox_of(&flat_above), &b), None);
+    }
+
+    #[test]
+    fn a_mark_straddling_the_box_edge_counts_only_if_centered_inside() {
+        let b = decision_box();
+        // Center above the top edge: overlaps, but not aimed at the box.
+        let straddle = stroke_between(600, 1500, 620, 1620);
+        assert_eq!(classify_mark(&straddle, &bbox_of(&straddle), &b), None);
+        // Center inside: aimed.
+        let aimed = stroke_between(600, 1590, 620, 1690);
+        assert_eq!(classify_mark(&aimed, &bbox_of(&aimed), &b), Some(PageMark::Tick));
+    }
 
     #[test]
     fn reply_starts_at_the_top_writing_line() {
