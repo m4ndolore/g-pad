@@ -1452,13 +1452,29 @@ fn run() -> std::io::Result<()> {
                         if let Some(ref mut session) = learn_session {
                             session.record(verdict);
                             let answer = session.hits.answer;
-                            mark_dirty = match verdict {
-                                learn::Verdict::Yes => learn::sheet::draw_check(&mut surf, &answer),
-                                learn::Verdict::Almost | learn::Verdict::No => {
-                                    learn::sheet::draw_look_again(&mut surf, &answer)
+                            match verdict {
+                                learn::Verdict::Yes => {
+                                    // The winning answer stays on show, but the
+                                    // tracked ink is dropped so a second DONE
+                                    // cannot resubmit it (or a mixture).
+                                    user_ink.clear();
+                                    mark_dirty = learn::sheet::draw_check(&mut surf, &answer);
                                 }
-                                learn::Verdict::Unknown => BBox::empty(),
-                            };
+                                learn::Verdict::Almost | learn::Verdict::No => {
+                                    // A clean retry: repaint the sheet so the
+                                    // next attempt is written into an empty
+                                    // blank, never on top of the last one —
+                                    // the tutor must only ever be shown one
+                                    // answer at a time.
+                                    user_ink.clear();
+                                    session.draw(&mut surf, &ui_font);
+                                    learn::sheet::draw_look_again(&mut surf, &answer);
+                                    disp.full_refresh(surf.w, surf.h);
+                                }
+                                // An unreadable verdict moves nothing: the ink
+                                // stays, and DONE can simply be marked again.
+                                learn::Verdict::Unknown => {}
+                            }
                         }
                         if !mark_dirty.is_empty() {
                             let (x, y, w, h) = mark_dirty.rect();
