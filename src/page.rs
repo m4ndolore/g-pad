@@ -16,16 +16,19 @@ use ab_glyph::FontRef;
 
 /// Outer margin. The reading surfaces share one page geometry so two open
 /// side by side do not look like two different products.
-pub const PAD: usize = 44;
-pub const TITLE_PX: f32 = 38.0;
-pub const BODY_PX: f32 = 28.0;
+pub const PAD: usize = 48;
+/// Sized for the panel, not a laptop: ~226 dpi means 40px is roughly 12.5pt
+/// on paper. The first hardware read (2026-08-31) found the old 28px body
+/// unreadably small.
+pub const TITLE_PX: f32 = 56.0;
+pub const BODY_PX: f32 = 40.0;
 /// One body line, and one title line. Titles are set larger, so they lead.
-pub const LINE_H: usize = 38;
-pub const TITLE_LINE_H: usize = 46;
+pub const LINE_H: usize = 54;
+pub const TITLE_LINE_H: usize = 68;
 /// Room reserved at the top for the surface's own header, and at the foot for
 /// the "what was left out" line.
-pub const HEADER_H: usize = 110;
-pub const FOOTER_H: usize = 70;
+pub const HEADER_H: usize = 120;
+pub const FOOTER_H: usize = 84;
 /// A title may run to two lines. Beyond that it is not a title.
 pub const MAX_TITLE_LINES: usize = 2;
 

@@ -546,6 +546,10 @@ fn run() -> std::io::Result<()> {
                         }
                         ui::draw_settings(&mut surf, &ui_font, prefs);
                         disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
+                    } else if matches!(state, State::SessionPage { .. }) {
+                        // Fingers navigate, the pen commands: a tap puts the
+                        // turn page away and the canvas returns.
+                        close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
                     } else {
                         let action = match &mut state {
                             State::Drawer { panel: Some(p), .. } | State::ExpandedConversation { panel: Some(p), .. } => p.tap(x, y, &store),
@@ -651,9 +655,11 @@ fn run() -> std::io::Result<()> {
                 // touch the capacitive sensor.  Never let that contact
                 // participate in touch gestures (especially five-finger
                 // quit); the pen is the authoritative input device here.
+                // The turn page is a pen surface like the canvas: while the
+                // pen is near, the palm must not tap the page closed.
                 if s.proximity && !matches!(state,
                     State::Settings { .. } | State::Drawer { .. }
-                    | State::ExpandedConversation { .. } | State::SessionPage { .. })
+                    | State::ExpandedConversation { .. })
                 {
                     if let Some(ref mut td) = touch_dev {
                         td.suppress();
@@ -1244,6 +1250,10 @@ fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
         sb.add(x, y, r);
     }
     match boxr.as_ref().and_then(|b| classify_mark(&stroke, &sb, b)) {
+        // A mark that hit nothing is a note. Its ink stays on the page (the
+        // stroke is already absorbed from the data, so it can never be
+        // committed) — wiping it instantly read as breakage on hardware.
+        None => return,
         Some(PageMark::Strike) => {
             // Only a pending action has something to reject.
             if boxr.map(|b| b.decision) == Some(ui::Decision::Approve) {
@@ -1269,8 +1279,6 @@ fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
             *armed = true;
             *status = None;
         }
-        // A mark that hit nothing is stray ink; the redraw clears it.
-        None => {}
     }
     *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
         status.as_deref());
