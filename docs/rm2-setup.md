@@ -1,10 +1,14 @@
 # g-pad on the reMarkable 2 — setup from zero
 
-This guide installs the windowed AppLoad build. The direct Quill **takeover**
-build is the one to want: it removes the qtfb latency floor and is the only
-mode with touch gestures (history, settings, five-finger exit) and power
-handling — windowed has none of those. See "Takeover build" below, and keep
+The direct Quill **takeover** build is the one to run: it removes the qtfb
+latency floor and is the only mode with touch gestures (history, settings,
+five-finger exit) and power handling. See "Takeover build" below, and keep
 SSH available as a recovery path the first time you launch it.
+
+The quick path below still installs the retired windowed/qtfb build alongside
+the xovi/AppLoad plumbing — use it for the plumbing, then install the takeover
+bundle over it. The windowed mode itself is abandoned and kept only as
+build-system history.
 
 The rM2 needs no "developer mode": SSH as root is built into every unit.
 You need: the tablet, its USB-C cable, and ~15 minutes.
@@ -29,24 +33,29 @@ your key), confirms the device is an rM2, installs
 [AppLoad](https://github.com/asivery/rm-appload) from their official arm32
 releases, adds power-button persistence via
 [xovi-tripletap](https://github.com/rmitchellscott/xovi-tripletap)
-(triple-press = toggle xovi), copies the riddle bundle, prompts for your API
+(triple-press = toggle xovi), copies the g-pad bundle, prompts for your API
 key, and verifies the oracle end-to-end.
 
 Then on the tablet: open **AppLoad → g-pad**, write, rest the pen ~3 s.
 
 > ⚠️ Everything here is reversible (`ssh root@10.11.99.1
-> /home/root/xovi/stock` or a reboot returns the stock UI), but reMarkable OS
-> updates can remove xovi/AppLoad/riddle — reinstallable by re-running the
-> installer. Keep the SSH password: it is your escape hatch.
+> /home/root/xovi/stock` or a reboot returns the stock UI). Note that **any
+> reboot leaves xovi off** — stock UI, no AppLoad, files intact; restart it
+> with `ssh root@10.11.99.1 /home/root/xovi/start` or a triple power-press
+> while awake. reMarkable OS updates can also remove xovi/AppLoad/g-pad —
+> reinstallable by re-running the installer. Keep the SSH password: it is
+> your escape hatch.
 
 ### If SSH won't connect
 
 Two rM2 SSH quirks, both handled by the installer for its own connections.
 For your own `ssh`/`scp` sessions:
 
-- **`Connection closed by 10.11.99.1 port 22`** — the rM2's dropbear (OS 3.x)
-  has a broken RSA host-key path: it hangs up whenever RSA is negotiated,
-  though ed25519 works fine. A stale `ssh-rsa` entry for `10.11.99.1` in your
+- **`Connection closed by 10.11.99.1 port 22`** — older rM2 firmware ships a
+  dropbear (2020.81-era) with a broken RSA host-key path: it hangs up whenever
+  RSA is negotiated, though ed25519 works fine. (Current firmware ships
+  dropbear 2025.88; ed25519-first remains the safe default either way.) A
+  stale `ssh-rsa` entry for `10.11.99.1` in your
   `~/.ssh/known_hosts` (from an older device or firmware) forces your client
   to request RSA and triggers exactly this. Fix:
   `ssh-keygen -R 10.11.99.1`, then connect again.
@@ -133,7 +142,7 @@ If you prefer to run each step yourself:
    goes to `/home/root/xovi/exthome/appload/shims/` (not extensions.d).
 3. **Persistence** — on the tablet:
    `wget -qO- https://raw.githubusercontent.com/rmitchellscott/xovi-tripletap/main/install.sh | bash`
-4. **riddle** — `scp -O -r dist/rm2/riddle root@10.11.99.1:/home/root/xovi/exthome/appload/`,
+4. **g-pad** — `scp -O -r dist/rm2-takeover/g-pad root@10.11.99.1:/home/root/xovi/exthome/appload/`,
    then create `oracle.env` in that folder (see above).
 5. **Start** — `/home/root/xovi/start` on the tablet (or triple-press power).
 
@@ -148,5 +157,5 @@ If you prefer to run each step yourself:
 - **No reply, ink blot pulses forever** — oracle problem: re-run
   `--oracle-test`; check Wi-Fi, key, and that the model supports images.
 - **Tablet acting up** — `ssh rm2 'systemctl restart xochitl'` restores the
-  stock UI; worst case hold power ~10 s to reboot. riddle in windowed mode
-  never stops xochitl, so the blast radius is small.
+  stock UI; worst case hold power ~10 s to reboot (remember: a reboot leaves
+  xovi off until restarted).

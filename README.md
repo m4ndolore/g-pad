@@ -66,8 +66,9 @@ scp -O -r dist/rm2-takeover/g-pad root@10.11.99.1:/home/root/xovi/exthome/apploa
 4. In **AppLoad**: Reload, then **g-pad**. Write, then rule a line beneath it.
 
 > This modifies your device. Takeover stops the reMarkable UI and drives the
-> e-ink engine directly as root. Leave with a **5-finger tap** — xochitl
-> restarts. Keep SSH working: `ssh root@10.11.99.1 'systemctl start xochitl'`.
+> e-ink engine directly as root. Leave by **holding five fingers** (or the
+> LEAVE row in settings) — xochitl restarts. Keep SSH working:
+> `ssh root@10.11.99.1 'systemctl start xochitl'`.
 > Not affiliated with reMarkable AS.
 
 `libqsgepaper.so` is pulled from *your* tablet by `quill/build.sh`. It is
