@@ -58,6 +58,20 @@ pub struct TurnContext {
     pub instruction: Option<String>,
 }
 
+/// The transcriber's instruction: the turn page's handwritten nudge must
+/// come back as the writer's own words, whole, or not at all. It travels as
+/// user text (`TurnContext::instruction`) so both backends honor it.
+const TRANSCRIBE_INSTRUCTION: &str = "This page holds only handwritten pen strokes. \
+Transcribe the handwriting exactly, word for word, as one line. Reply with ONLY the \
+transcribed words — no greeting, no commentary, no quotation marks. If a word is \
+illegible, write ? in its place.";
+
+/// A transcription turn: no memory, no history, one instruction. The reply
+/// streams like any other; the caller collects it whole before acting.
+pub fn transcribe_context() -> TurnContext {
+    TurnContext { instruction: Some(TRANSCRIBE_INSTRUCTION.to_string()), ..Default::default() }
+}
+
 /// Read-only description of exactly the non-image context for the next turn.
 /// Credentials are deliberately absent from this type.
 #[derive(Clone, Debug, PartialEq, Eq)]
