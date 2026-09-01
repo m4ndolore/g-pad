@@ -669,6 +669,11 @@ fn run() -> std::io::Result<()> {
     // and a tap must land clear of the child's own ink, so a dot in a word
     // never tears the page away but a clear tap always turns it.
     let mut learn_tap_advance = false;
+    // The page rectangle the last play-page image covered, captured at send
+    // time: the model's drawing turn comes back in 0–100 of this frame, and
+    // the child may keep inking while the reply streams, so it cannot be
+    // recomputed later.
+    let mut learn_sent_frame = BBox::empty();
     // Learn asks must never go to a capture sink (the pad's default model may
     // be one, archiving pages instead of marking them): prefer the dedicated
     // learn model, else the ask model, else whatever the pad uses.
@@ -1386,6 +1391,7 @@ fn run() -> std::io::Result<()> {
                                 } else {
                                     let crop = user_ink.crop_for(&session.hits.answer, 80);
                                     ink::region_png(&surf, crop, PNG_PATH)
+                                        .map(|frame| learn_sent_frame = frame)
                                 };
                                 if let Err(e) = sent {
                                     eprintln!("g-pad: rasterize answer failed: {e}");
@@ -1808,21 +1814,29 @@ fn run() -> std::io::Result<()> {
                                     stamped = true;
                                 }
                                 LearnFlavor::Critter => {
-                                    // The pad's turn: one decoration on the
-                                    // doodle, one line of commentary.
-                                    let (deco, caption) = learn::games::parse_critter(got.trim());
-                                    if let Some(d) = deco {
-                                        let dirty = learn::games::draw_deco(&mut surf, &user_ink.bbox, &d, &ui_font);
-                                        if !dirty.is_empty() {
-                                            let (x, y, w, h) = dirty.rect();
-                                            disp.update(x, y, w, h, true);
-                                        }
+                                    // The pad's turn: its own pen strokes on
+                                    // the doodle (menu decoration as the
+                                    // fallback), one line of commentary.
+                                    let turn = learn::games::parse_critter_turn(got.trim());
+                                    let dirty = if !turn.strokes.is_empty() {
+                                        learn::games::draw_strokes(
+                                            &mut surf, &learn_sent_frame,
+                                            &session.hits.answer, &turn.strokes,
+                                        )
+                                    } else if let Some(d) = turn.deco {
+                                        learn::games::draw_deco(&mut surf, &user_ink.bbox, &d, &ui_font)
+                                    } else {
+                                        BBox::empty()
+                                    };
+                                    if !dirty.is_empty() {
+                                        let (x, y, w, h) = dirty.rect();
+                                        disp.update(x, y, w, h, true);
                                     }
                                     session.critter_turn();
-                                    text = if caption.trim().is_empty() {
+                                    text = if turn.caption.trim().is_empty() {
                                         "There. Much better.".to_string()
                                     } else {
-                                        caption
+                                        turn.caption
                                     };
                                 }
                                 LearnFlavor::Guess => {

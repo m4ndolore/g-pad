@@ -75,12 +75,19 @@ impl Game {
                     Never mention pictures, images, or cameras. ";
         match self {
             Game::Critter { round } => format!(
-                "{base}The page shows the child's doodle{prior}. Choose exactly ONE decoration \
-                 from this menu that would be FUNNIEST on it: EYES, LEGS, ARMS, HAT, ANTENNA, \
-                 TAIL, RAYS, CROWN, MUSTACHE, BUBBLE. Reply with that single menu word FIRST \
-                 (if you pick BUBBLE, follow it with one short silly word to go in the speech \
-                 bubble), then one funny caption of at most eight very simple words that gives \
-                 the creature a silly name or reacts to it.",
+                "{base}The page shows the child's doodle{prior}. Take a REAL drawing turn: \
+                 add one generous new thing that makes it funnier — big wings, a tiny friend, \
+                 a wobbly house, a sun with a face, a skateboard, whatever fits the doodle. \
+                 Reply with EXACTLY this shape: \
+                 first line: one funny caption of at most eight very simple words that names \
+                 the creature or reacts to it. \
+                 Then 4 to 10 more lines, each one pen stroke: the letter D, a space, then \
+                 2 to 12 points as x,y pairs separated by spaces, like `D 10,80 30,60 50,80`. \
+                 Coordinates run 0-100 across the whole picture: 0,0 is top-left, 100,100 \
+                 bottom-right. Strokes are drawn in your order with a child's marker pen. \
+                 Draw BIG — your addition should be about as large as the doodle itself — \
+                 and make it touch the doodle so it belongs to it. Surprise the child: \
+                 not just a hat every time. Write nothing else.",
                 prior = if *round > 0 { " (some parts you added on earlier turns)" } else { "" }
             ),
             Game::Guess => format!(
@@ -127,6 +134,60 @@ pub enum Deco {
     Crown,
     Mustache,
     Bubble(String),
+}
+
+/// The pad's drawing turn, parsed: strokes the model drew itself (in 0–100
+/// picture coordinates), or a menu decoration when it fell back to the old
+/// vocabulary, and the caption either way.
+pub struct CritterTurn {
+    /// Model-drawn pen strokes: polylines in 0–100 of the picture it saw.
+    pub strokes: Vec<Vec<(f32, f32)>>,
+    /// The menu fallback, when the reply led with a decoration word instead.
+    pub deco: Option<Deco>,
+    pub caption: String,
+}
+
+/// Parse a critter reply. `D x,y x,y …` lines are the model's own pen
+/// strokes; every other non-empty line joins the caption. A reply with no
+/// stroke lines degrades to the old menu-word protocol, and an unknown lead
+/// means caption only — the game never stalls on a chatty model.
+pub fn parse_critter_turn(reply: &str) -> CritterTurn {
+    let mut strokes: Vec<Vec<(f32, f32)>> = Vec::new();
+    let mut caption_lines: Vec<&str> = Vec::new();
+    for line in reply.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let is_stroke = (t.starts_with("D ") || t.starts_with("d "))
+            && t[2..].trim_start().starts_with(|c: char| c.is_ascii_digit());
+        if !is_stroke {
+            caption_lines.push(t);
+            continue;
+        }
+        let mut pts: Vec<(f32, f32)> = Vec::new();
+        for pair in t[2..].split_whitespace() {
+            let Some((xs, ys)) = pair.split_once(',') else { continue };
+            let (Ok(x), Ok(y)) = (xs.trim().parse::<f32>(), ys.trim().parse::<f32>()) else {
+                continue;
+            };
+            if x.is_finite() && y.is_finite() {
+                pts.push((x.clamp(0.0, 100.0), y.clamp(0.0, 100.0)));
+            }
+            if pts.len() >= 12 {
+                break;
+            }
+        }
+        if pts.len() >= 2 {
+            strokes.push(pts);
+        }
+    }
+    strokes.truncate(10);
+    if !strokes.is_empty() {
+        return CritterTurn { strokes, deco: None, caption: caption_lines.join(" ") };
+    }
+    let (deco, caption) = parse_critter(reply);
+    CritterTurn { strokes: Vec::new(), deco, caption }
 }
 
 /// Parse a critter reply: leading menu word (BUBBLE takes the next word as
@@ -373,6 +434,31 @@ pub fn draw_deco(surf: &mut Surface, ink: &BBox, deco: &Deco, ui_font: &FontRef)
     dirty
 }
 
+/// Draw the model's own pen strokes. `frame` is the page rectangle its 0–100
+/// coordinates cover (the crop that was sent as the picture); `clip` keeps
+/// every point on the open canvas so a wild stroke never scribbles over the
+/// decision boxes or the caption. Returns the dirty region.
+pub fn draw_strokes(surf: &mut Surface, frame: &BBox, clip: &BBox, strokes: &[Vec<(f32, f32)>]) -> BBox {
+    if frame.is_empty() || clip.is_empty() {
+        return BBox::empty();
+    }
+    let (fx, fy, fw, fh) = frame.rect();
+    let mut dirty = BBox::empty();
+    for stroke in strokes {
+        let mut prev: Option<(i32, i32)> = None;
+        for &(nx, ny) in stroke {
+            let x = (fx + (nx / 100.0 * fw as f32) as i32).clamp(clip.x0, clip.x1);
+            let y = (fy + (ny / 100.0 * fh as f32) as i32).clamp(clip.y0, clip.y1);
+            if let Some((px, py)) = prev {
+                surf.brush_line(px, py, x, y, 4, BLACK);
+            }
+            dirty.add(x, y, 8);
+            prev = Some((x, y));
+        }
+    }
+    dirty
+}
+
 fn ring(surf: &mut Surface, cx: i32, cy: i32, radius: i32, thick: i32) {
     let (lo2, hi2) = ((radius - thick) * (radius - thick), radius * radius);
     for dy in -radius..=radius {
@@ -532,6 +618,49 @@ mod tests {
     }
 
     #[test]
+    fn a_drawing_turn_parses_strokes_and_caption() {
+        let reply = "Sir Wigglebottom grew wings!\nD 10,80 30,60 50,80\nD 50,80 70,60 90,80\nD 45,20 55,20";
+        let turn = parse_critter_turn(reply);
+        assert_eq!(turn.strokes.len(), 3);
+        assert_eq!(turn.strokes[0], vec![(10.0, 80.0), (30.0, 60.0), (50.0, 80.0)]);
+        assert_eq!(turn.caption, "Sir Wigglebottom grew wings!");
+        assert!(turn.deco.is_none(), "strokes win over the menu");
+
+        // Out-of-range and junk points are tamed, not fatal.
+        let turn = parse_critter_turn("Wow\nD 150,-20 50,50\nD nonsense\nD 1,1");
+        assert_eq!(turn.strokes.len(), 1);
+        assert_eq!(turn.strokes[0][0], (100.0, 0.0));
+
+        // No stroke lines: the old menu protocol still works.
+        let turn = parse_critter_turn("EYES! His name is Kevin.");
+        assert!(turn.strokes.is_empty());
+        assert_eq!(turn.deco, Some(Deco::Eyes));
+        assert_eq!(turn.caption, "His name is Kevin.");
+
+        // A chatty model with neither still lands its caption.
+        let turn = parse_critter_turn("What a magnificent potato!");
+        assert!(turn.strokes.is_empty() && turn.deco.is_none());
+        assert_eq!(turn.caption, "What a magnificent potato!");
+    }
+
+    #[test]
+    fn model_strokes_draw_scaled_into_the_frame_and_clipped_to_the_canvas() {
+        let (_buf, mut surf) = page();
+        let frame = BBox { x0: 200, y0: 400, x1: 1200, y1: 1400 };
+        let clip = BBox { x0: 100, y0: 300, x1: 1300, y1: 1500 };
+        let strokes = vec![vec![(0.0, 0.0), (100.0, 100.0)], vec![(50.0, 0.0), (50.0, 100.0)]];
+        let dirty = draw_strokes(&mut surf, &frame, &clip, &strokes);
+        assert!(!dirty.is_empty());
+        // The diagonal spans the frame, so ink lands mid-frame.
+        assert!(surf.luma(700, 900) < 128, "mid-frame stroke missing");
+        // Points scale into the frame, never past the clip.
+        assert!(dirty.x0 >= clip.x0 - 8 && dirty.x1 <= clip.x1 + 8);
+
+        // A frame never sent (empty) draws nothing.
+        assert!(draw_strokes(&mut surf, &BBox::empty(), &clip, &strokes).is_empty());
+    }
+
+    #[test]
     fn story_replies_parse_into_beat_and_exactly_three_choices() {
         let reply = "The potato knight reached a wobbly bridge.\nA troll asked for a password.\n1. Say please\n2. Sing loudly\n3. Wobble back";
         let (beat, choices) = parse_story(reply);
@@ -620,7 +749,7 @@ mod tests {
     #[test]
     fn instructions_carry_the_protocol_each_parser_expects() {
         let c = Game::Critter { round: 0 }.instruction(None);
-        assert!(c.contains("EYES") && c.contains("BUBBLE"));
+        assert!(c.contains("D 10,80") && c.contains("0-100"), "critter must teach the stroke protocol");
         let s = Game::story().instruction(None);
         assert!(s.contains("1. 2. 3."));
         let mid = Game::Story { log: vec![("RUN".into(), "b".into())], choices: vec![], pending: None };

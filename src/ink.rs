@@ -210,7 +210,7 @@ impl Ink {
     /// ≤ 800px (at least 2x): the model reads handwriting fine at that scale,
     /// and image pixels are the dominant vision-token / latency cost.
     pub fn to_png(&self, surf: &Surface, path: &str) -> std::io::Result<()> {
-        region_png(surf, self.bbox, path)
+        region_png(surf, self.bbox, path).map(|_| ())
     }
 
     /// The child's pen work near an answer blank, alone on white paper: every
@@ -251,13 +251,15 @@ impl Ink {
                 prev = Some((tx, ty, r));
             }
         }
-        region_png(&tmp, BBox { x0: 20, y0: 20, x1: w as i32 - 21, y1: h as i32 - 21 }, path)
+        region_png(&tmp, BBox { x0: 20, y0: 20, x1: w as i32 - 21, y1: h as i32 - 21 }, path).map(|_| ())
     }
 }
 
 /// Rasterize any page region to the oracle's grayscale PNG. Learn mode sends
 /// only the region the sheet declared as the answer, never the whole page.
-pub fn region_png(surf: &Surface, region: BBox, path: &str) -> std::io::Result<()> {
+/// Returns the page rectangle the image actually covers (crop plus margin,
+/// clamped) — the frame a model's picture coordinates refer to.
+pub fn region_png(surf: &Surface, region: BBox, path: &str) -> std::io::Result<BBox> {
     {
         if region.is_empty() {
             return Err(std::io::Error::other("no ink"));
@@ -293,7 +295,14 @@ pub fn region_png(surf: &Surface, region: BBox, path: &str) -> std::io::Result<(
         writer
             .write_image_data(&gray)
             .map_err(std::io::Error::other)?;
-        Ok(())
+        // The rect the pixels actually cover: what was cropped, downscale
+        // truncation included, in page coordinates.
+        Ok(BBox {
+            x0: x0 as i32,
+            y0: y0 as i32,
+            x1: (x0 + w * f) as i32 - 1,
+            y1: (y0 + h * f) as i32 - 1,
+        })
     }
 }
 
