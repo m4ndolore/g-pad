@@ -1,8 +1,9 @@
 //! The vault tab — Vellum's markdown notes, read on paper.
 //!
 //! Vellum ships two read-only device routes built for exactly this surface:
-//! `/api/device/v1/notes` lists the newest notes (recursive, bounded, `total`
-//! alongside so the pad can say what it left off), and `/api/device/v1/note`
+//! `/api/device/v1/notes` lists one shelf — the prefix's subfolders and the
+//! notes that live directly in it (bounded, `shelf` alongside so the pad can
+//! say what it left off) — and `/api/device/v1/note`
 //! returns one body with the frontmatter already stripped. The pad polls the
 //! list the way the bridge polls the hub — notes change at human speed, so
 //! the cadence is minutes, not seconds — and fetches a body only when a row
@@ -45,10 +46,12 @@ pub struct Vault {
     /// The prefix's own subfolders, name-sorted — navigation reads like a
     /// shelf, one step at a time.
     pub dirs: Vec<DirMeta>,
+    /// The notes that live directly in the prefix — deeper ones stay behind
+    /// their folder rows, which is the whole point of walking shelves.
     pub notes: Vec<NoteMeta>,
-    /// The server's count of everything under the walk — the listing itself
-    /// is bounded, so `total - notes.len()` never made it to the pad at all.
-    pub total: usize,
+    /// The server's count of this shelf's notes — the listing itself is
+    /// bounded, so `shelf - notes.len()` never made it to the pad at all.
+    pub shelf: usize,
     /// True when these are the last notes we held rather than a fresh poll.
     pub stale: bool,
 }
@@ -59,6 +62,22 @@ pub fn parent(prefix: &str) -> String {
         Some((up, _)) => up.to_string(),
         None => String::new(),
     }
+}
+
+/// Does this note live directly on the prefix's shelf? A vault that still
+/// lists recursively (an older Vellum) floods the drawer with every file
+/// under the walk — the pad keeps only the current shelf, and deeper notes
+/// stay behind their folder rows.
+pub fn on_shelf(prefix: &str, path: &str) -> bool {
+    let rest = if prefix.is_empty() {
+        path
+    } else {
+        match path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
+            Some(r) => r,
+            None => return false,
+        }
+    };
+    !rest.is_empty() && !rest.contains('/')
 }
 
 /// One fetched note, ready to lay out.
@@ -155,11 +174,16 @@ fn fetch_listing(agent: &ureq::Agent, base: &str, bearer: &str, prefix: &str) ->
         .and_then(|r| r.into_string().ok());
     match got {
         Some(body) => {
-            let (dirs, notes, total) = parse_listing(&body);
+            let (dirs, mut notes, shelf) = parse_listing(&body);
+            // Only this shelf's notes reach the drawer — an older vault
+            // lists recursively, and the filter is what keeps the folders
+            // meaning something.
+            notes.retain(|n| on_shelf(prefix, &n.path));
+            let shelf = shelf.unwrap_or(notes.len());
             if let Ok(mut g) = HELD.lock() {
                 let current = g.as_ref().map(|v| v.prefix.clone()).unwrap_or_default();
                 if current == prefix {
-                    *g = Some(Vault { prefix: prefix.to_string(), dirs, notes, total, stale: false });
+                    *g = Some(Vault { prefix: prefix.to_string(), dirs, notes, shelf, stale: false });
                 }
             }
             true
@@ -255,8 +279,9 @@ pub fn fetch_note(path: &str) -> Result<Note, String> {
 /// Parse the listing payload. Tolerant like every parser on the pad: a vault
 /// that adds fields must not break the reader, a note missing a path is
 /// unopenable and skipped, and an old vault sending no `dirs` still lists —
-/// there are simply no folders to walk.
-pub fn parse_listing(json: &str) -> (Vec<DirMeta>, Vec<NoteMeta>, usize) {
+/// there are simply no folders to walk. `shelf` is the server's count of the
+/// prefix's own notes before the bound; an old vault sends none.
+pub fn parse_listing(json: &str) -> (Vec<DirMeta>, Vec<NoteMeta>, Option<usize>) {
     let mut dirs = Vec::new();
     for block in split_objects(json, "dirs") {
         let path = json_field(&block, "path").unwrap_or_default();
@@ -282,9 +307,9 @@ pub fn parse_listing(json: &str) -> (Vec<DirMeta>, Vec<NoteMeta>, usize) {
         };
         notes.push(NoteMeta { path, title, mtime_ms: json_number(&block, "mtime").unwrap_or(0) });
     }
-    // `total` sits outside both arrays; their objects carry no such key.
-    let total = json_number(json, "total").map(|n| n.max(0) as usize).unwrap_or(notes.len());
-    (dirs, notes, total)
+    // `shelf` sits outside both arrays; their objects carry no such key.
+    let shelf = json_number(json, "shelf").map(|n| n.max(0) as usize);
+    (dirs, notes, shelf)
 }
 
 /// Parse one note body. The text keeps its newlines — `json_field` flattens
@@ -594,16 +619,16 @@ mod tests {
         let json = r#"{"notes":[
           {"path":"raw/remarkable/2026/08/30/capture.md","title":"A handwritten question","mtime":1756500000000},
           {"path":"projects/anthink.md","title":"Anthink","mtime":1756400000000}
-        ],"total":137,"dirs":[
+        ],"shelf":137,"dirs":[
           {"path":"raw/Apple Notes","name":"Apple Notes","count":236},
           {"path":"raw/AI","name":"AI","count":14}
         ]}"#;
-        let (dirs, notes, total) = parse_listing(json);
+        let (dirs, notes, shelf) = parse_listing(json);
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].path, "raw/remarkable/2026/08/30/capture.md");
         assert_eq!(notes[0].title, "A handwritten question");
         assert_eq!(notes[0].mtime_ms, 1756500000000);
-        assert_eq!(total, 137);
+        assert_eq!(shelf, Some(137));
         assert_eq!(dirs.len(), 2);
         assert_eq!(dirs[0], DirMeta { path: "raw/Apple Notes".into(), name: "Apple Notes".into(), count: 236 });
         assert_eq!(dirs[1].count, 14);
@@ -624,12 +649,26 @@ mod tests {
 
     #[test]
     fn tolerates_junk() {
-        assert_eq!(parse_listing(""), (Vec::new(), Vec::new(), 0));
-        assert_eq!(parse_listing("{}"), (Vec::new(), Vec::new(), 0));
-        let (dirs, notes, total) = parse_listing(r#"{"notes":[],"total":0,"dirs":[]}"#);
+        assert_eq!(parse_listing(""), (Vec::new(), Vec::new(), None));
+        assert_eq!(parse_listing("{}"), (Vec::new(), Vec::new(), None));
+        let (dirs, notes, shelf) = parse_listing(r#"{"notes":[],"shelf":0,"dirs":[]}"#);
         assert!(dirs.is_empty());
         assert!(notes.is_empty());
-        assert_eq!(total, 0);
+        assert_eq!(shelf, Some(0));
+    }
+
+    #[test]
+    fn only_the_shelf_survives_a_recursive_listing() {
+        // At the root, only rootless paths stay.
+        assert!(on_shelf("", "inbox.md"));
+        assert!(!on_shelf("", "raw/deep/capture.md"));
+        // Inside a folder, only its own files stay — not its subfolders'.
+        assert!(on_shelf("raw", "raw/Hood and DLA.md"));
+        assert!(!on_shelf("raw", "raw/AI/agents.md"));
+        // A path outside the prefix (or the prefix itself) never lists.
+        assert!(!on_shelf("raw", "projects/anthink.md"));
+        assert!(!on_shelf("raw", "rawhide.md"));
+        assert!(!on_shelf("raw", "raw"));
     }
 
     #[test]

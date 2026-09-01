@@ -290,9 +290,11 @@ fn draw_vault(surf: &mut Surface, font: &FontRef, vault: &crate::vault::Vault, s
         shown += 1;
     }
     // The footer carries where the reader stands, then what was left out:
-    // rows this panel could not fit plus notes the vault's own bound left
-    // off the listing — silent truncation reads as "that was everything".
-    let beyond = vault.total.saturating_sub(vault.notes.len());
+    // rows this panel could not fit plus shelf notes the vault's own bound
+    // left off the listing — silent truncation reads as "that was
+    // everything". Deeper notes are not "more"; they sit behind their
+    // folder rows, each wearing its own count.
+    let beyond = vault.shelf.saturating_sub(vault.notes.len());
     let hidden = rows - skipped - shown + beyond;
     let mut parts: Vec<String> = Vec::new();
     if !vault.prefix.is_empty() {
@@ -1050,7 +1052,7 @@ mod tests {
             notes: vec![crate::vault::NoteMeta {
                 path: "raw/Hood and DLA.md".into(), title: "Hood and DLA".into(), mtime_ms: 0,
             }],
-            total: 430,
+            shelf: 1,
             stale: false,
         });
         let mut d = Drawer::open(&surf, DrawerKind::Vault, None, 0, None);
@@ -1070,7 +1072,7 @@ mod tests {
             prefix: "raw".into(),
             dirs: vec![crate::vault::DirMeta { path: "raw/AI".into(), name: "AI".into(), count: 14 }],
             notes: Vec::new(),
-            total: 14,
+            shelf: 0,
             stale: true,
         });
         draw_vault(&mut surf, &font, &crate::vault::held(), 0);
