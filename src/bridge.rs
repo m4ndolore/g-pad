@@ -100,9 +100,15 @@ pub struct TurnLayout {
 pub struct PageLayout {
     pub title_lines: Vec<String>,
     pub meta: String,
+    /// The project directory the session works in, on its own line — a path
+    /// is an identifier, so it is never uppercased and never crammed into the
+    /// meta row. Empty when the hub sent no cwd.
+    pub place: String,
     /// Newest-last, so the page reads downward like the conversation did.
     pub turns: Vec<TurnLayout>,
-    /// Which page this is. 0 is the newest; the swipe pages backward.
+    /// Which page this is. 0 is the newest; the swipe pages backward. The
+    /// *displayed* number runs the other way — the newest page is page
+    /// `pages`, so the conversation reads 1..n like the transcript it is.
     pub page: usize,
     /// How many pages the session runs to.
     pub pages: usize,
@@ -146,15 +152,16 @@ pub fn layout_session(font: &FontRef, session: &Session) -> PageLayout {
 /// on a human. `want_page` is clamped to what exists; 0 is the newest.
 pub fn layout_session_page(font: &FontRef, session: &Session, extra: usize, want_page: usize) -> PageLayout {
     let title_lines = page::title_lines(font, &session.title);
-    let mut meta = page::meta_line(&session.state, &session.updated);
-    if !session.cwd.is_empty() {
-        meta = page::meta_line(&meta, &page::tail(&session.cwd, 28));
-    }
+    let meta = page::meta_line(&session.state, &session.updated);
+    // The repo the agent works in, handy on every page of the session. The
+    // full-width page affords a long tail; the board's rows keep a short one.
+    let place = page::tail(&session.cwd, 60);
 
     let artifacts: Vec<Artifact> = session.artifacts.iter().take(MAX_ARTIFACTS).cloned().collect();
     let artifacts_omitted = session.artifacts.len().saturating_sub(artifacts.len());
 
-    let y = page::HEADER_H + title_lines.len() * TITLE_LINE_H + LINE_H;
+    let place_room = if place.is_empty() { 0 } else { LINE_H };
+    let y = page::HEADER_H + title_lines.len() * TITLE_LINE_H + LINE_H + place_room;
     // Artifacts are pinned: they are the evidence on the page, so they claim
     // their room before prose does — on every page.
     let artifact_room = artifacts.len() * LINE_H;
@@ -170,7 +177,7 @@ pub fn layout_session_page(font: &FontRef, session: &Session, extra: usize, want
     let page = want_page.min(pages - 1);
     let turns = blocks[ranges[page].clone()].to_vec();
 
-    PageLayout { title_lines, meta, turns, page, pages, artifacts, artifacts_omitted }
+    PageLayout { title_lines, meta, place, turns, page, pages, artifacts, artifacts_omitted }
 }
 
 /// The footer line. Empty when everything fit on one page — no need to say
@@ -181,7 +188,10 @@ pub fn layout_session_page(font: &FontRef, session: &Session, extra: usize, want
 pub fn footer_label(layout: &PageLayout, remaining: usize, stale: bool) -> String {
     let mut parts: Vec<String> = Vec::new();
     if layout.pages > 1 {
-        let mut p = format!("page {} of {}", layout.page + 1, layout.pages);
+        // Pages are numbered in reading order: the transcript starts on
+        // page 1, and the newest page — where the reader lands — is page n.
+        // Internally 0 is still the newest (see PageLayout::page).
+        let mut p = format!("page {} of {}", layout.pages - layout.page, layout.pages);
         if layout.page == 0 {
             // The first hardware read found content cut off with no visible
             // way onward — the page must teach the gesture, not assume it.
@@ -505,29 +515,49 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_teaches_the_page_gesture_on_the_first_page_only() {
+    fn pages_are_numbered_in_reading_order_and_the_landing_page_is_last() {
         let f = font();
         let many: Vec<Turn> = (0..40)
             .map(|i| turn("claude", &format!("turn {i} with enough text to occupy a line or two here")))
             .collect();
         let s = session(many);
-        let first = layout_session_page(&f, &s, 0, 0);
-        let label = footer_label(&first, 0, false);
-        assert!(label.starts_with("page 1 of"), "got {label:?}");
+        // The reader lands on the newest content, which is the *last* page of
+        // the conversation — page n of n, with earlier pages counting down.
+        let landing = layout_session_page(&f, &s, 0, 0);
+        let n = landing.pages;
+        let label = footer_label(&landing, 0, false);
+        assert!(label.starts_with(&format!("page {n} of {n}")), "got {label:?}");
         assert!(label.contains("swipe down for earlier"));
-        let second = layout_session_page(&f, &s, 0, 1);
-        let label = footer_label(&second, 0, false);
-        assert!(label.starts_with("page 2 of"));
-        assert!(!label.contains("swipe"), "the hint earned its keep on page 1");
+        let back_one = layout_session_page(&f, &s, 0, 1);
+        let label = footer_label(&back_one, 0, false);
+        assert!(label.starts_with(&format!("page {} of {n}", n - 1)), "got {label:?}");
+        assert!(!label.contains("swipe"), "the hint earned its keep on the landing page");
+        // The oldest page is page 1.
+        let oldest = layout_session_page(&f, &s, 0, n - 1);
+        assert!(footer_label(&oldest, 0, false).starts_with(&format!("page 1 of {n}")));
     }
 
     #[test]
-    fn the_meta_row_carries_the_project_directory() {
+    fn the_project_directory_gets_its_own_line_never_the_meta_row() {
         let f = font();
         let mut s = session(vec![turn("you", "hi")]);
         s.cwd = "/Users/p/Dev/g-pad".to_string();
         let layout = layout_session(&f, &s);
-        assert!(layout.meta.ends_with("Dev/g-pad"), "got {:?}", layout.meta);
+        assert_eq!(layout.place, "/Users/p/Dev/g-pad");
+        assert_eq!(layout.meta, "running · 14:02", "the path must not ride the meta row");
+        // No cwd, no line — and no room claimed for one.
+        let bare = layout_session(&f, &session(vec![turn("you", "hi")]));
+        assert!(bare.place.is_empty());
+    }
+
+    #[test]
+    fn a_long_project_path_keeps_its_tail() {
+        let f = font();
+        let mut s = session(vec![turn("you", "hi")]);
+        s.cwd = format!("/very{}/Dev/g-pad", "/deep".repeat(20));
+        let layout = layout_session(&f, &s);
+        assert!(layout.place.starts_with('…'));
+        assert!(layout.place.ends_with("Dev/g-pad"));
     }
 
     #[test]

@@ -322,6 +322,12 @@ pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::br
     }
     full_text(surf, font, &layout.meta.to_uppercase(), PAGE_LABEL_PX, page::PAD, y, BLUE);
     y += page::LINE_H;
+    // The repo the session works in, as written — a path is an identifier,
+    // so it keeps its case and its own line under the meta row.
+    if !layout.place.is_empty() {
+        full_text(surf, font, &layout.place, PAGE_LABEL_PX, page::PAD, y, BLUE);
+        y += page::LINE_H;
+    }
     for t in &layout.turns {
         // A continuation chunk has no speaker row: the turn flows on from
         // the block (or page) before it.

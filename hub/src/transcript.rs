@@ -44,12 +44,20 @@ pub fn parse(id: &str, text: &str) -> SessionData {
         id: id.to_string(),
         ..Default::default()
     };
+    // The title Claude Code itself shows for the session. It beats the first
+    // human line, which is often a slash command or a wall of context.
+    let mut ai_title = String::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         if let Some(cwd) = v.get("cwd").and_then(Value::as_str) {
             s.cwd = cwd.to_string();
+        }
+        if let Some(t) = v.get("aiTitle").and_then(Value::as_str) {
+            if !t.trim().is_empty() {
+                ai_title = t.trim().to_string();
+            }
         }
         if let Some(ts) = v.get("timestamp").and_then(Value::as_str) {
             s.updated_iso = ts.to_string();
@@ -69,6 +77,9 @@ pub fn parse(id: &str, text: &str) -> SessionData {
             Some("assistant") => read_assistant(msg, &mut s),
             _ => {}
         }
+    }
+    if !ai_title.is_empty() {
+        s.title = first_line_capped(&ai_title, 72);
     }
     if s.title.is_empty() {
         // No human spoke plainly (a skill launch, a probe). The project's
@@ -282,6 +293,25 @@ mod tests {
         let refs: Vec<&str> = s.artifacts.iter().map(|a| a.reference.as_str()).collect();
         assert_eq!(refs, vec!["src/brief.rs", "a1b2c3d"]);
         assert_eq!(s.artifacts[1].label, "fix: unhook the stall");
+    }
+
+    #[test]
+    fn the_ai_title_beats_the_first_human_line() {
+        let lines = r#"{"type":"user","message":{"role":"user","content":"fix the parser in the brief"}}
+{"type":"ai-title","aiTitle":"brief parser fix","sessionId":"abc"}"#;
+        let s = parse("abc", lines);
+        assert_eq!(s.title, "brief parser fix");
+        // The human line still reads as a turn.
+        assert_eq!(s.turns[0].text, "fix the parser in the brief");
+    }
+
+    #[test]
+    fn the_last_ai_title_wins_and_a_blank_one_is_ignored() {
+        let lines = r#"{"type":"ai-title","aiTitle":"first pass"}
+{"type":"ai-title","aiTitle":"settled title"}
+{"type":"ai-title","aiTitle":"  "}"#;
+        let s = parse("abc", lines);
+        assert_eq!(s.title, "settled title");
     }
 
     #[test]
