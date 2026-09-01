@@ -53,8 +53,13 @@ pub enum Action {
     /// The vault tab itself.
     Vault,
     /// Open one vault note as a full page. The index is a row on the vault
-    /// tab, in `vault::held` order.
+    /// tab, in `vault::held` note order (folders come before notes on the
+    /// shelf but index separately).
     OpenNote(usize),
+    /// Walk into one of the listed folders, by `vault::held` dir order.
+    OpenDir(usize),
+    /// One step back up the vault — the ← that replaces × inside a folder.
+    VaultUp,
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -89,11 +94,15 @@ impl Drawer {
         if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
         if y < HEADER_H {
             if x < 100 {
-                return if self.kind == DrawerKind::History && self.thread.is_some() {
-                    Action::Threads
-                } else {
-                    Action::Close
-                };
+                if self.kind == DrawerKind::History && self.thread.is_some() {
+                    return Action::Threads;
+                }
+                // Inside a folder the corner is the way up, not the way out —
+                // History's thread view taught this shape.
+                if self.kind == DrawerKind::Vault && !crate::vault::held().prefix.is_empty() {
+                    return Action::VaultUp;
+                }
+                return Action::Close;
             }
             if x < TAB_CORPUS_X { return Action::History; }
             if x < TAB_SESSIONS_X { return Action::Corpus; }
@@ -110,13 +119,21 @@ impl Drawer {
                 None => Action::None,
             };
         }
-        // The VAULT tab is the same kind of selector: tick a row, read that
-        // note. Row geometry is shared with the board, so the same arithmetic
-        // answers both.
+        // The VAULT tab is the same kind of selector: tick a folder to walk
+        // in, tick a note to read it. Folders sit above notes; row geometry
+        // is shared with the board, so the same arithmetic answers both.
         if self.kind == DrawerKind::Vault {
-            let total = crate::vault::held().notes.len();
+            let held = crate::vault::held();
+            let rows = held.dirs.len() + held.notes.len();
             return match session_index_at(y) {
-                Some(i) => Action::OpenNote(i + session_scroll(total, self.scroll)),
+                Some(i) => {
+                    let i = i + session_scroll(rows, self.scroll);
+                    if i < held.dirs.len() {
+                        Action::OpenDir(i)
+                    } else {
+                        Action::OpenNote(i - held.dirs.len())
+                    }
+                }
                 None => Action::None,
             };
         }
@@ -145,7 +162,9 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
     snapshot: &ContextSnapshot, drawer: &Drawer) {
     surf.fill_rect(0, 0, PANEL_W, SCREEN_H, WHITE);
     surf.fill_rect(PANEL_W - 2, 0, 2, SCREEN_H, BLACK);
-    let close = if drawer.kind == DrawerKind::History && drawer.thread.is_some() { "←" } else { "×" };
+    let close = if (drawer.kind == DrawerKind::History && drawer.thread.is_some())
+        || (drawer.kind == DrawerKind::Vault && !crate::vault::held().prefix.is_empty())
+    { "←" } else { "×" };
     text(surf, font, close, LABEL_PX, PAD, 36, BLACK);
     text(surf, font, "HISTORY", LABEL_PX, TAB_HISTORY_X, 36,
         if drawer.kind == DrawerKind::History { BLUE } else { BLACK });
@@ -240,33 +259,50 @@ fn draw_vault(surf: &mut Surface, font: &FontRef, vault: &crate::vault::Vault, s
         text(surf, font, "SET RIDDLE_VELLUM_BASE IN ORACLE.ENV", LABEL_PX, PAD, 220, BLUE);
         return;
     }
-    if vault.notes.is_empty() {
+    if vault.dirs.is_empty() && vault.notes.is_empty() {
         let msg = if vault.stale { "NO NOTES · NOT REFRESHED" } else { "NO NOTES YET" };
         text(surf, font, msg, LABEL_PX, PAD, 170, BLACK);
         return;
     }
     let now = crate::vault::now_ms();
-    let skipped = session_scroll(vault.notes.len(), scroll);
+    let rows = vault.dirs.len() + vault.notes.len();
+    let skipped = session_scroll(rows, scroll);
     let mut y = HEADER_H as usize + 16;
     let mut shown = 0usize;
-    for n in &vault.notes[skipped..] {
+    for i in skipped..rows {
         if y + CONV_ROW_H > SCREEN_H { break; }
-        let meta = crate::vault::age(n.mtime_ms, now).to_uppercase();
-        text(surf, font, &one_line(&n.title, 34), LABEL_PX, PAD, y, BLACK);
-        text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
-        // The path identifies the note the way cwd identifies a session —
-        // it keeps its case, and its tail is the part that matters.
-        text(surf, font, &crate::page::tail(&n.path, 42), LABEL_PX, PAD, y + 84, BLACK);
+        if let Some(d) = vault.dirs.get(i) {
+            // A folder row: the name wears its slash, the count says what a
+            // step in is worth.
+            text(surf, font, &format!("{}/", one_line(&d.name, 33)), LABEL_PX, PAD, y, BLACK);
+            text(surf, font, &crate::page::counted(d.count, "NOTE", "NOTES"), LABEL_PX, PAD, y + 42, BLUE);
+        } else {
+            let n = &vault.notes[i - vault.dirs.len()];
+            let meta = crate::vault::age(n.mtime_ms, now).to_uppercase();
+            text(surf, font, &one_line(&n.title, 34), LABEL_PX, PAD, y, BLACK);
+            text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
+            // The path identifies the note the way cwd identifies a session —
+            // it keeps its case, and its tail is the part that matters.
+            text(surf, font, &crate::page::tail(&n.path, 42), LABEL_PX, PAD, y + 84, BLACK);
+        }
         rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
         y += CONV_ROW_H;
         shown += 1;
     }
-    // Two kinds of left-out rows: ones this panel could not fit, and ones the
-    // vault's own bound left off the listing entirely. Both are counted —
-    // silent truncation reads as "that was everything".
+    // The footer carries where the reader stands, then what was left out:
+    // rows this panel could not fit plus notes the vault's own bound left
+    // off the listing — silent truncation reads as "that was everything".
     let beyond = vault.total.saturating_sub(vault.notes.len());
-    let hidden = vault.notes.len() - skipped - shown + beyond;
-    let label = sessions_footer(hidden + shown, shown, vault.stale);
+    let hidden = rows - skipped - shown + beyond;
+    let mut parts: Vec<String> = Vec::new();
+    if !vault.prefix.is_empty() {
+        parts.push(crate::page::tail(&vault.prefix, 26));
+    }
+    let more = sessions_footer(hidden + shown, shown, vault.stale);
+    if !more.is_empty() {
+        parts.push(more);
+    }
+    let label = parts.join(" · ");
     if !label.is_empty() {
         text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
     }
@@ -997,6 +1033,48 @@ mod tests {
         assert!(pages > 1, "30 turns cannot fit one page");
         let later = draw_session_page(&mut surf, &font, &session, 3, true, false, None, pages - 1);
         assert_eq!(later.map(|b| b.decision), Some(Decision::Approve));
+    }
+
+    #[test]
+    fn vault_folders_sit_above_notes_and_the_corner_walks_up() {
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        crate::vault::replace(crate::vault::Vault {
+            prefix: "raw".into(),
+            dirs: vec![
+                crate::vault::DirMeta { path: "raw/AI".into(), name: "AI".into(), count: 14 },
+                crate::vault::DirMeta { path: "raw/Apple Notes".into(), name: "Apple Notes".into(), count: 236 },
+            ],
+            notes: vec![crate::vault::NoteMeta {
+                path: "raw/Hood and DLA.md".into(), title: "Hood and DLA".into(), mtime_ms: 0,
+            }],
+            total: 430,
+            stale: false,
+        });
+        let mut d = Drawer::open(&surf, DrawerKind::Vault, None, 0, None);
+        let store = None;
+        // Rows run from HEADER_H + 16, CONV_ROW_H tall: folders first, then
+        // notes indexed from zero again — two shelves, one column.
+        let top = HEADER_H + 16;
+        assert_eq!(d.tap(200, top + 10, &store), Action::OpenDir(0));
+        assert_eq!(d.tap(200, top + CONV_ROW_H as i32 + 10, &store), Action::OpenDir(1));
+        assert_eq!(d.tap(200, top + 2 * CONV_ROW_H as i32 + 10, &store), Action::OpenNote(0));
+        // Inside a folder the corner is ← (one step up), not × (close).
+        assert_eq!(d.tap(50, 40, &store), Action::VaultUp);
+        crate::vault::replace(crate::vault::Vault::default());
+        assert_eq!(d.tap(50, 40, &store), Action::Close);
+        // The shelf draws without panicking, folders and all.
+        crate::vault::replace(crate::vault::Vault {
+            prefix: "raw".into(),
+            dirs: vec![crate::vault::DirMeta { path: "raw/AI".into(), name: "AI".into(), count: 14 }],
+            notes: Vec::new(),
+            total: 14,
+            stale: true,
+        });
+        draw_vault(&mut surf, &font, &crate::vault::held(), 0);
+        crate::vault::replace(crate::vault::Vault::default());
     }
 
     #[test]

@@ -2372,6 +2372,21 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.scroll = 0; redraw = true; }
             ui::Action::Sessions => { p.kind = ui::DrawerKind::Sessions; p.scroll = 0; redraw = true; }
             ui::Action::Vault => { p.kind = ui::DrawerKind::Vault; p.scroll = 0; redraw = true; }
+            // Walking the vault is synchronous like opening a note: the tick
+            // asked for that shelf, and the pause is the shelf loading. A
+            // failed walk leaves the reader where they stood, marked stale.
+            ui::Action::OpenDir(i) => {
+                if let Some(dir) = vault::held().dirs.get(i) {
+                    let _ = vault::browse(&dir.path);
+                    p.scroll = 0;
+                }
+                redraw = true;
+            }
+            ui::Action::VaultUp => {
+                let _ = vault::browse(&vault::parent(&vault::held().prefix));
+                p.scroll = 0;
+                redraw = true;
+            }
             ui::Action::None => redraw = true,
             _ => {}
         }

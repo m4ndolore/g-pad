@@ -27,15 +27,38 @@ pub struct NoteMeta {
     pub mtime_ms: i64,
 }
 
+/// One folder row: a subfolder of the current prefix that holds at least one
+/// readable note (Vellum never lists an empty one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirMeta {
+    pub path: String,
+    pub name: String,
+    pub count: usize,
+}
+
 /// What the vault listing holds right now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Vault {
+    /// Where in the vault this listing stands. Empty at the root. Survives
+    /// the drawer closing — reopening the tab returns where the reader was.
+    pub prefix: String,
+    /// The prefix's own subfolders, name-sorted — navigation reads like a
+    /// shelf, one step at a time.
+    pub dirs: Vec<DirMeta>,
     pub notes: Vec<NoteMeta>,
     /// The server's count of everything under the walk — the listing itself
     /// is bounded, so `total - notes.len()` never made it to the pad at all.
     pub total: usize,
     /// True when these are the last notes we held rather than a fresh poll.
     pub stale: bool,
+}
+
+/// One step up from a prefix: `raw/AI` → `raw`, `raw` → the root.
+pub fn parent(prefix: &str) -> String {
+    match prefix.rsplit_once('/') {
+        Some((up, _)) => up.to_string(),
+        None => String::new(),
+    }
 }
 
 /// One fetched note, ready to lay out.
@@ -62,10 +85,15 @@ pub fn configured() -> bool {
     base().is_some()
 }
 
-/// The device listing endpoint. The base is configuration; the paths are
-/// Vellum's device contract.
-pub fn notes_url(base: &str) -> String {
-    format!("{}/api/device/v1/notes?limit=50", base.trim_end_matches('/'))
+/// The device listing endpoint, scoped to a folder when `prefix` names one.
+/// The base is configuration; the paths are Vellum's device contract.
+pub fn notes_url(base: &str, prefix: &str) -> String {
+    let mut url = format!("{}/api/device/v1/notes?limit=50", base.trim_end_matches('/'));
+    if !prefix.is_empty() {
+        url.push_str("&prefix=");
+        url.push_str(&urlencode(prefix));
+    }
+    url
 }
 
 /// Where one note body is fetched. The path rides in the query string, so it
@@ -115,8 +143,37 @@ pub fn mark_stale() {
     }
 }
 
+/// Fetch one listing and hold it, but only if the reader is still standing
+/// in that folder — a poll finishing after the reader walked elsewhere must
+/// not yank them back.
+fn fetch_listing(agent: &ureq::Agent, base: &str, bearer: &str, prefix: &str) -> bool {
+    let got = agent
+        .get(&notes_url(base, prefix))
+        .set("Authorization", bearer)
+        .call()
+        .ok()
+        .and_then(|r| r.into_string().ok());
+    match got {
+        Some(body) => {
+            let (dirs, notes, total) = parse_listing(&body);
+            if let Ok(mut g) = HELD.lock() {
+                let current = g.as_ref().map(|v| v.prefix.clone()).unwrap_or_default();
+                if current == prefix {
+                    *g = Some(Vault { prefix: prefix.to_string(), dirs, notes, total, stale: false });
+                }
+            }
+            true
+        }
+        None => {
+            mark_stale();
+            false
+        }
+    }
+}
+
 /// Start polling the vault, if one is configured. Notes change at human
 /// speed: the default cadence is five minutes, floored at thirty seconds.
+/// Each cycle refreshes the folder the reader is standing in.
 pub fn spawn_poll() {
     let Some(base) = base() else { return };
     let every = std::env::var("RIDDLE_VELLUM_POLL_S")
@@ -130,24 +187,42 @@ pub fn spawn_poll() {
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(15))
             .build();
-        let url = notes_url(&base);
         loop {
-            let got = agent
-                .get(&url)
-                .set("Authorization", &bearer)
-                .call()
-                .ok()
-                .and_then(|r| r.into_string().ok());
-            match got {
-                Some(body) => {
-                    let (notes, total) = parse_notes(&body);
-                    replace(Vault { notes, total, stale: false });
-                }
-                None => mark_stale(),
-            }
+            let prefix = held().prefix;
+            fetch_listing(&agent, &base, &bearer, &prefix);
             std::thread::sleep(std::time::Duration::from_secs(every));
         }
     });
+}
+
+/// Walk to a folder: fetch its listing and stand there. Synchronous and
+/// short-fused like `fetch_note` — the reader just ticked the folder row and
+/// the pause is the shelf loading. On failure the current listing stays,
+/// marked stale, and the reader has not moved.
+pub fn browse(prefix: &str) -> Result<(), String> {
+    let base = base().ok_or_else(|| "no vault configured".to_string())?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let bearer = format!("Bearer {}", token());
+    // Stand in the folder first, so the guard inside `fetch_listing` sees
+    // this fetch as current — a slow poll landing later is the stale one.
+    let before = held();
+    if let Ok(mut g) = HELD.lock() {
+        g.get_or_insert_with(Vault::default).prefix = prefix.to_string();
+    }
+    if fetch_listing(&agent, &base, &bearer, prefix) {
+        Ok(())
+    } else {
+        // Step back where we stood: a failed walk must not leave the reader
+        // in a folder whose shelf never arrived.
+        if let Ok(mut g) = HELD.lock() {
+            if g.as_ref().is_some_and(|v| v.prefix == prefix) {
+                *g = Some(Vault { stale: true, ..before });
+            }
+        }
+        Err("vault unreachable".to_string())
+    }
 }
 
 /// Fetch one note body. Synchronous and short-fused, like `post_nudge`: the
@@ -178,9 +253,23 @@ pub fn fetch_note(path: &str) -> Result<Note, String> {
 // ---- parsing -----------------------------------------------------------
 
 /// Parse the listing payload. Tolerant like every parser on the pad: a vault
-/// that adds fields must not break the reader, and a note missing a path is
-/// unopenable and skipped.
-pub fn parse_notes(json: &str) -> (Vec<NoteMeta>, usize) {
+/// that adds fields must not break the reader, a note missing a path is
+/// unopenable and skipped, and an old vault sending no `dirs` still lists —
+/// there are simply no folders to walk.
+pub fn parse_listing(json: &str) -> (Vec<DirMeta>, Vec<NoteMeta>, usize) {
+    let mut dirs = Vec::new();
+    for block in split_objects(json, "dirs") {
+        let path = json_field(&block, "path").unwrap_or_default();
+        if path.trim().is_empty() {
+            continue;
+        }
+        let name = match json_field(&block, "name").filter(|n| !n.trim().is_empty()) {
+            Some(n) => n,
+            None => path.rsplit('/').next().unwrap_or(&path).to_string(),
+        };
+        let count = json_number(&block, "count").map(|n| n.max(0) as usize).unwrap_or(0);
+        dirs.push(DirMeta { path, name, count });
+    }
     let mut notes = Vec::new();
     for block in split_objects(json, "notes") {
         let path = json_field(&block, "path").unwrap_or_default();
@@ -193,9 +282,9 @@ pub fn parse_notes(json: &str) -> (Vec<NoteMeta>, usize) {
         };
         notes.push(NoteMeta { path, title, mtime_ms: json_number(&block, "mtime").unwrap_or(0) });
     }
-    // `total` sits outside the array; the note objects carry no such key.
+    // `total` sits outside both arrays; their objects carry no such key.
     let total = json_number(json, "total").map(|n| n.max(0) as usize).unwrap_or(notes.len());
-    (notes, total)
+    (dirs, notes, total)
 }
 
 /// Parse one note body. The text keeps its newlines — `json_field` flattens
@@ -505,13 +594,19 @@ mod tests {
         let json = r#"{"notes":[
           {"path":"raw/remarkable/2026/08/30/capture.md","title":"A handwritten question","mtime":1756500000000},
           {"path":"projects/anthink.md","title":"Anthink","mtime":1756400000000}
-        ],"total":137}"#;
-        let (notes, total) = parse_notes(json);
+        ],"total":137,"dirs":[
+          {"path":"raw/Apple Notes","name":"Apple Notes","count":236},
+          {"path":"raw/AI","name":"AI","count":14}
+        ]}"#;
+        let (dirs, notes, total) = parse_listing(json);
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].path, "raw/remarkable/2026/08/30/capture.md");
         assert_eq!(notes[0].title, "A handwritten question");
         assert_eq!(notes[0].mtime_ms, 1756500000000);
         assert_eq!(total, 137);
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], DirMeta { path: "raw/Apple Notes".into(), name: "Apple Notes".into(), count: 236 });
+        assert_eq!(dirs[1].count, 14);
     }
 
     #[test]
@@ -520,18 +615,33 @@ mod tests {
           {"title":"orphan","mtime":1},
           {"path":"deep/dir/untitled.md","title":"","mtime":2}
         ],"total":2}"#;
-        let (notes, _) = parse_notes(json);
+        let (dirs, notes, _) = parse_listing(json);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "untitled.md");
+        // An old vault sends no dirs at all: the shelf is simply flat.
+        assert!(dirs.is_empty());
     }
 
     #[test]
     fn tolerates_junk() {
-        assert_eq!(parse_notes(""), (Vec::new(), 0));
-        assert_eq!(parse_notes("{}"), (Vec::new(), 0));
-        let (notes, total) = parse_notes(r#"{"notes":[],"total":0}"#);
+        assert_eq!(parse_listing(""), (Vec::new(), Vec::new(), 0));
+        assert_eq!(parse_listing("{}"), (Vec::new(), Vec::new(), 0));
+        let (dirs, notes, total) = parse_listing(r#"{"notes":[],"total":0,"dirs":[]}"#);
+        assert!(dirs.is_empty());
         assert!(notes.is_empty());
         assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn a_prefix_scopes_the_listing_url_and_a_parent_walks_up() {
+        assert_eq!(notes_url("https://v.example.com", ""), "https://v.example.com/api/device/v1/notes?limit=50");
+        assert_eq!(
+            notes_url("https://v.example.com", "raw/Apple Notes"),
+            "https://v.example.com/api/device/v1/notes?limit=50&prefix=raw/Apple%20Notes"
+        );
+        assert_eq!(parent("raw/Apple Notes"), "raw");
+        assert_eq!(parent("raw"), "");
+        assert_eq!(parent(""), "");
     }
 
     #[test]
