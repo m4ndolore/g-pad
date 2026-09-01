@@ -379,11 +379,20 @@ fn learn_sheets(dir: &str) -> i32 {
             session.next();
         }
     }
-    // The menu: the picker every page's MENU box deals.
-    let mut session = learn::Session::start_at(1, 99);
+    // The menu: the picker every page's MENU box deals — and the skills
+    // page its MATH SKILLS entry opens.
+    let mut session = learn::Session::start_at(2, 99);
     session.open_menu();
     session.draw(&mut surf, &ui_font);
     let path = format!("{dir}/learn-menu.png");
+    if let Err(e) = dump_page(&surf, &path) {
+        eprintln!("g-pad: write {path}: {e}");
+        return 1;
+    }
+    println!("{path}");
+    session.choose_menu(3);
+    session.draw(&mut surf, &ui_font);
+    let path = format!("{dir}/learn-skills.png");
     if let Err(e) = dump_page(&surf, &path) {
         eprintln!("g-pad: write {path}: {e}");
         return 1;
@@ -455,14 +464,17 @@ fn learn_sheets(dir: &str) -> i32 {
         }
         println!("{path}");
     }
-    // The three verdict stamps a child actually sees, on a real sheet.
+    // The three verdict stamps a child actually sees, on a real sheet — with
+    // two answers already scored, so the header's star shows too.
     let mut session = learn::Session::start_at(2, 7);
-    let samples: [(&str, &str, &str, bool); 3] = [
-        ("yes", "GREAT JOB!", "", true),
-        ("almost", "SO CLOSE!", "Your 3 is facing the wrong way.", false),
-        ("no", "TRY AGAIN!", "Count the dots one by one.", false),
+    session.record(learn::Verdict::Yes);
+    session.record(learn::Verdict::Yes);
+    let samples: [(&str, &str, &str, bool, u32); 3] = [
+        ("yes", "GREAT JOB!", "", true, 25),
+        ("almost", "SO CLOSE!", "Your 3 is facing the wrong way.", false, 0),
+        ("no", "TRY AGAIN!", "Count the dots one by one.", false, 0),
     ];
-    for (name, cheer, hint, starred) in samples {
+    for (name, cheer, hint, starred, award) in samples {
         session.draw(&mut surf, &ui_font);
         let answer = session.hits.answer;
         if starred {
@@ -470,7 +482,7 @@ fn learn_sheets(dir: &str) -> i32 {
         } else {
             learn::sheet::draw_look_again(&mut surf, &answer);
         }
-        learn::sheet::draw_feedback(&mut surf, &ui_font, cheer, hint, starred);
+        learn::sheet::draw_feedback(&mut surf, &ui_font, cheer, hint, starred, award);
         let path = format!("{dir}/learn-verdict-{name}.png");
         if let Err(e) = dump_page(&surf, &path) {
             eprintln!("g-pad: write {path}: {e}");
@@ -1924,9 +1936,16 @@ fn run() -> std::io::Result<()> {
                                     } else {
                                         fb.hint.clone()
                                     };
+                                    // A YES also shows what it scored; every
+                                    // other verdict keeps the strip as it was.
+                                    let award = if verdict == learn::Verdict::Yes {
+                                        session.last_award()
+                                    } else {
+                                        0
+                                    };
                                     let region = learn::sheet::draw_feedback(
                                         &mut surf, &ui_font, &fb.cheer, &hint,
-                                        verdict == learn::Verdict::Yes,
+                                        verdict == learn::Verdict::Yes, award,
                                     );
                                     let (x, y, w, h) = region.rect();
                                     disp.update(x, y, w, h, true);
@@ -2854,8 +2873,8 @@ fn learn_flavor(session: &learn::Session) -> LearnFlavor {
         learn::Page::Play(learn::games::Game::Critter { .. }) => LearnFlavor::Critter,
         learn::Page::Play(learn::games::Game::Guess) => LearnFlavor::Guess,
         learn::Page::Play(learn::games::Game::Story { .. }) => LearnFlavor::Story,
-        // Unreachable in marking: the menu page has no DONE box to send from.
-        learn::Page::Menu => LearnFlavor::Practice,
+        // Unreachable in marking: the picker pages have no DONE box to send from.
+        learn::Page::Menu | learn::Page::Skills => LearnFlavor::Practice,
     }
 }
 
@@ -2889,9 +2908,12 @@ fn learn_mark(ink: &mut ink::Ink, session: &learn::Session, ui_font: &FontRef,
         let (x, y, w, h) = gone.rect();
         surf.fill_rect(x.max(0) as usize, y.max(0) as usize, w as usize, h as usize, WHITE);
         if session.is_menu() {
-            // The menu page's furniture is its choice grid; the chosen page
+            // A picker page's furniture is its choice grid; the chosen page
             // repaints in full right after, so only the grid needs restoring.
-            let _ = learn::sheet::draw_menu(surf, ui_font);
+            let _ = match session.page {
+                learn::Page::Skills => learn::sheet::draw_skills(surf, ui_font),
+                _ => learn::sheet::draw_menu(surf, ui_font, session.level()),
+            };
         } else {
             learn::sheet::refresh_boxes(surf, ui_font);
             // A story page also has choice boxes under the mark; repaint them.

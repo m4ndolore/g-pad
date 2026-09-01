@@ -119,13 +119,24 @@ impl Band {
 /// Draw the whole sheet for `set` onto a white page and return its hit map.
 /// One question keeps the classic full-page figure; two to four stack in
 /// numbered bands, each with its own blank — the LAST blank is the graded
-/// `answer`. `level` and `streak` feed the header; they are the child's only
-/// visible progress chrome.
-pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak: u32) -> HitMap {
+/// `answer`. `level`, `streak`, and `score` feed the header; they are the
+/// child's only visible progress chrome.
+pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak: u32, score: u32) -> HitMap {
     surf.fill_rect(0, 0, W, H, WHITE);
 
-    // Header: what this page is, and the streak dots. Quiet, top corners.
+    // Header: what this page is, the session score, and the streak dots.
+    // Quiet, top corners — the score takes the free top-center and only once
+    // it exists, so the first page opens as calm as ever.
     print(surf, ui_font, &format!("LEARN · LEVEL {level}"), 32.0, MARGIN, 40, BLACK);
+    if score > 0 {
+        let txt = format!("{score}");
+        let px = 40.0;
+        let r = 15;
+        let tw = tight_width(ui_font, &txt, px);
+        let left = (W as i32 - (2 * r + 14 + tw)) / 2;
+        draw_star(surf, left + r, 56, r);
+        print_tight_at(surf, ui_font, &txt, px, left + 2 * r + 14, 56, BLACK);
+    }
     let dots = streak.min(5) as i32;
     for i in 0..dots {
         surf.stamp((W - MARGIN) as i32 - 20 - i * 44, 56, 11, BLACK);
@@ -590,27 +601,30 @@ fn draw_action_box(surf: &mut Surface, font: &FontRef, which: ActionBox) -> BBox
 // ---- the menu page --------------------------------------------------------
 
 /// The picker's entries, in choice-index order. `Session::choose_menu`
-/// interprets the index, so the two must move together: 0–3 are the math
-/// levels, 4 writing, 5 the full mix, 6–8 the games.
+/// interprets the index, so the two must move together: 0 math, 1 writing,
+/// 2 the full mix, 3 the skills page, 4–6 the games — and after the named
+/// entries, four LEVEL boxes at indices 7–10.
 pub const MENU_ITEMS: &[&str] = &[
-    "COUNTING",
-    "ADD TO 10",
-    "ADD TO 20",
-    "TIMES & SHARE",
+    "MATH",
     "WRITING",
     "SURPRISE MIX",
+    "MATH SKILLS",
     "DOODLE CRITTER",
     "GUESSING GAME",
     "STORY TIME",
 ];
 
 /// How many leading MENU_ITEMS are practice topics (the rest are games).
-const MENU_PRACTICE: usize = 6;
+const MENU_PRACTICE: usize = 4;
+
+/// The levels the menu's LEVEL row offers, boxes 7–10.
+const MENU_LEVELS: u8 = 4;
 
 /// Draw the topic-and-game picker and return its hit map: every entry is a
 /// choice box, and there is deliberately no DONE, NEW, or MENU here — a mark
-/// in an entry is the only thing this page understands.
-pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
+/// in an entry is the only thing this page understands. `level` fills in the
+/// LEVEL row's current box so the child can see where the ladder stands.
+pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef, level: u8) -> HitMap {
     surf.fill_rect(0, 0, W, H, WHITE);
     print(surf, ui_font, "LEARN · MENU", 32.0, MARGIN, 40, BLACK);
     print_centered(surf, ui_font, "MARK A BOX TO CHOOSE", 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
@@ -648,7 +662,7 @@ pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
         0,
         &mut choices,
     );
-    section(
+    let after_play = section(
         surf,
         "PLAY",
         after_practice + (H * 4 / 100) as i32,
@@ -656,6 +670,66 @@ pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
         MENU_PRACTICE,
         &mut choices,
     );
+
+    // The LEVEL row: four boxes across, the current level filled solid so it
+    // reads at a glance. Marking one re-seats the ladder and keeps the menu
+    // open; the indices continue after the named entries.
+    let ly = after_play + (H * 4 / 100) as i32;
+    print(surf, ui_font, "LEVEL", 30.0, MARGIN, ly as usize, BLACK);
+    let top = ly + 50;
+    let lw = ((W - 2 * MARGIN) as i32 - 3 * gap_x) / 4;
+    for k in 0..MENU_LEVELS {
+        let x = MARGIN as i32 + k as i32 * (lw + gap_x);
+        let (ink, paper) = if k + 1 == level { (WHITE, BLACK) } else { (BLACK, WHITE) };
+        if paper == BLACK {
+            surf.fill_rect(x.max(0) as usize, top.max(0) as usize, lw as usize, bh as usize, BLACK);
+        } else {
+            rect_outline(surf, x, top, lw, bh, 4, BLACK);
+        }
+        print_tight_centered(surf, ui_font, &format!("{}", k + 1), 52.0, x + lw / 2, top + bh / 2, ink);
+        let mut b = BBox::empty();
+        b.add(x, top, 0);
+        b.add(x + lw, top + bh, 0);
+        choices.push(b);
+    }
+
+    HitMap {
+        answer: BBox::empty(),
+        done: BBox::empty(),
+        new: BBox::empty(),
+        menu: BBox::empty(),
+        choices,
+        blanks: Vec::new(),
+    }
+}
+
+/// Draw the skills picker — every math activity as its own box — and return
+/// its hit map. Reached from the menu's MATH SKILLS entry; the indices mirror
+/// `problems::MATH_SKILLS`.
+pub fn draw_skills(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
+    surf.fill_rect(0, 0, W, H, WHITE);
+    print(surf, ui_font, "LEARN · SKILLS", 32.0, MARGIN, 40, BLACK);
+    print_centered(surf, ui_font, "MARK A SKILL TO PRACTICE", 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
+
+    let gap_x = (W * 4 / 100) as i32;
+    let bw = ((W - 2 * MARGIN) as i32 - gap_x) / 2;
+    let bh = (H * 8 / 100) as i32;
+    let row_h = bh + (H * 25 / 1000) as i32;
+    let top = (H * 14 / 100) as i32;
+    let mut choices = Vec::new();
+    for (i, act) in super::problems::MATH_SKILLS.iter().enumerate() {
+        let (row, col) = ((i / 2) as i32, (i % 2) as i32);
+        let x = MARGIN as i32 + col * (bw + gap_x);
+        let by = top + row * row_h;
+        rect_outline(surf, x, by, bw, bh, 4, BLACK);
+        let label = act.label();
+        let px = fit_px(ui_font, label, 40.0, (bw - 40) as f32);
+        print_tight_centered(surf, ui_font, label, px, x + bw / 2, by + bh / 2, BLACK);
+        let mut b = BBox::empty();
+        b.add(x, by, 0);
+        b.add(x + bw, by + bh, 0);
+        choices.push(b);
+    }
 
     HitMap {
         answer: BBox::empty(),
@@ -790,15 +864,17 @@ pub fn draw_check(surf: &mut Surface, answer: &BBox) -> BBox {
 }
 
 /// The verdict, written for its two readers at once: the cheer huge and
-/// centered for the child (stars flank it when `starred`), the hint in small
-/// print beneath for the grown-up to read aloud. Printed instantly, not
+/// centered for the child (stars flank it when `starred`, and the points it
+/// scored ride beside the right star when `award` is nonzero), the hint in
+/// small print beneath for the grown-up to read aloud. Printed instantly, not
 /// handwritten — feedback should land like a teacher's stamp, and a child
 /// should never wait through an animation to learn they were right.
-pub fn draw_feedback(surf: &mut Surface, font: &FontRef, cheer: &str, hint: &str, starred: bool) -> BBox {
+pub fn draw_feedback(surf: &mut Surface, font: &FontRef, cheer: &str, hint: &str, starred: bool, award: u32) -> BBox {
     let cx = (W / 2) as i32;
     let cheer_cy = feedback_y() + (H * 4 / 100) as i32;
     if !cheer.is_empty() {
-        let max_w = (W - 2 * MARGIN - if starred { W * 16 / 100 } else { 0 }) as f32;
+        let reserved = if starred { W * 16 / 100 } else { 0 } + if award > 0 { W * 12 / 100 } else { 0 };
+        let max_w = (W - 2 * MARGIN - reserved) as f32;
         let mut px = 120.0;
         let wide = script::measure(font, cheer, px);
         if wide > max_w {
@@ -810,6 +886,9 @@ pub fn draw_feedback(surf: &mut Surface, font: &FontRef, cheer: &str, hint: &str
             let half = tight_width(font, cheer, px) / 2;
             draw_star(surf, cx - half - 2 * r, cheer_cy, r);
             draw_star(surf, cx + half + 2 * r, cheer_cy, r);
+            if award > 0 {
+                print_tight_at(surf, font, &format!("+{award}"), 52.0, cx + half + 4 * r, cheer_cy, BLACK);
+            }
         }
     }
     if !hint.is_empty() {
@@ -891,7 +970,7 @@ mod tests {
         for level in 1..=4 {
             for rot in 0..8 {
                 let set = generate_set(level, Topic::Mix, rot, &mut rng);
-                let map = draw(&mut surf, &font, &set, level, 2);
+                let map = draw(&mut surf, &font, &set, level, 2, 45);
                 for b in [&map.answer, &map.done, &map.new, &map.menu] {
                     assert!(!b.is_empty(), "empty region for {:?}", set.items);
                     assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < H as i32);
@@ -934,7 +1013,7 @@ mod tests {
                 assert!(set.items.iter().all(|p| std::mem::discriminant(&p.kind) == d));
                 if set.items.len() > 1 {
                     saw_multi = true;
-                    let map = draw(&mut surf, &font, &set, level, 0);
+                    let map = draw(&mut surf, &font, &set, level, 0, 0);
                     for (i, b) in map.blanks.iter().enumerate() {
                         // Each band painted its figure: ink lands near each blank.
                         let mut around = BBox::empty();
@@ -992,8 +1071,9 @@ mod tests {
     fn the_menu_offers_every_item_as_a_disjoint_box_and_nothing_else() {
         let font = ui_font();
         let (_buf, mut surf) = page();
-        let map = draw_menu(&mut surf, &font);
-        assert_eq!(map.choices.len(), MENU_ITEMS.len());
+        let map = draw_menu(&mut surf, &font, 2);
+        // The named entries, then the four LEVEL boxes.
+        assert_eq!(map.choices.len(), MENU_ITEMS.len() + MENU_LEVELS as usize);
         assert!(map.done.is_empty() && map.new.is_empty() && map.menu.is_empty() && map.answer.is_empty());
         for (i, b) in map.choices.iter().enumerate() {
             assert!(!b.is_empty());
@@ -1009,6 +1089,49 @@ mod tests {
             let (cx, cy) = ((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
             assert_eq!(map.hit(cx, cy), Some(Target::Choice(i)));
         }
+        // The current level's box is filled solid; the others are outlines.
+        let current = &map.choices[MENU_ITEMS.len() + 1]; // level 2
+        let other = &map.choices[MENU_ITEMS.len()]; // level 1
+        assert!(
+            dark_in(&surf, current) > dark_in(&surf, other) * 3,
+            "the current level must read at a glance"
+        );
+    }
+
+    #[test]
+    fn the_skills_page_offers_every_math_skill_as_a_disjoint_box() {
+        let font = ui_font();
+        let (_buf, mut surf) = page();
+        let map = draw_skills(&mut surf, &font);
+        assert_eq!(map.choices.len(), crate::learn::problems::MATH_SKILLS.len());
+        assert!(map.done.is_empty() && map.new.is_empty() && map.menu.is_empty() && map.answer.is_empty());
+        for (i, b) in map.choices.iter().enumerate() {
+            assert!(!b.is_empty());
+            assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < H as i32);
+            assert!(dark_in(&surf, b) > 100, "skill box {i} must be visibly drawn");
+            for other in &map.choices[i + 1..] {
+                let apart = b.x1 < other.x0 || other.x1 < b.x0 || b.y1 < other.y0 || other.y1 < b.y0;
+                assert!(apart, "skill boxes {i} must not overlap");
+            }
+            let (cx, cy) = ((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
+            assert_eq!(map.hit(cx, cy), Some(Target::Choice(i)));
+        }
+    }
+
+    #[test]
+    fn the_score_shows_in_the_header_once_it_exists() {
+        let font = ui_font();
+        let mut rng = Rng::new(17);
+        let set = generate_set(2, Topic::Math, 0, &mut rng);
+        let mut strip = BBox::empty();
+        strip.add((W / 3) as i32, 20, 0);
+        strip.add((W * 2 / 3) as i32, 90, 0);
+        let (_a, mut quiet) = page();
+        draw(&mut quiet, &font, &set, 2, 0, 0);
+        assert_eq!(dark_in(&quiet, &strip), 0, "a scoreless header stays calm");
+        let (_b, mut scored) = page();
+        draw(&mut scored, &font, &set, 2, 0, 145);
+        assert!(dark_in(&scored, &strip) > 200, "the star and points must be visible");
     }
 
     #[test]
@@ -1019,7 +1142,7 @@ mod tests {
             kind: Kind::Bond { whole: 7, parts: [3, 4], blank: Blank::Part(1) },
             prompt: "WRITE THE MISSING NUMBER",
         };
-        let map = draw(&mut surf, &font, &solo(p), 2, 0);
+        let map = draw(&mut surf, &font, &solo(p), 2, 0, 0);
         // The page is not blank...
         let mut full = BBox::empty();
         full.add(0, 0, 0);
@@ -1039,7 +1162,7 @@ mod tests {
             kind: Kind::Trace { word: "cat" },
             prompt: "TRACE IT, THEN WRITE IT",
         };
-        let map = draw(&mut surf, &font, &solo(p), 1, 0);
+        let map = draw(&mut surf, &font, &solo(p), 1, 0, 0);
         assert!(dark_in(&surf, &map.answer) > 400, "the dashed template must be visible");
     }
 
@@ -1051,7 +1174,7 @@ mod tests {
             kind: Kind::Equation { a: 4, op: Op::Add, b: 3 },
             prompt: "WRITE THE ANSWER",
         };
-        let map = draw(&mut surf, &font, &solo(p), 2, 0);
+        let map = draw(&mut surf, &font, &solo(p), 2, 0, 0);
         let before = dark_in(&surf, &map.answer);
         let check = draw_check(&mut surf, &map.answer);
         assert!(!check.is_empty());
@@ -1072,7 +1195,7 @@ mod tests {
         let font = ui_font();
         let (_buf, mut surf) = page();
         surf.fill_rect(0, 0, W, H, WHITE);
-        let region = draw_feedback(&mut surf, &font, "GREAT JOB!", "", true);
+        let region = draw_feedback(&mut surf, &font, "GREAT JOB!", "", true, 0);
         let cheer_only = dark_in(&surf, &region);
         assert!(cheer_only > 400, "the big cheer and its stars must land in the strip");
         // Everything stays inside the strip: no ink above it or in the boxes.
@@ -1083,7 +1206,18 @@ mod tests {
 
         let (_b2, mut surf2) = page();
         surf2.fill_rect(0, 0, W, H, WHITE);
-        let r2 = draw_feedback(&mut surf2, &font, "SO CLOSE!", "Your 3 is facing the wrong way.", false);
+        let r2 = draw_feedback(&mut surf2, &font, "SO CLOSE!", "Your 3 is facing the wrong way.", false, 0);
         assert!(dark_in(&surf2, &r2) > cheer_only / 2, "the hint must add readable ink");
+
+        // An award prints beside the stars, and stays inside the strip too.
+        let (_b3, mut surf3) = page();
+        surf3.fill_rect(0, 0, W, H, WHITE);
+        let r3 = draw_feedback(&mut surf3, &font, "GREAT JOB!", "", true, 15);
+        let with_award = dark_in(&surf3, &r3);
+        assert!(with_award > cheer_only + 100, "the +N toast must add visible ink");
+        let mut whole3 = BBox::empty();
+        whole3.add(0, 0, 0);
+        whole3.add(W as i32 - 1, H as i32 - 1, 0);
+        assert_eq!(dark_in(&surf3, &whole3), with_award, "the toast must not spill out of the strip");
     }
 }

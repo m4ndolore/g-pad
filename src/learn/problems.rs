@@ -234,15 +234,17 @@ const TRACE_L2: &[&str] = &["cat", "dog", "sun", "hat", "pig", "bed", "cup", "fo
 const TRACE_L3: &[&str] = &["the", "and", "you", "see", "play", "look", "here"];
 const TRACE_L4: &[&str] = &["jump", "ship", "rain", "star", "frog", "moon", "tree"];
 
-/// What the menu narrows practice to: the full mix (default), math only, or
-/// handwriting only. A topic changes which activities rotate, never how any
-/// one activity is generated.
+/// What the menu narrows practice to: the full mix (default), math only,
+/// handwriting only, or one math skill chosen by name. A topic changes which
+/// activities rotate, never how any one activity is generated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Topic {
     #[default]
     Mix,
     Math,
     Writing,
+    /// One activity, dealt every page: the skills picker's latch.
+    Skill(Activity),
 }
 
 /// The activity rotation per level and topic. Rotating (rather than sampling)
@@ -250,6 +252,7 @@ pub enum Topic {
 fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
     use Activity::*;
     match (topic, level) {
+        (Topic::Skill(a), _) => a.alone(),
         (Topic::Writing, _) => &[Trace],
         (Topic::Math, 1) => &[Count, Bond, Compare],
         (Topic::Math, 2) => &[Bond, MakeTen, Equation, Compare, NumberLine, Bar],
@@ -263,7 +266,7 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Activity {
+pub enum Activity {
     Count,
     Bond,
     MakeTen,
@@ -276,6 +279,63 @@ enum Activity {
     PlaceValue,
     HundredWindow,
     Compare,
+}
+
+/// Every math activity, in the skills picker's box order. `Trace` stays out:
+/// handwriting is already the WRITING topic.
+pub const MATH_SKILLS: &[Activity] = &[
+    Activity::Count,
+    Activity::Bond,
+    Activity::MakeTen,
+    Activity::Equation,
+    Activity::Array,
+    Activity::Share,
+    Activity::Bar,
+    Activity::NumberLine,
+    Activity::PlaceValue,
+    Activity::HundredWindow,
+    Activity::Compare,
+];
+
+impl Activity {
+    /// A rotation of just this activity, for the skills latch.
+    fn alone(self) -> &'static [Activity] {
+        use Activity::*;
+        match self {
+            Count => &[Count],
+            Bond => &[Bond],
+            MakeTen => &[MakeTen],
+            Equation => &[Equation],
+            Array => &[Array],
+            Share => &[Share],
+            Trace => &[Trace],
+            Bar => &[Bar],
+            NumberLine => &[NumberLine],
+            PlaceValue => &[PlaceValue],
+            HundredWindow => &[HundredWindow],
+            Compare => &[Compare],
+        }
+    }
+
+    /// The skills picker's label: named for what the child does, not for the
+    /// pedagogy ("TENS & ONES", never "place-value chart").
+    pub fn label(self) -> &'static str {
+        use Activity::*;
+        match self {
+            Count => "COUNT DOTS",
+            Bond => "NUMBER BONDS",
+            MakeTen => "MAKE TEN",
+            Equation => "NUMBER SENTENCES",
+            Array => "TIMES TABLES",
+            Share => "SHARING",
+            Trace => "WRITING",
+            Bar => "BAR MODELS",
+            NumberLine => "NUMBER LINE",
+            PlaceValue => "TENS & ONES",
+            HundredWindow => "HUNDRED CHART",
+            Compare => "BIGGER OR SMALLER",
+        }
+    }
 }
 
 /// A dealt page: one to four problems of a single activity, like a paper
@@ -584,6 +644,42 @@ mod tests {
                 let writing = generate(level, Topic::Writing, rot, &mut rng).kind;
                 assert!(matches!(writing, Kind::Trace { .. }), "writing topic dealt {writing:?}");
             }
+        }
+    }
+
+    #[test]
+    fn a_skill_topic_deals_only_its_own_activity_at_every_level() {
+        let mut rng = Rng::new(13);
+        for &act in MATH_SKILLS {
+            for level in 1..=4 {
+                for rot in 0..6 {
+                    let p = generate(level, Topic::Skill(act), rot, &mut rng);
+                    let same = matches!(
+                        (&p.kind, act),
+                        (Kind::TenFrame { make_ten: false, .. }, Activity::Count)
+                            | (Kind::TenFrame { make_ten: true, .. }, Activity::MakeTen)
+                            | (Kind::Bond { .. }, Activity::Bond)
+                            | (Kind::Equation { .. }, Activity::Equation)
+                            | (Kind::Array { .. }, Activity::Array)
+                            | (Kind::Share { .. }, Activity::Share)
+                            | (Kind::Bar { .. }, Activity::Bar)
+                            | (Kind::NumberLine { .. }, Activity::NumberLine)
+                            | (Kind::PlaceValue { .. }, Activity::PlaceValue)
+                            | (Kind::HundredWindow { .. }, Activity::HundredWindow)
+                            | (Kind::Compare { .. }, Activity::Compare)
+                    );
+                    assert!(same, "skill {act:?} at level {level} dealt {:?}", p.kind);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_math_skill_has_a_short_readable_label() {
+        for &act in MATH_SKILLS {
+            let label = act.label();
+            assert!(!label.is_empty() && label.len() <= 18, "label {label:?} won't fit its box");
+            assert!(!matches!(act, Activity::Trace), "writing is a topic, not a math skill");
         }
     }
 
