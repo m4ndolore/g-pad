@@ -149,6 +149,7 @@ pub fn held() -> Vault {
     HELD.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
 }
 
+#[allow(dead_code)] // exercised from ui.rs tests; the live path fills HELD via poll
 pub fn replace(vault: Vault) {
     if let Ok(mut g) = HELD.lock() {
         *g = Some(vault);

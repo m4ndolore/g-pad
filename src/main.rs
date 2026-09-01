@@ -2574,7 +2574,7 @@ fn note_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
                 let crop = BBox { x0: 0, y0: 0, x1: SCREEN_W as i32 - 1, y1: b.y as i32 - 24 };
                 let sent = ink::region_png(surf, crop, ANNOTATE_PNG)
                     .map_err(|e| format!("no page image: {e}"))
-                    .and_then(|()| vault::propose(&note.path, ANNOTATE_PNG));
+                    .and_then(|_| vault::propose(&note.path, ANNOTATE_PNG));
                 match sent {
                     Ok((id, summary)) => {
                         *annot = vault::Annot::Proposed { id, summary };
