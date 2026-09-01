@@ -316,7 +316,7 @@ fn learn_sheets(dir: &str) -> i32 {
     let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
     for level in 1..=4u8 {
         let mut session = learn::Session::start_at(level, 41 + level as u32);
-        for page in 0..4 {
+        for page in 0..8 {
             session.draw(&mut surf, &ui_font);
             let path = format!("{dir}/learn-L{level}-{page}.png");
             if let Err(e) = dump_page(&surf, &path) {
@@ -1405,11 +1405,23 @@ fn run() -> std::io::Result<()> {
                         // A choice tick is a DONE with the chosen box latched.
                         LearnTick::Done | LearnTick::Choice(_) => {
                             clear_feedback(&mut surf, &disp);
-                            if session.needs_ink() && !user_ink.has_ink_in(&session.hits.answer) {
+                            // Every box wants ink before the page commits —
+                            // the child answers all the questions even though
+                            // only the last is marked (the multi-question
+                            // MVP). Play pages keep their single canvas.
+                            let missing_ink = if !session.needs_ink() {
+                                false
+                            } else if session.hits.blanks.len() > 1 {
+                                session.hits.blanks.iter().any(|b| !user_ink.has_ink_in(b))
+                            } else {
+                                !user_ink.has_ink_in(&session.hits.answer)
+                            };
+                            if missing_ink {
                                 // An empty blank needs no oracle to mark.
                                 turn_failed = true;
                                 let nudge = match session.page {
                                     learn::Page::Play(_) => "Draw something first, then mark DONE.",
+                                    _ if session.hits.blanks.len() > 1 => "Answer every box, then mark DONE.",
                                     _ => "Write your answer first, then mark DONE.",
                                 };
                                 let plan = plan_reply(&font, nudge, Some(learn::sheet::feedback_y()));
@@ -1423,7 +1435,11 @@ fn run() -> std::io::Result<()> {
                                 // keep the page crop: their drawings live on
                                 // the canvas the game printed.
                                 let sent = if matches!(session.page, learn::Page::Practice(_)) {
-                                    user_ink.ink_png(&session.hits.answer, 80, PNG_PATH)
+                                    // Only the graded (last) blank travels. A
+                                    // crowded sheet keeps the catchment tight
+                                    // so a neighbor row's digit stays home.
+                                    let margin = if session.hits.blanks.len() > 1 { 30 } else { 80 };
+                                    user_ink.ink_png(&session.hits.answer, margin, PNG_PATH)
                                 } else {
                                     let crop = user_ink.crop_for(&session.hits.answer, 80);
                                     ink::region_png(&surf, crop, PNG_PATH)

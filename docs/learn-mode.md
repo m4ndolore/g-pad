@@ -11,18 +11,21 @@ Learn mode is the first surface built end to end on the anchored-marks
 vocabulary. Everything consequential is a bbox lookup against a hit map the
 sheet returned when it was drawn; nothing is shape recognition:
 
-- **The answer region.** Every sheet declares exactly one — the blank circle
-  of a number bond, the outlined box after an equation, the ruled writing
-  lines. Ink there is the child's answer and stays on the page.
+- **The answer regions.** Every sheet declares one blank per question — the
+  blank circle of a number bond, the outlined box after each equation, the
+  ruled writing lines. A worksheet page carries up to four (see "Worksheet
+  pages" below); the LAST one is the graded blank. Ink in a blank is the
+  child's answer and stays on the page.
 - **DONE** (bottom right). Any mark inside it — check, scribble, "x" —
-  commits *only the declared answer region* to the oracle for marking. The
-  mark is absorbed, never sent.
+  commits *only the graded blank* to the oracle for marking. The mark is
+  absorbed, never sent.
 - **NEW** (bottom left). Any mark inside it deals a fresh page.
 - **MENU** (bottom center). Any mark inside it deals the picker: every
   topic and game as its own tick box (see "The menu" below).
 
 A child cannot commit by accident: an empty blank answers locally ("Write
-your answer first"), and the whole-page commit paths of Pad mode — the send
+your answer first" — "Answer every box" on a worksheet page), and the
+whole-page commit paths of Pad mode — the send
 rule, idle-send, page flips, the finger-tap pen palette — are all disabled
 while Learn is open. Fingers navigate nothing here; the pen does everything.
 
@@ -32,14 +35,33 @@ Singapore Math's concrete → pictorial → abstract ladder, four levels:
 
 | Level | Activities |
 |---|---|
-| 1 | count the ten-frame dots (≤5), number bonds to 5, trace single letters |
-| 2 | bonds to 10, make-ten on the ten-frame, trace CVC words, + within 10 |
-| 3 | bonds to 20, + and − within 20, sight words, make-ten |
-| 4 | multiplication as dot arrays, division as sharing, ×/÷ equations, longer words |
+| 1 | count the ten-frame dots (≤5), number bonds to 5, compare to 5 (<, =, >), trace single letters |
+| 2 | bonds to 10, make-ten, + and − within 10, compare to 10, number-line hops, bar models to 10, trace CVC words |
+| 3 | bonds to 20, + and − within 20, number lines to 20, bar models to 20, place value (teens), sight words |
+| 4 | multiplication as dot arrays, division as sharing, ×/÷ equations, place value to 99, hundred-chart windows, bar models, longer words |
+
+The full Singapore Math toolbox is on the page: part-whole **bar models**
+(one bar split proportionally, the whole bracketed beneath, one number
+blank), **number lines** with one arc per unit hop under the printed
+equation, **place-value charts** (ten-discs and one-dots in labeled
+columns), **hundred-chart windows** (the 3×3 neighborhood of a blank middle
+cell), and **comparison boxes** (write <, =, or >).
 
 Difficulty adapts locally: three right in a row steps up, two wrong steps
 down, silently. Activities rotate rather than sample, so a math page is
 always followed by something different.
+
+## Worksheet pages
+
+The compact kinds — equations, comparisons, number lines, bar models,
+place-value charts, hundred-chart windows — deal like a paper worksheet: two
+to four questions of one activity, stacked in numbered bands, each with its
+own blank (`problems::Set`; the dot-heavy figures and handwriting keep the
+page to themselves). DONE wants ink in *every* box before the page commits,
+but the MVP grades **only the last question**: right moves on, wrong flags
+that answer with the look-again underline and the grown-up reviews the rest
+of the page. The graded blank's ink travels alone, cropped with a tight
+catchment so a neighbor row's digit stays home.
 
 **Problems are generated locally** (`src/learn/problems.rs`, a seeded LCG, no
 dependencies). The oracle is only ever asked to *read* the child's ink, never
