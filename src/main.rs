@@ -55,6 +55,8 @@ use surface::{Surface, BLACK, FADED, WHITE};
 // hand survives only as an opt-in via RIDDLE_FONT_FILE.
 const FONT_TTF: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 const PNG_PATH: &str = "/tmp/g-pad-page.png";
+/// The marked-up note page as Vellum sees it: print and ink together.
+const ANNOTATE_PNG: &str = "/tmp/g-pad-annotate.png";
 
 /// How long the diary waits on a silent oracle before giving up on the turn.
 /// Generous: thinking models can lead with a long silence.
@@ -143,10 +145,16 @@ enum State {
     /// One vault note read full-page. The turn page's manners, a reader's
     /// direction: page 0 is the beginning and the swipe pages forward.
     /// ← VAULT returns to the listing, × (or the leftward swipe) closes to
-    /// the canvas, the pen annotates and its ink simply stays.
+    /// the canvas, the pen annotates — and the first mark raises the note
+    /// box, whose tick sends the markup to Vellum as a proposed revision.
+    /// `annot` is where that flow stands, `status` the last send's outcome,
+    /// `boxr` the hit map the pen's marks are read against.
     NotePage {
         note: vault::Note,
         page: usize,
+        annot: vault::Annot,
+        status: Option<String>,
+        boxr: Option<ui::DecisionBox>,
         saved: Vec<u8>,
         return_to: Box<State>,
     },
@@ -1190,6 +1198,8 @@ fn run() -> std::io::Result<()> {
                             }
                         } else if matches!(state, State::SessionPage { .. }) {
                             session_page_mark(&mut state, &mut user_ink, &mut surf, &disp, &ui_font);
+                        } else if matches!(state, State::NotePage { .. }) {
+                            note_page_mark(&mut state, &mut user_ink, &mut surf, &disp, &ui_font);
                         }
                     }
                     continue;
@@ -2224,12 +2234,102 @@ fn session_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
 /// Anchored reading: where the mark landed, plus one cheap global property.
 /// A wide flat stroke through the box is the strike; any other deliberate
 /// mark whose center is inside the box is the tick.
+/// Read the stroke just finished on the note page. Ink that hits no box is
+/// markup: its pixels stay on the page (the stroke is popped from the data,
+/// so the canvas never inherits it) and the first such mark raises the note
+/// box — painted over the page foot, never a redraw, which would absorb the
+/// very ink being offered. A tick sends the marked-up page to Vellum, which
+/// drafts a revision and holds it as a proposal; a second tick applies it
+/// to the vault, a strike discards it. The calls are synchronous like
+/// `fetch_note` — the writer just asked, and the box says what the pause is.
+fn note_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
+    disp: &display::Display, ui_font: &FontRef) {
+    let Some(stroke) = ink.stroke_list().last().cloned() else { return };
+    let _ = ink.pop_stroke();
+    let State::NotePage { note, page, annot, status, boxr, .. } = state else { return };
+    let mut sb = BBox::empty();
+    for &(x, y, r) in &stroke {
+        sb.add(x, y, r);
+    }
+    match boxr.as_ref().and_then(|b| classify_mark(&stroke, &sb, b)) {
+        None => {
+            // Markup. The first mark raises the box; later marks just stay.
+            if matches!(annot, vault::Annot::Clean) {
+                *annot = vault::Annot::Marked;
+                *status = None;
+                let (l1, l2) = ui::note_box_lines(annot, None).unwrap_or_default();
+                let b = ui::draw_note_box(surf, ui_font, &l1, l2.as_deref());
+                disp.update(b.x as i32, b.y as i32 - 20, b.w as i32, b.h as i32 + 20, false);
+                *boxr = Some(b);
+            }
+            return;
+        }
+        Some(PageMark::Strike) => match annot.clone() {
+            // Clearing unsent marks is cheap: the redraw absorbs them.
+            vault::Annot::Marked => {
+                *annot = vault::Annot::Clean;
+                *status = None;
+            }
+            vault::Annot::Proposed { id, .. } => match vault::decide(&id, "discard") {
+                Ok(_) => {
+                    *annot = vault::Annot::Clean;
+                    *status = Some("DISCARDED".to_string());
+                }
+                Err(e) => *status = Some(e.to_uppercase()),
+            },
+            vault::Annot::Clean => {}
+        },
+        Some(PageMark::Tick) => match annot.clone() {
+            vault::Annot::Marked => {
+                // Name the pause before the model reads: this is the one
+                // long call on the pad, and a silent freeze reads as a hang.
+                let b = ui::draw_note_box(surf, ui_font,
+                    "SENDING · VELLUM IS READING YOUR MARKS…", None);
+                disp.update(b.x as i32, b.y as i32 - 20, b.w as i32, b.h as i32 + 20, false);
+                // The page above the box — print and ink together — is what
+                // Vellum reads. The box itself stays out of the picture.
+                let crop = BBox { x0: 0, y0: 0, x1: SCREEN_W as i32 - 1, y1: b.y as i32 - 24 };
+                let sent = ink::region_png(surf, crop, ANNOTATE_PNG)
+                    .map_err(|e| format!("no page image: {e}"))
+                    .and_then(|()| vault::propose(&note.path, ANNOTATE_PNG));
+                match sent {
+                    Ok((id, summary)) => {
+                        *annot = vault::Annot::Proposed { id, summary };
+                        *status = None;
+                    }
+                    Err(e) => *status = Some(e.to_uppercase()),
+                }
+            }
+            vault::Annot::Proposed { id, .. } => match vault::decide(&id, "apply") {
+                Ok(applied) => {
+                    // The vault holds the revision now — show what it holds,
+                    // and never a page past the end of the fresh text.
+                    if let Ok(fresh) = vault::fetch_note(&note.path) {
+                        *note = fresh;
+                    }
+                    *annot = vault::Annot::Clean;
+                    *status = Some(if applied {
+                        "APPLIED · THE VAULT HOLDS THE REVISION".to_string()
+                    } else {
+                        "NOTHING TO APPLY".to_string()
+                    });
+                    *page = (*page).min(vault::note_page_count(ui_font, note).saturating_sub(1));
+                }
+                Err(e) => *status = Some(e.to_uppercase()),
+            },
+            vault::Annot::Clean => {}
+        },
+    }
+    *boxr = ui::draw_note_page(surf, ui_font, note, *page, annot, status.as_deref());
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+}
+
 /// Flip the note page. A note reads front to back, so the swipe that moves
 /// "down through the document" (up-swipe, positive delta) turns to the next
 /// page — the same fingers as the turn page, pointed the way a book goes.
 fn note_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
     disp: &display::Display, ui_font: &FontRef) {
-    let State::NotePage { note, page, .. } = state else { return };
+    let State::NotePage { note, page, annot, status, boxr, .. } = state else { return };
     let pages = vault::note_page_count(ui_font, note);
     let want = if delta > 0 {
         (*page + 1).min(pages.saturating_sub(1))
@@ -2240,7 +2340,14 @@ fn note_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
         return;
     }
     *page = want;
-    ui::draw_note_page(surf, ui_font, note, *page);
+    // Unsent marks belong to the page they were made on, and the redraw has
+    // absorbed them — a held proposal, though, lives in the vault and its
+    // box rides along to whatever page the reader turns to.
+    if matches!(annot, vault::Annot::Marked) {
+        *annot = vault::Annot::Clean;
+        *status = None;
+    }
+    *boxr = ui::draw_note_page(surf, ui_font, note, *page, annot, status.as_deref());
     disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
 }
 
@@ -2399,9 +2506,12 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             | State::NotePage { saved, return_to, .. } => (saved, *return_to),
             other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
         };
-        ui::draw_note_page(surf, ui_font, &note, 0);
+        let boxr = ui::draw_note_page(surf, ui_font, &note, 0, &vault::Annot::Clean, None);
         disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
-        *state = State::NotePage { note, page: 0, saved, return_to: Box::new(old) };
+        *state = State::NotePage {
+            note, page: 0, annot: vault::Annot::Clean, status: None, boxr,
+            saved, return_to: Box::new(old),
+        };
         return;
     }
     let mut redraw = false;
@@ -2422,6 +2532,21 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.scroll = 0; redraw = true; }
             ui::Action::Sessions => { p.kind = ui::DrawerKind::Sessions; p.scroll = 0; redraw = true; }
             ui::Action::Vault => { p.kind = ui::DrawerKind::Vault; p.scroll = 0; redraw = true; }
+            // Walking the vault is synchronous like opening a note: the tick
+            // asked for that shelf, and the pause is the shelf loading. A
+            // failed walk leaves the reader where they stood, marked stale.
+            ui::Action::OpenDir(i) => {
+                if let Some(dir) = vault::held().dirs.get(i) {
+                    let _ = vault::browse(&dir.path);
+                    p.scroll = 0;
+                }
+                redraw = true;
+            }
+            ui::Action::VaultUp => {
+                let _ = vault::browse(&vault::parent(&vault::held().prefix));
+                p.scroll = 0;
+                redraw = true;
+            }
             ui::Action::None => redraw = true,
             _ => {}
         }

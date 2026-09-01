@@ -314,7 +314,7 @@ pub fn post_nudge(id: &str, mark: &str, text: Option<&str>) -> Result<(), String
     }
 }
 
-fn escape_json(s: &str) -> String {
+pub(crate) fn escape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {

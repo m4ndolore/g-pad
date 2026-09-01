@@ -1,8 +1,9 @@
 //! The vault tab — Vellum's markdown notes, read on paper.
 //!
 //! Vellum ships two read-only device routes built for exactly this surface:
-//! `/api/device/v1/notes` lists the newest notes (recursive, bounded, `total`
-//! alongside so the pad can say what it left off), and `/api/device/v1/note`
+//! `/api/device/v1/notes` lists one shelf — the prefix's subfolders and the
+//! notes that live directly in it (bounded, `shelf` alongside so the pad can
+//! say what it left off) — and `/api/device/v1/note`
 //! returns one body with the frontmatter already stripped. The pad polls the
 //! list the way the bridge polls the hub — notes change at human speed, so
 //! the cadence is minutes, not seconds — and fetches a body only when a row
@@ -27,15 +28,56 @@ pub struct NoteMeta {
     pub mtime_ms: i64,
 }
 
+/// One folder row: a subfolder of the current prefix that holds at least one
+/// readable note (Vellum never lists an empty one).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirMeta {
+    pub path: String,
+    pub name: String,
+    pub count: usize,
+}
+
 /// What the vault listing holds right now.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Vault {
+    /// Where in the vault this listing stands. Empty at the root. Survives
+    /// the drawer closing — reopening the tab returns where the reader was.
+    pub prefix: String,
+    /// The prefix's own subfolders, name-sorted — navigation reads like a
+    /// shelf, one step at a time.
+    pub dirs: Vec<DirMeta>,
+    /// The notes that live directly in the prefix — deeper ones stay behind
+    /// their folder rows, which is the whole point of walking shelves.
     pub notes: Vec<NoteMeta>,
-    /// The server's count of everything under the walk — the listing itself
-    /// is bounded, so `total - notes.len()` never made it to the pad at all.
-    pub total: usize,
+    /// The server's count of this shelf's notes — the listing itself is
+    /// bounded, so `shelf - notes.len()` never made it to the pad at all.
+    pub shelf: usize,
     /// True when these are the last notes we held rather than a fresh poll.
     pub stale: bool,
+}
+
+/// One step up from a prefix: `raw/AI` → `raw`, `raw` → the root.
+pub fn parent(prefix: &str) -> String {
+    match prefix.rsplit_once('/') {
+        Some((up, _)) => up.to_string(),
+        None => String::new(),
+    }
+}
+
+/// Does this note live directly on the prefix's shelf? A vault that still
+/// lists recursively (an older Vellum) floods the drawer with every file
+/// under the walk — the pad keeps only the current shelf, and deeper notes
+/// stay behind their folder rows.
+pub fn on_shelf(prefix: &str, path: &str) -> bool {
+    let rest = if prefix.is_empty() {
+        path
+    } else {
+        match path.strip_prefix(prefix).and_then(|r| r.strip_prefix('/')) {
+            Some(r) => r,
+            None => return false,
+        }
+    };
+    !rest.is_empty() && !rest.contains('/')
 }
 
 /// One fetched note, ready to lay out.
@@ -62,10 +104,15 @@ pub fn configured() -> bool {
     base().is_some()
 }
 
-/// The device listing endpoint. The base is configuration; the paths are
-/// Vellum's device contract.
-pub fn notes_url(base: &str) -> String {
-    format!("{}/api/device/v1/notes?limit=50", base.trim_end_matches('/'))
+/// The device listing endpoint, scoped to a folder when `prefix` names one.
+/// The base is configuration; the paths are Vellum's device contract.
+pub fn notes_url(base: &str, prefix: &str) -> String {
+    let mut url = format!("{}/api/device/v1/notes?limit=50", base.trim_end_matches('/'));
+    if !prefix.is_empty() {
+        url.push_str("&prefix=");
+        url.push_str(&urlencode(prefix));
+    }
+    url
 }
 
 /// Where one note body is fetched. The path rides in the query string, so it
@@ -115,8 +162,42 @@ pub fn mark_stale() {
     }
 }
 
+/// Fetch one listing and hold it, but only if the reader is still standing
+/// in that folder — a poll finishing after the reader walked elsewhere must
+/// not yank them back.
+fn fetch_listing(agent: &ureq::Agent, base: &str, bearer: &str, prefix: &str) -> bool {
+    let got = agent
+        .get(&notes_url(base, prefix))
+        .set("Authorization", bearer)
+        .call()
+        .ok()
+        .and_then(|r| r.into_string().ok());
+    match got {
+        Some(body) => {
+            let (dirs, mut notes, shelf) = parse_listing(&body);
+            // Only this shelf's notes reach the drawer — an older vault
+            // lists recursively, and the filter is what keeps the folders
+            // meaning something.
+            notes.retain(|n| on_shelf(prefix, &n.path));
+            let shelf = shelf.unwrap_or(notes.len());
+            if let Ok(mut g) = HELD.lock() {
+                let current = g.as_ref().map(|v| v.prefix.clone()).unwrap_or_default();
+                if current == prefix {
+                    *g = Some(Vault { prefix: prefix.to_string(), dirs, notes, shelf, stale: false });
+                }
+            }
+            true
+        }
+        None => {
+            mark_stale();
+            false
+        }
+    }
+}
+
 /// Start polling the vault, if one is configured. Notes change at human
 /// speed: the default cadence is five minutes, floored at thirty seconds.
+/// Each cycle refreshes the folder the reader is standing in.
 pub fn spawn_poll() {
     let Some(base) = base() else { return };
     let every = std::env::var("RIDDLE_VELLUM_POLL_S")
@@ -130,24 +211,42 @@ pub fn spawn_poll() {
         let agent = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(15))
             .build();
-        let url = notes_url(&base);
         loop {
-            let got = agent
-                .get(&url)
-                .set("Authorization", &bearer)
-                .call()
-                .ok()
-                .and_then(|r| r.into_string().ok());
-            match got {
-                Some(body) => {
-                    let (notes, total) = parse_notes(&body);
-                    replace(Vault { notes, total, stale: false });
-                }
-                None => mark_stale(),
-            }
+            let prefix = held().prefix;
+            fetch_listing(&agent, &base, &bearer, &prefix);
             std::thread::sleep(std::time::Duration::from_secs(every));
         }
     });
+}
+
+/// Walk to a folder: fetch its listing and stand there. Synchronous and
+/// short-fused like `fetch_note` — the reader just ticked the folder row and
+/// the pause is the shelf loading. On failure the current listing stays,
+/// marked stale, and the reader has not moved.
+pub fn browse(prefix: &str) -> Result<(), String> {
+    let base = base().ok_or_else(|| "no vault configured".to_string())?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let bearer = format!("Bearer {}", token());
+    // Stand in the folder first, so the guard inside `fetch_listing` sees
+    // this fetch as current — a slow poll landing later is the stale one.
+    let before = held();
+    if let Ok(mut g) = HELD.lock() {
+        g.get_or_insert_with(Vault::default).prefix = prefix.to_string();
+    }
+    if fetch_listing(&agent, &base, &bearer, prefix) {
+        Ok(())
+    } else {
+        // Step back where we stood: a failed walk must not leave the reader
+        // in a folder whose shelf never arrived.
+        if let Ok(mut g) = HELD.lock() {
+            if g.as_ref().is_some_and(|v| v.prefix == prefix) {
+                *g = Some(Vault { stale: true, ..before });
+            }
+        }
+        Err("vault unreachable".to_string())
+    }
 }
 
 /// Fetch one note body. Synchronous and short-fused, like `post_nudge`: the
@@ -175,12 +274,121 @@ pub fn fetch_note(path: &str) -> Result<Note, String> {
     }
 }
 
+// ---- annotating a note --------------------------------------------------
+
+/// What the writer's ink on this printed note is doing right now. The flow
+/// is the decision box's, pointed at the vault: marks raise the box, a tick
+/// sends them, Vellum drafts a revision and holds it, and only a second
+/// tick applies it — the same manners as approving an agent's action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Annot {
+    /// No marks: the pen has only been reading along.
+    #[default]
+    Clean,
+    /// Ink on the page, not yet sent.
+    Marked,
+    /// Vellum drafted a revision from the marks and holds it, waiting.
+    Proposed { id: String, summary: String },
+}
+
+pub fn annotate_url(base: &str) -> String {
+    format!("{}/api/device/v1/annotate", base.trim_end_matches('/'))
+}
+
+pub fn decision_url(base: &str, id: &str) -> String {
+    format!("{}/api/device/v1/annotate/{}/decision", base.trim_end_matches('/'), urlencode(id))
+}
+
+/// A vault error body is `{"error": "..."}`; say the message, not the JSON.
+fn error_detail(code: u16, body: &str) -> String {
+    let msg = json_field(body, "error").unwrap_or_else(|| body.trim().to_string());
+    format!("vault {code}: {msg}")
+}
+
+/// Send the marked-up page and get back the proposal Vellum now holds:
+/// `(id, summary)`. Synchronous like `fetch_note`, but the pause is longer —
+/// a model is reading ink — so the box says so before this is called.
+pub fn propose(path: &str, png_path: &str) -> Result<(String, String), String> {
+    let base = base().ok_or_else(|| "no vault configured".to_string())?;
+    let png = std::fs::read(png_path).map_err(|e| format!("no page image: {e}"))?;
+    let body = format!(
+        "{{\"path\":\"{}\",\"mimeType\":\"image/png\",\"imageBase64\":\"{}\",\"requestId\":\"annotate-{}\"}}",
+        crate::bridge::escape_json(path),
+        crate::oracle::base64(&png),
+        now_ms(),
+    );
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(180))
+        .build();
+    match agent
+        .post(&annotate_url(&base))
+        .set("Authorization", &format!("Bearer {}", token()))
+        .set("Content-Type", "application/json")
+        .send_string(&body)
+    {
+        Ok(r) => {
+            let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
+            let id = json_field(&text, "id").unwrap_or_default();
+            if id.is_empty() {
+                return Err("vault sent no proposal".to_string());
+            }
+            Ok((id, json_field(&text, "summary").unwrap_or_default()))
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let detail = r.into_string().unwrap_or_default();
+            Err(error_detail(code, &detail))
+        }
+        Err(e) => Err(format!("vault unreachable: {e}")),
+    }
+}
+
+/// Settle a proposal: `apply` writes the revision into the vault (Vellum
+/// banks what stood and reindexes, so every reader of the brain sees the
+/// change), `discard` walks away. Ok(true) means the note changed.
+pub fn decide(id: &str, decision: &str) -> Result<bool, String> {
+    let base = base().ok_or_else(|| "no vault configured".to_string())?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+    match agent
+        .post(&decision_url(&base, id))
+        .set("Authorization", &format!("Bearer {}", token()))
+        .set("Content-Type", "application/json")
+        .send_string(&format!("{{\"decision\":\"{}\"}}", crate::bridge::escape_json(decision)))
+    {
+        Ok(r) => {
+            let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
+            Ok(json_bool(&text, "applied").unwrap_or(false))
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let detail = r.into_string().unwrap_or_default();
+            Err(error_detail(code, &detail))
+        }
+        Err(e) => Err(format!("vault unreachable: {e}")),
+    }
+}
+
 // ---- parsing -----------------------------------------------------------
 
 /// Parse the listing payload. Tolerant like every parser on the pad: a vault
-/// that adds fields must not break the reader, and a note missing a path is
-/// unopenable and skipped.
-pub fn parse_notes(json: &str) -> (Vec<NoteMeta>, usize) {
+/// that adds fields must not break the reader, a note missing a path is
+/// unopenable and skipped, and an old vault sending no `dirs` still lists —
+/// there are simply no folders to walk. `shelf` is the server's count of the
+/// prefix's own notes before the bound; an old vault sends none.
+pub fn parse_listing(json: &str) -> (Vec<DirMeta>, Vec<NoteMeta>, Option<usize>) {
+    let mut dirs = Vec::new();
+    for block in split_objects(json, "dirs") {
+        let path = json_field(&block, "path").unwrap_or_default();
+        if path.trim().is_empty() {
+            continue;
+        }
+        let name = match json_field(&block, "name").filter(|n| !n.trim().is_empty()) {
+            Some(n) => n,
+            None => path.rsplit('/').next().unwrap_or(&path).to_string(),
+        };
+        let count = json_number(&block, "count").map(|n| n.max(0) as usize).unwrap_or(0);
+        dirs.push(DirMeta { path, name, count });
+    }
     let mut notes = Vec::new();
     for block in split_objects(json, "notes") {
         let path = json_field(&block, "path").unwrap_or_default();
@@ -193,9 +401,9 @@ pub fn parse_notes(json: &str) -> (Vec<NoteMeta>, usize) {
         };
         notes.push(NoteMeta { path, title, mtime_ms: json_number(&block, "mtime").unwrap_or(0) });
     }
-    // `total` sits outside the array; the note objects carry no such key.
-    let total = json_number(json, "total").map(|n| n.max(0) as usize).unwrap_or(notes.len());
-    (notes, total)
+    // `shelf` sits outside both arrays; their objects carry no such key.
+    let shelf = json_number(json, "shelf").map(|n| n.max(0) as usize);
+    (dirs, notes, shelf)
 }
 
 /// Parse one note body. The text keeps its newlines — `json_field` flattens
@@ -238,7 +446,22 @@ fn json_text(block: &str, key: &str) -> Option<String> {
     Some(out)
 }
 
-/// Read one integer field. `mtime` and `total` are numbers, which
+/// Read one boolean field. `applied` is a bare true/false, which
+/// `json_field` cannot see.
+fn json_bool(block: &str, key: &str) -> Option<bool> {
+    let needle = format!("\"{key}\"");
+    let at = block.find(&needle)? + needle.len();
+    let rest = block[at..].trim_start().strip_prefix(':')?.trim_start();
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Read one integer field. `mtime` and `shelf` are numbers, which
 /// `json_field` cannot see.
 fn json_number(block: &str, key: &str) -> Option<i64> {
     let needle = format!("\"{key}\"");
@@ -505,13 +728,19 @@ mod tests {
         let json = r#"{"notes":[
           {"path":"raw/remarkable/2026/08/30/capture.md","title":"A handwritten question","mtime":1756500000000},
           {"path":"projects/anthink.md","title":"Anthink","mtime":1756400000000}
-        ],"total":137}"#;
-        let (notes, total) = parse_notes(json);
+        ],"shelf":137,"dirs":[
+          {"path":"raw/Apple Notes","name":"Apple Notes","count":236},
+          {"path":"raw/AI","name":"AI","count":14}
+        ]}"#;
+        let (dirs, notes, shelf) = parse_listing(json);
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].path, "raw/remarkable/2026/08/30/capture.md");
         assert_eq!(notes[0].title, "A handwritten question");
         assert_eq!(notes[0].mtime_ms, 1756500000000);
-        assert_eq!(total, 137);
+        assert_eq!(shelf, Some(137));
+        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs[0], DirMeta { path: "raw/Apple Notes".into(), name: "Apple Notes".into(), count: 236 });
+        assert_eq!(dirs[1].count, 14);
     }
 
     #[test]
@@ -520,18 +749,68 @@ mod tests {
           {"title":"orphan","mtime":1},
           {"path":"deep/dir/untitled.md","title":"","mtime":2}
         ],"total":2}"#;
-        let (notes, _) = parse_notes(json);
+        let (dirs, notes, _) = parse_listing(json);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "untitled.md");
+        // An old vault sends no dirs at all: the shelf is simply flat.
+        assert!(dirs.is_empty());
     }
 
     #[test]
     fn tolerates_junk() {
-        assert_eq!(parse_notes(""), (Vec::new(), 0));
-        assert_eq!(parse_notes("{}"), (Vec::new(), 0));
-        let (notes, total) = parse_notes(r#"{"notes":[],"total":0}"#);
+        assert_eq!(parse_listing(""), (Vec::new(), Vec::new(), None));
+        assert_eq!(parse_listing("{}"), (Vec::new(), Vec::new(), None));
+        let (dirs, notes, shelf) = parse_listing(r#"{"notes":[],"shelf":0,"dirs":[]}"#);
+        assert!(dirs.is_empty());
         assert!(notes.is_empty());
-        assert_eq!(total, 0);
+        assert_eq!(shelf, Some(0));
+    }
+
+    #[test]
+    fn only_the_shelf_survives_a_recursive_listing() {
+        // At the root, only rootless paths stay.
+        assert!(on_shelf("", "inbox.md"));
+        assert!(!on_shelf("", "raw/deep/capture.md"));
+        // Inside a folder, only its own files stay — not its subfolders'.
+        assert!(on_shelf("raw", "raw/Hood and DLA.md"));
+        assert!(!on_shelf("raw", "raw/AI/agents.md"));
+        // A path outside the prefix (or the prefix itself) never lists.
+        assert!(!on_shelf("raw", "projects/anthink.md"));
+        assert!(!on_shelf("raw", "rawhide.md"));
+        assert!(!on_shelf("raw", "raw"));
+    }
+
+    #[test]
+    fn a_prefix_scopes_the_listing_url_and_a_parent_walks_up() {
+        assert_eq!(notes_url("https://v.example.com", ""), "https://v.example.com/api/device/v1/notes?limit=50");
+        assert_eq!(
+            notes_url("https://v.example.com", "raw/Apple Notes"),
+            "https://v.example.com/api/device/v1/notes?limit=50&prefix=raw/Apple%20Notes"
+        );
+        assert_eq!(parent("raw/Apple Notes"), "raw");
+        assert_eq!(parent("raw"), "");
+        assert_eq!(parent(""), "");
+    }
+
+    #[test]
+    fn annotate_urls_and_replies_hold_their_shape() {
+        assert_eq!(
+            annotate_url("https://v.example.com/"),
+            "https://v.example.com/api/device/v1/annotate"
+        );
+        assert_eq!(
+            decision_url("https://v.example.com", "abc 123"),
+            "https://v.example.com/api/device/v1/annotate/abc%20123/decision"
+        );
+        assert_eq!(json_bool(r#"{"applied":true,"path":"a.md"}"#, "applied"), Some(true));
+        assert_eq!(json_bool(r#"{"applied":false}"#, "applied"), Some(false));
+        assert_eq!(json_bool(r#"{"path":"a.md"}"#, "applied"), None);
+        // A vault error body speaks its message, not its JSON.
+        assert_eq!(
+            error_detail(409, r#"{"error":"the note changed since the markup was read"}"#),
+            "vault 409: the note changed since the markup was read"
+        );
+        assert_eq!(error_detail(500, "gateway fell over"), "vault 500: gateway fell over");
     }
 
     #[test]

@@ -53,8 +53,13 @@ pub enum Action {
     /// The vault tab itself.
     Vault,
     /// Open one vault note as a full page. The index is a row on the vault
-    /// tab, in `vault::held` order.
+    /// tab, in `vault::held` note order (folders come before notes on the
+    /// shelf but index separately).
     OpenNote(usize),
+    /// Walk into one of the listed folders, by `vault::held` dir order.
+    OpenDir(usize),
+    /// One step back up the vault — the ← that replaces × inside a folder.
+    VaultUp,
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -89,11 +94,15 @@ impl Drawer {
         if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
         if y < HEADER_H {
             if x < 100 {
-                return if self.kind == DrawerKind::History && self.thread.is_some() {
-                    Action::Threads
-                } else {
-                    Action::Close
-                };
+                if self.kind == DrawerKind::History && self.thread.is_some() {
+                    return Action::Threads;
+                }
+                // Inside a folder the corner is the way up, not the way out —
+                // History's thread view taught this shape.
+                if self.kind == DrawerKind::Vault && !crate::vault::held().prefix.is_empty() {
+                    return Action::VaultUp;
+                }
+                return Action::Close;
             }
             if x < TAB_CORPUS_X { return Action::History; }
             if x < TAB_SESSIONS_X { return Action::Corpus; }
@@ -110,13 +119,21 @@ impl Drawer {
                 None => Action::None,
             };
         }
-        // The VAULT tab is the same kind of selector: tick a row, read that
-        // note. Row geometry is shared with the board, so the same arithmetic
-        // answers both.
+        // The VAULT tab is the same kind of selector: tick a folder to walk
+        // in, tick a note to read it. Folders sit above notes; row geometry
+        // is shared with the board, so the same arithmetic answers both.
         if self.kind == DrawerKind::Vault {
-            let total = crate::vault::held().notes.len();
+            let held = crate::vault::held();
+            let rows = held.dirs.len() + held.notes.len();
             return match session_index_at(y) {
-                Some(i) => Action::OpenNote(i + session_scroll(total, self.scroll)),
+                Some(i) => {
+                    let i = i + session_scroll(rows, self.scroll);
+                    if i < held.dirs.len() {
+                        Action::OpenDir(i)
+                    } else {
+                        Action::OpenNote(i - held.dirs.len())
+                    }
+                }
                 None => Action::None,
             };
         }
@@ -145,7 +162,9 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
     snapshot: &ContextSnapshot, drawer: &Drawer) {
     surf.fill_rect(0, 0, PANEL_W, SCREEN_H, WHITE);
     surf.fill_rect(PANEL_W - 2, 0, 2, SCREEN_H, BLACK);
-    let close = if drawer.kind == DrawerKind::History && drawer.thread.is_some() { "←" } else { "×" };
+    let close = if (drawer.kind == DrawerKind::History && drawer.thread.is_some())
+        || (drawer.kind == DrawerKind::Vault && !crate::vault::held().prefix.is_empty())
+    { "←" } else { "×" };
     text(surf, font, close, LABEL_PX, PAD, 36, BLACK);
     text(surf, font, "HISTORY", LABEL_PX, TAB_HISTORY_X, 36,
         if drawer.kind == DrawerKind::History { BLUE } else { BLACK });
@@ -240,33 +259,52 @@ fn draw_vault(surf: &mut Surface, font: &FontRef, vault: &crate::vault::Vault, s
         text(surf, font, "SET RIDDLE_VELLUM_BASE IN ORACLE.ENV", LABEL_PX, PAD, 220, BLUE);
         return;
     }
-    if vault.notes.is_empty() {
+    if vault.dirs.is_empty() && vault.notes.is_empty() {
         let msg = if vault.stale { "NO NOTES · NOT REFRESHED" } else { "NO NOTES YET" };
         text(surf, font, msg, LABEL_PX, PAD, 170, BLACK);
         return;
     }
     let now = crate::vault::now_ms();
-    let skipped = session_scroll(vault.notes.len(), scroll);
+    let rows = vault.dirs.len() + vault.notes.len();
+    let skipped = session_scroll(rows, scroll);
     let mut y = HEADER_H as usize + 16;
     let mut shown = 0usize;
-    for n in &vault.notes[skipped..] {
+    for i in skipped..rows {
         if y + CONV_ROW_H > SCREEN_H { break; }
-        let meta = crate::vault::age(n.mtime_ms, now).to_uppercase();
-        text(surf, font, &one_line(&n.title, 34), LABEL_PX, PAD, y, BLACK);
-        text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
-        // The path identifies the note the way cwd identifies a session —
-        // it keeps its case, and its tail is the part that matters.
-        text(surf, font, &crate::page::tail(&n.path, 42), LABEL_PX, PAD, y + 84, BLACK);
+        if let Some(d) = vault.dirs.get(i) {
+            // A folder row: the name wears its slash, the count says what a
+            // step in is worth.
+            text(surf, font, &format!("{}/", one_line(&d.name, 33)), LABEL_PX, PAD, y, BLACK);
+            text(surf, font, &crate::page::counted(d.count, "NOTE", "NOTES"), LABEL_PX, PAD, y + 42, BLUE);
+        } else {
+            let n = &vault.notes[i - vault.dirs.len()];
+            let meta = crate::vault::age(n.mtime_ms, now).to_uppercase();
+            text(surf, font, &one_line(&n.title, 34), LABEL_PX, PAD, y, BLACK);
+            text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
+            // The path identifies the note the way cwd identifies a session —
+            // it keeps its case, and its tail is the part that matters.
+            text(surf, font, &crate::page::tail(&n.path, 42), LABEL_PX, PAD, y + 84, BLACK);
+        }
         rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
         y += CONV_ROW_H;
         shown += 1;
     }
-    // Two kinds of left-out rows: ones this panel could not fit, and ones the
-    // vault's own bound left off the listing entirely. Both are counted —
-    // silent truncation reads as "that was everything".
-    let beyond = vault.total.saturating_sub(vault.notes.len());
-    let hidden = vault.notes.len() - skipped - shown + beyond;
-    let label = sessions_footer(hidden + shown, shown, vault.stale);
+    // The footer carries where the reader stands, then what was left out:
+    // rows this panel could not fit plus shelf notes the vault's own bound
+    // left off the listing — silent truncation reads as "that was
+    // everything". Deeper notes are not "more"; they sit behind their
+    // folder rows, each wearing its own count.
+    let beyond = vault.shelf.saturating_sub(vault.notes.len());
+    let hidden = rows - skipped - shown + beyond;
+    let mut parts: Vec<String> = Vec::new();
+    if !vault.prefix.is_empty() {
+        parts.push(crate::page::tail(&vault.prefix, 26));
+    }
+    let more = sessions_footer(hidden + shown, shown, vault.stale);
+    if !more.is_empty() {
+        parts.push(more);
+    }
+    let label = parts.join(" · ");
     if !label.is_empty() {
         text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
     }
@@ -288,10 +326,58 @@ pub fn note_page_action(x: i32, y: i32) -> Action {
     Action::None
 }
 
+/// The note box's words for each stage of the annotate flow. `status`
+/// replaces the invitation after a send, exactly as on the turn page — the
+/// pad never assumes a mark landed.
+pub fn note_box_lines(annot: &crate::vault::Annot, status: Option<&str>)
+    -> Option<(String, Option<String>)> {
+    if let Some(s) = status {
+        return Some((one_line(s, 56), None));
+    }
+    match annot {
+        crate::vault::Annot::Clean => None,
+        crate::vault::Annot::Marked => {
+            Some(("MARKS ON THE PAGE · TICK TO SEND TO VELLUM · STRIKE TO CLEAR".into(), None))
+        }
+        crate::vault::Annot::Proposed { summary, .. } => Some((
+            one_line(summary, 56),
+            Some("PROPOSED · TICK TO APPLY · STRIKE TO DISCARD".into()),
+        )),
+    }
+}
+
+/// The note page's decision box: the turn page's anchored target, wearing
+/// the vault's words. Painted over whatever stands at the page foot (its
+/// fill is opaque), so the first mark can raise it WITHOUT a redraw — a
+/// redraw would absorb the very ink being offered.
+pub fn draw_note_box(surf: &mut Surface, font: &FontRef, line1: &str, line2: Option<&str>)
+    -> DecisionBox {
+    use crate::page;
+    let x = page::PAD;
+    let w = SCREEN_W - page::PAD * 2;
+    let h = DECISION_H - 40;
+    let y = page::limit(0) - h;
+    surf.fill_rect(x, y.saturating_sub(20), w, h + 20, WHITE);
+    surf.fill_rect(x, y, w, 3, BLACK);
+    surf.fill_rect(x, y + h - 3, w, 3, BLACK);
+    surf.fill_rect(x, y, 3, h, BLACK);
+    surf.fill_rect(x + w - 3, y, 3, h, BLACK);
+    match line2 {
+        Some(l2) => {
+            full_text(surf, font, line1, PAGE_LABEL_PX, x + 32, y + 22, BLACK);
+            full_text(surf, font, l2, PAGE_LABEL_PX, x + 32, y + 70, BLACK);
+        }
+        None => full_text(surf, font, line1, PAGE_LABEL_PX, x + 32, y + h / 2 - 20, BLACK),
+    }
+    DecisionBox { x, y, w, h, decision: Decision::Approve }
+}
+
 /// One vault note, full page. Reads front to back — page 0 is the beginning
-/// — and the swipe pages forward, the same fingers as the turn page.
+/// — and the swipe pages forward, the same fingers as the turn page. When
+/// the annotate flow is underway its box paints over the page foot; the
+/// returned hit map is what the pen's marks are read against.
 pub fn draw_note_page(surf: &mut Surface, font: &FontRef, note: &crate::vault::Note,
-    want_page: usize) {
+    want_page: usize, annot: &crate::vault::Annot, status: Option<&str>) -> Option<DecisionBox> {
     use crate::page;
     let layout = crate::vault::layout_note_page(font, note, want_page);
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
@@ -318,6 +404,7 @@ pub fn draw_note_page(surf: &mut Surface, font: &FontRef, note: &crate::vault::N
     if !footer.is_empty() {
         full_text(surf, font, &footer.to_uppercase(), PAGE_LABEL_PX, page::PAD, SCREEN_H - 66, BLUE);
     }
+    note_box_lines(annot, status).map(|(l1, l2)| draw_note_box(surf, font, &l1, l2.as_deref()))
 }
 
 /// The scroll offset the board actually uses: never past the last session,
@@ -1000,6 +1087,48 @@ mod tests {
     }
 
     #[test]
+    fn vault_folders_sit_above_notes_and_the_corner_walks_up() {
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        crate::vault::replace(crate::vault::Vault {
+            prefix: "raw".into(),
+            dirs: vec![
+                crate::vault::DirMeta { path: "raw/AI".into(), name: "AI".into(), count: 14 },
+                crate::vault::DirMeta { path: "raw/Apple Notes".into(), name: "Apple Notes".into(), count: 236 },
+            ],
+            notes: vec![crate::vault::NoteMeta {
+                path: "raw/Hood and DLA.md".into(), title: "Hood and DLA".into(), mtime_ms: 0,
+            }],
+            shelf: 1,
+            stale: false,
+        });
+        let mut d = Drawer::open(&surf, DrawerKind::Vault, None, 0, None);
+        let store = None;
+        // Rows run from HEADER_H + 16, CONV_ROW_H tall: folders first, then
+        // notes indexed from zero again — two shelves, one column.
+        let top = HEADER_H + 16;
+        assert_eq!(d.tap(200, top + 10, &store), Action::OpenDir(0));
+        assert_eq!(d.tap(200, top + CONV_ROW_H as i32 + 10, &store), Action::OpenDir(1));
+        assert_eq!(d.tap(200, top + 2 * CONV_ROW_H as i32 + 10, &store), Action::OpenNote(0));
+        // Inside a folder the corner is ← (one step up), not × (close).
+        assert_eq!(d.tap(50, 40, &store), Action::VaultUp);
+        crate::vault::replace(crate::vault::Vault::default());
+        assert_eq!(d.tap(50, 40, &store), Action::Close);
+        // The shelf draws without panicking, folders and all.
+        crate::vault::replace(crate::vault::Vault {
+            prefix: "raw".into(),
+            dirs: vec![crate::vault::DirMeta { path: "raw/AI".into(), name: "AI".into(), count: 14 }],
+            notes: Vec::new(),
+            shelf: 0,
+            stale: true,
+        });
+        draw_vault(&mut surf, &font, &crate::vault::held(), 0);
+        crate::vault::replace(crate::vault::Vault::default());
+    }
+
+    #[test]
     fn the_note_page_draws_full_width_and_the_vault_rows_map_to_taps() {
         let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
         let ptr = bytes.as_mut_ptr();
@@ -1015,9 +1144,11 @@ mod tests {
         let pages = crate::vault::note_page_count(&font, &note);
         assert!(pages > 1, "2000 words cannot fit one page");
         for p in 0..pages {
-            draw_note_page(&mut surf, &font, &note, p);
+            let boxr = draw_note_page(&mut surf, &font, &note, p, &crate::vault::Annot::Clean, None);
+            // A clean page carries no box: the pen is only reading along.
+            assert_eq!(boxr, None);
         }
-        draw_note_page(&mut surf, &font, &note, 0);
+        draw_note_page(&mut surf, &font, &note, 0, &crate::vault::Annot::Clean, None);
         let dark_right = (PANEL_W..SCREEN_W).step_by(3).any(|x| {
             (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
         });
@@ -1027,6 +1158,36 @@ mod tests {
         assert_eq!(note_page_action(50, 40), Action::Vault);
         assert_eq!(note_page_action(SCREEN_W as i32 - 50, 40), Action::Close);
         assert_eq!(note_page_action(700, 900), Action::None);
+    }
+
+    #[test]
+    fn the_note_box_walks_the_annotate_flow_and_stays_inside_the_page() {
+        use crate::vault::Annot;
+        // Clean is boxless; marks invite the send; a proposal wears its
+        // summary above the apply/discard line; a status replaces it all.
+        assert_eq!(note_box_lines(&Annot::Clean, None), None);
+        let (l1, l2) = note_box_lines(&Annot::Marked, None).unwrap();
+        assert!(l1.contains("TICK TO SEND"), "{l1}");
+        assert_eq!(l2, None);
+        let annot = Annot::Proposed { id: "abc123".into(), summary: "Strikes the second item.".into() };
+        let (l1, l2) = note_box_lines(&annot, None).unwrap();
+        assert_eq!(l1, "Strikes the second item.");
+        assert!(l2.unwrap().contains("TICK TO APPLY"));
+        let (l1, l2) = note_box_lines(&annot, Some("APPLIED")).unwrap();
+        assert_eq!((l1.as_str(), l2), ("APPLIED", None));
+
+        // Drawing returns a hit map that sits fully on the page, above the
+        // footer — the same anchored target the turn page uses.
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let b = draw_note_box(&mut surf, &font, "MARKS ON THE PAGE", None);
+        assert!(b.x + b.w <= SCREEN_W && b.y + b.h < SCREEN_H - 66);
+        // The same box comes back from the full draw when marks are on.
+        let note = crate::vault::Note { path: "a.md".into(), title: "A".into(), text: "words".into() };
+        let drawn = draw_note_page(&mut surf, &font, &note, 0, &Annot::Marked, None).unwrap();
+        assert_eq!((drawn.x, drawn.y, drawn.w, drawn.h), (b.x, b.y, b.w, b.h));
     }
 
     #[test]
