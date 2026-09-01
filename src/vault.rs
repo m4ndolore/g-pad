@@ -274,6 +274,100 @@ pub fn fetch_note(path: &str) -> Result<Note, String> {
     }
 }
 
+// ---- annotating a note --------------------------------------------------
+
+/// What the writer's ink on this printed note is doing right now. The flow
+/// is the decision box's, pointed at the vault: marks raise the box, a tick
+/// sends them, Vellum drafts a revision and holds it, and only a second
+/// tick applies it — the same manners as approving an agent's action.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Annot {
+    /// No marks: the pen has only been reading along.
+    #[default]
+    Clean,
+    /// Ink on the page, not yet sent.
+    Marked,
+    /// Vellum drafted a revision from the marks and holds it, waiting.
+    Proposed { id: String, summary: String },
+}
+
+pub fn annotate_url(base: &str) -> String {
+    format!("{}/api/device/v1/annotate", base.trim_end_matches('/'))
+}
+
+pub fn decision_url(base: &str, id: &str) -> String {
+    format!("{}/api/device/v1/annotate/{}/decision", base.trim_end_matches('/'), urlencode(id))
+}
+
+/// A vault error body is `{"error": "..."}`; say the message, not the JSON.
+fn error_detail(code: u16, body: &str) -> String {
+    let msg = json_field(body, "error").unwrap_or_else(|| body.trim().to_string());
+    format!("vault {code}: {msg}")
+}
+
+/// Send the marked-up page and get back the proposal Vellum now holds:
+/// `(id, summary)`. Synchronous like `fetch_note`, but the pause is longer —
+/// a model is reading ink — so the box says so before this is called.
+pub fn propose(path: &str, png_path: &str) -> Result<(String, String), String> {
+    let base = base().ok_or_else(|| "no vault configured".to_string())?;
+    let png = std::fs::read(png_path).map_err(|e| format!("no page image: {e}"))?;
+    let body = format!(
+        "{{\"path\":\"{}\",\"mimeType\":\"image/png\",\"imageBase64\":\"{}\",\"requestId\":\"annotate-{}\"}}",
+        crate::bridge::escape_json(path),
+        crate::oracle::base64(&png),
+        now_ms(),
+    );
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(180))
+        .build();
+    match agent
+        .post(&annotate_url(&base))
+        .set("Authorization", &format!("Bearer {}", token()))
+        .set("Content-Type", "application/json")
+        .send_string(&body)
+    {
+        Ok(r) => {
+            let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
+            let id = json_field(&text, "id").unwrap_or_default();
+            if id.is_empty() {
+                return Err("vault sent no proposal".to_string());
+            }
+            Ok((id, json_field(&text, "summary").unwrap_or_default()))
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let detail = r.into_string().unwrap_or_default();
+            Err(error_detail(code, &detail))
+        }
+        Err(e) => Err(format!("vault unreachable: {e}")),
+    }
+}
+
+/// Settle a proposal: `apply` writes the revision into the vault (Vellum
+/// banks what stood and reindexes, so every reader of the brain sees the
+/// change), `discard` walks away. Ok(true) means the note changed.
+pub fn decide(id: &str, decision: &str) -> Result<bool, String> {
+    let base = base().ok_or_else(|| "no vault configured".to_string())?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+    match agent
+        .post(&decision_url(&base, id))
+        .set("Authorization", &format!("Bearer {}", token()))
+        .set("Content-Type", "application/json")
+        .send_string(&format!("{{\"decision\":\"{}\"}}", crate::bridge::escape_json(decision)))
+    {
+        Ok(r) => {
+            let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
+            Ok(json_bool(&text, "applied").unwrap_or(false))
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            let detail = r.into_string().unwrap_or_default();
+            Err(error_detail(code, &detail))
+        }
+        Err(e) => Err(format!("vault unreachable: {e}")),
+    }
+}
+
 // ---- parsing -----------------------------------------------------------
 
 /// Parse the listing payload. Tolerant like every parser on the pad: a vault
@@ -352,7 +446,22 @@ fn json_text(block: &str, key: &str) -> Option<String> {
     Some(out)
 }
 
-/// Read one integer field. `mtime` and `total` are numbers, which
+/// Read one boolean field. `applied` is a bare true/false, which
+/// `json_field` cannot see.
+fn json_bool(block: &str, key: &str) -> Option<bool> {
+    let needle = format!("\"{key}\"");
+    let at = block.find(&needle)? + needle.len();
+    let rest = block[at..].trim_start().strip_prefix(':')?.trim_start();
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Read one integer field. `mtime` and `shelf` are numbers, which
 /// `json_field` cannot see.
 fn json_number(block: &str, key: &str) -> Option<i64> {
     let needle = format!("\"{key}\"");
@@ -681,6 +790,27 @@ mod tests {
         assert_eq!(parent("raw/Apple Notes"), "raw");
         assert_eq!(parent("raw"), "");
         assert_eq!(parent(""), "");
+    }
+
+    #[test]
+    fn annotate_urls_and_replies_hold_their_shape() {
+        assert_eq!(
+            annotate_url("https://v.example.com/"),
+            "https://v.example.com/api/device/v1/annotate"
+        );
+        assert_eq!(
+            decision_url("https://v.example.com", "abc 123"),
+            "https://v.example.com/api/device/v1/annotate/abc%20123/decision"
+        );
+        assert_eq!(json_bool(r#"{"applied":true,"path":"a.md"}"#, "applied"), Some(true));
+        assert_eq!(json_bool(r#"{"applied":false}"#, "applied"), Some(false));
+        assert_eq!(json_bool(r#"{"path":"a.md"}"#, "applied"), None);
+        // A vault error body speaks its message, not its JSON.
+        assert_eq!(
+            error_detail(409, r#"{"error":"the note changed since the markup was read"}"#),
+            "vault 409: the note changed since the markup was read"
+        );
+        assert_eq!(error_detail(500, "gateway fell over"), "vault 500: gateway fell over");
     }
 
     #[test]

@@ -326,10 +326,58 @@ pub fn note_page_action(x: i32, y: i32) -> Action {
     Action::None
 }
 
+/// The note box's words for each stage of the annotate flow. `status`
+/// replaces the invitation after a send, exactly as on the turn page — the
+/// pad never assumes a mark landed.
+pub fn note_box_lines(annot: &crate::vault::Annot, status: Option<&str>)
+    -> Option<(String, Option<String>)> {
+    if let Some(s) = status {
+        return Some((one_line(s, 56), None));
+    }
+    match annot {
+        crate::vault::Annot::Clean => None,
+        crate::vault::Annot::Marked => {
+            Some(("MARKS ON THE PAGE · TICK TO SEND TO VELLUM · STRIKE TO CLEAR".into(), None))
+        }
+        crate::vault::Annot::Proposed { summary, .. } => Some((
+            one_line(summary, 56),
+            Some("PROPOSED · TICK TO APPLY · STRIKE TO DISCARD".into()),
+        )),
+    }
+}
+
+/// The note page's decision box: the turn page's anchored target, wearing
+/// the vault's words. Painted over whatever stands at the page foot (its
+/// fill is opaque), so the first mark can raise it WITHOUT a redraw — a
+/// redraw would absorb the very ink being offered.
+pub fn draw_note_box(surf: &mut Surface, font: &FontRef, line1: &str, line2: Option<&str>)
+    -> DecisionBox {
+    use crate::page;
+    let x = page::PAD;
+    let w = SCREEN_W - page::PAD * 2;
+    let h = DECISION_H - 40;
+    let y = page::limit(0) - h;
+    surf.fill_rect(x, y.saturating_sub(20), w, h + 20, WHITE);
+    surf.fill_rect(x, y, w, 3, BLACK);
+    surf.fill_rect(x, y + h - 3, w, 3, BLACK);
+    surf.fill_rect(x, y, 3, h, BLACK);
+    surf.fill_rect(x + w - 3, y, 3, h, BLACK);
+    match line2 {
+        Some(l2) => {
+            full_text(surf, font, line1, PAGE_LABEL_PX, x + 32, y + 22, BLACK);
+            full_text(surf, font, l2, PAGE_LABEL_PX, x + 32, y + 70, BLACK);
+        }
+        None => full_text(surf, font, line1, PAGE_LABEL_PX, x + 32, y + h / 2 - 20, BLACK),
+    }
+    DecisionBox { x, y, w, h, decision: Decision::Approve }
+}
+
 /// One vault note, full page. Reads front to back — page 0 is the beginning
-/// — and the swipe pages forward, the same fingers as the turn page.
+/// — and the swipe pages forward, the same fingers as the turn page. When
+/// the annotate flow is underway its box paints over the page foot; the
+/// returned hit map is what the pen's marks are read against.
 pub fn draw_note_page(surf: &mut Surface, font: &FontRef, note: &crate::vault::Note,
-    want_page: usize) {
+    want_page: usize, annot: &crate::vault::Annot, status: Option<&str>) -> Option<DecisionBox> {
     use crate::page;
     let layout = crate::vault::layout_note_page(font, note, want_page);
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
@@ -356,6 +404,7 @@ pub fn draw_note_page(surf: &mut Surface, font: &FontRef, note: &crate::vault::N
     if !footer.is_empty() {
         full_text(surf, font, &footer.to_uppercase(), PAGE_LABEL_PX, page::PAD, SCREEN_H - 66, BLUE);
     }
+    note_box_lines(annot, status).map(|(l1, l2)| draw_note_box(surf, font, &l1, l2.as_deref()))
 }
 
 /// The scroll offset the board actually uses: never past the last session,
@@ -1095,9 +1144,11 @@ mod tests {
         let pages = crate::vault::note_page_count(&font, &note);
         assert!(pages > 1, "2000 words cannot fit one page");
         for p in 0..pages {
-            draw_note_page(&mut surf, &font, &note, p);
+            let boxr = draw_note_page(&mut surf, &font, &note, p, &crate::vault::Annot::Clean, None);
+            // A clean page carries no box: the pen is only reading along.
+            assert_eq!(boxr, None);
         }
-        draw_note_page(&mut surf, &font, &note, 0);
+        draw_note_page(&mut surf, &font, &note, 0, &crate::vault::Annot::Clean, None);
         let dark_right = (PANEL_W..SCREEN_W).step_by(3).any(|x| {
             (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
         });
@@ -1107,6 +1158,36 @@ mod tests {
         assert_eq!(note_page_action(50, 40), Action::Vault);
         assert_eq!(note_page_action(SCREEN_W as i32 - 50, 40), Action::Close);
         assert_eq!(note_page_action(700, 900), Action::None);
+    }
+
+    #[test]
+    fn the_note_box_walks_the_annotate_flow_and_stays_inside_the_page() {
+        use crate::vault::Annot;
+        // Clean is boxless; marks invite the send; a proposal wears its
+        // summary above the apply/discard line; a status replaces it all.
+        assert_eq!(note_box_lines(&Annot::Clean, None), None);
+        let (l1, l2) = note_box_lines(&Annot::Marked, None).unwrap();
+        assert!(l1.contains("TICK TO SEND"), "{l1}");
+        assert_eq!(l2, None);
+        let annot = Annot::Proposed { id: "abc123".into(), summary: "Strikes the second item.".into() };
+        let (l1, l2) = note_box_lines(&annot, None).unwrap();
+        assert_eq!(l1, "Strikes the second item.");
+        assert!(l2.unwrap().contains("TICK TO APPLY"));
+        let (l1, l2) = note_box_lines(&annot, Some("APPLIED")).unwrap();
+        assert_eq!((l1.as_str(), l2), ("APPLIED", None));
+
+        // Drawing returns a hit map that sits fully on the page, above the
+        // footer — the same anchored target the turn page uses.
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let b = draw_note_box(&mut surf, &font, "MARKS ON THE PAGE", None);
+        assert!(b.x + b.w <= SCREEN_W && b.y + b.h < SCREEN_H - 66);
+        // The same box comes back from the full draw when marks are on.
+        let note = crate::vault::Note { path: "a.md".into(), title: "A".into(), text: "words".into() };
+        let drawn = draw_note_page(&mut surf, &font, &note, 0, &Annot::Marked, None).unwrap();
+        assert_eq!((drawn.x, drawn.y, drawn.w, drawn.h), (b.x, b.y, b.w, b.h));
     }
 
     #[test]
