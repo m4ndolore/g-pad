@@ -21,14 +21,15 @@ const THREAD_Y0: i32 = 148;
 const CONV_ROW_H: usize = 168;
 const THREAD_FOOTER: i32 = 150;
 const SCROLL_STEP: i32 = 80;
-/// Three tabs across the drawer header. The labels are drawn at these same
+/// Four tabs across the drawer header. The labels are drawn at these same
 /// x positions, so a tap always lands on the word it looks like it hit.
-const TAB_HISTORY_X: usize = 105;
-const TAB_CORPUS_X: i32 = (PANEL_W / 3) as i32 + 40;
-const TAB_SESSIONS_X: i32 = (PANEL_W * 2 / 3) as i32 + 30;
+const TAB_HISTORY_X: usize = 100;
+const TAB_CORPUS_X: i32 = 252;
+const TAB_SESSIONS_X: i32 = 400;
+const TAB_VAULT_X: i32 = 548;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DrawerKind { History, Corpus, Sessions }
+pub enum DrawerKind { History, Corpus, Sessions, Vault }
 
 pub struct Drawer {
     pub kind: DrawerKind,
@@ -49,6 +50,11 @@ pub enum Action {
     /// Open one agent session as a full page. The index is a row on the
     /// board, in `bridge::readable` order.
     OpenSession(usize),
+    /// The vault tab itself.
+    Vault,
+    /// Open one vault note as a full page. The index is a row on the vault
+    /// tab, in `vault::held` order.
+    OpenNote(usize),
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -91,7 +97,8 @@ impl Drawer {
             }
             if x < TAB_CORPUS_X { return Action::History; }
             if x < TAB_SESSIONS_X { return Action::Corpus; }
-            return Action::Sessions;
+            if x < TAB_VAULT_X { return Action::Sessions; }
+            return Action::Vault;
         }
         // The AGENTS tab is a selector: tick a row, open that session. This
         // is navigation, which writes nothing — the read-only rule was only
@@ -100,6 +107,16 @@ impl Drawer {
             let total = crate::bridge::readable(&crate::bridge::held()).len();
             return match session_index_at(y) {
                 Some(i) => Action::OpenSession(i + session_scroll(total, self.scroll)),
+                None => Action::None,
+            };
+        }
+        // The VAULT tab is the same kind of selector: tick a row, read that
+        // note. Row geometry is shared with the board, so the same arithmetic
+        // answers both.
+        if self.kind == DrawerKind::Vault {
+            let total = crate::vault::held().notes.len();
+            return match session_index_at(y) {
+                Some(i) => Action::OpenNote(i + session_scroll(total, self.scroll)),
                 None => Action::None,
             };
         }
@@ -136,11 +153,14 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
         if drawer.kind == DrawerKind::Corpus { BLUE } else { BLACK });
     text(surf, font, "AGENTS", LABEL_PX, TAB_SESSIONS_X as usize, 36,
         if drawer.kind == DrawerKind::Sessions { BLUE } else { BLACK });
+    text(surf, font, "VAULT", LABEL_PX, TAB_VAULT_X as usize, 36,
+        if drawer.kind == DrawerKind::Vault { BLUE } else { BLACK });
     rule(surf, 0, 104, PANEL_W, 2);
     match drawer.kind {
         DrawerKind::History => draw_history(surf, font, store, drawer),
         DrawerKind::Corpus => draw_corpus(surf, font, store, snapshot, drawer.scroll),
         DrawerKind::Sessions => draw_sessions(surf, font, &crate::bridge::held(), drawer.scroll),
+        DrawerKind::Vault => draw_vault(surf, font, &crate::vault::held(), drawer.scroll),
     }
 }
 
@@ -193,7 +213,7 @@ fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bri
             let last = s.turns.iter().rev().find(|t| !t.text.trim().is_empty());
             last.map(|t| one_line(&t.text, 42)).unwrap_or_else(|| "(NOTHING YET)".into())
         } else {
-            crate::page::tail(&s.cwd, 42)
+            crate::page::place(&s.cwd, 42)
         };
         text(surf, font, &one_line(&s.title, 34), LABEL_PX, PAD, y, BLACK);
         text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
@@ -206,6 +226,97 @@ fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bri
     let label = sessions_footer(sessions.len() - skipped, shown, bridge.stale);
     if !label.is_empty() {
         text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
+    }
+}
+
+/// The vault's newest notes — Vellum's listing, held by `vault::held`.
+///
+/// A selector, not a reader, exactly like the board: title, age, and where
+/// in the vault the note lives. The full page belongs to
+/// `vault::layout_note_page`; ticking a row fetches the body and opens it.
+fn draw_vault(surf: &mut Surface, font: &FontRef, vault: &crate::vault::Vault, scroll: i32) {
+    if !crate::vault::configured() {
+        text(surf, font, "VELLUM NOT CONFIGURED", LABEL_PX, PAD, 170, BLACK);
+        text(surf, font, "SET RIDDLE_VELLUM_BASE IN ORACLE.ENV", LABEL_PX, PAD, 220, BLUE);
+        return;
+    }
+    if vault.notes.is_empty() {
+        let msg = if vault.stale { "NO NOTES · NOT REFRESHED" } else { "NO NOTES YET" };
+        text(surf, font, msg, LABEL_PX, PAD, 170, BLACK);
+        return;
+    }
+    let now = crate::vault::now_ms();
+    let skipped = session_scroll(vault.notes.len(), scroll);
+    let mut y = HEADER_H as usize + 16;
+    let mut shown = 0usize;
+    for n in &vault.notes[skipped..] {
+        if y + CONV_ROW_H > SCREEN_H { break; }
+        let meta = crate::vault::age(n.mtime_ms, now).to_uppercase();
+        text(surf, font, &one_line(&n.title, 34), LABEL_PX, PAD, y, BLACK);
+        text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);
+        // The path identifies the note the way cwd identifies a session —
+        // it keeps its case, and its tail is the part that matters.
+        text(surf, font, &crate::page::tail(&n.path, 42), LABEL_PX, PAD, y + 84, BLACK);
+        rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
+        y += CONV_ROW_H;
+        shown += 1;
+    }
+    // Two kinds of left-out rows: ones this panel could not fit, and ones the
+    // vault's own bound left off the listing entirely. Both are counted —
+    // silent truncation reads as "that was everything".
+    let beyond = vault.total.saturating_sub(vault.notes.len());
+    let hidden = vault.notes.len() - skipped - shown + beyond;
+    let label = sessions_footer(hidden + shown, shown, vault.stale);
+    if !label.is_empty() {
+        text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
+    }
+}
+
+/// The note page's header targets, mirroring `session_page_action`:
+/// `← VAULT` on the left returns to the listing, `×` on the right closes to
+/// the canvas, and the rest of the page is inert to touch.
+pub fn note_page_action(x: i32, y: i32) -> Action {
+    if !(0..=100).contains(&y) {
+        return Action::None;
+    }
+    if (0..420).contains(&x) {
+        return Action::Vault;
+    }
+    if (SCREEN_W as i32 - 240..SCREEN_W as i32).contains(&x) {
+        return Action::Close;
+    }
+    Action::None
+}
+
+/// One vault note, full page. Reads front to back — page 0 is the beginning
+/// — and the swipe pages forward, the same fingers as the turn page.
+pub fn draw_note_page(surf: &mut Surface, font: &FontRef, note: &crate::vault::Note,
+    want_page: usize) {
+    use crate::page;
+    let layout = crate::vault::layout_note_page(font, note, want_page);
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    full_text(surf, font, "← VAULT", PAGE_LABEL_PX, page::PAD, 40, BLACK);
+    full_text(surf, font, "×", PAGE_LABEL_PX, SCREEN_W - page::PAD - 28, 40, BLACK);
+    rule(surf, page::PAD, 100, SCREEN_W - page::PAD * 2, 2);
+    let mut y = page::HEADER_H;
+    for line in &layout.title_lines {
+        full_text(surf, font, line, page::TITLE_PX, page::PAD, y, BLACK);
+        y += page::TITLE_LINE_H;
+    }
+    // The path is an identifier: it keeps its case and its own line.
+    full_text(surf, font, &layout.meta, PAGE_LABEL_PX, page::PAD, y, BLUE);
+    y += page::LINE_H + crate::vault::PARA_GAP;
+    for line in &layout.lines {
+        let px = if line.heading { crate::vault::HEAD_PX } else { page::BODY_PX };
+        // Headings sit at the foot of their measured block so the extra
+        // height they carry reads as the gap above, where it belongs.
+        let baseline = y + line.height - if line.heading { page::TITLE_LINE_H } else { page::LINE_H };
+        full_text(surf, font, &line.text, px, page::PAD, baseline, BLACK);
+        y += line.height;
+    }
+    let footer = crate::vault::footer_label(&layout);
+    if !footer.is_empty() {
+        full_text(surf, font, &footer.to_uppercase(), PAGE_LABEL_PX, page::PAD, SCREEN_H - 66, BLUE);
     }
 }
 
@@ -886,6 +997,36 @@ mod tests {
         assert!(pages > 1, "30 turns cannot fit one page");
         let later = draw_session_page(&mut surf, &font, &session, 3, true, false, None, pages - 1);
         assert_eq!(later.map(|b| b.decision), Some(Decision::Approve));
+    }
+
+    #[test]
+    fn the_note_page_draws_full_width_and_the_vault_rows_map_to_taps() {
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let note = crate::vault::Note {
+            path: "raw/remarkable/2026/08/30/a-capture-with-a-long-path.md".into(),
+            title: "A note whose title is long enough to cross the panel's halfway line".into(),
+            text: format!("## Findings\n\n{}", "word ".repeat(2000)),
+        };
+        // Every page draws, and the body paints past the drawer boundary —
+        // the turn page's clipping regression must not return here.
+        let pages = crate::vault::note_page_count(&font, &note);
+        assert!(pages > 1, "2000 words cannot fit one page");
+        for p in 0..pages {
+            draw_note_page(&mut surf, &font, &note, p);
+        }
+        draw_note_page(&mut surf, &font, &note, 0);
+        let dark_right = (PANEL_W..SCREEN_W).step_by(3).any(|x| {
+            (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
+        });
+        assert!(dark_right, "no ink right of PANEL_W — the note page is clipped to the drawer");
+        // The header targets: left returns to the vault, right closes, the
+        // middle of the page is inert.
+        assert_eq!(note_page_action(50, 40), Action::Vault);
+        assert_eq!(note_page_action(SCREEN_W as i32 - 50, 40), Action::Close);
+        assert_eq!(note_page_action(700, 900), Action::None);
     }
 
     #[test]

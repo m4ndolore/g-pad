@@ -38,6 +38,7 @@ mod script;
 mod surface;
 mod touch;
 mod ui;
+mod vault;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -135,6 +136,16 @@ enum State {
         armed: bool,
         status: Option<String>,
         boxr: Option<ui::DecisionBox>,
+        page: usize,
+        saved: Vec<u8>,
+        return_to: Box<State>,
+    },
+    /// One vault note read full-page. The turn page's manners, a reader's
+    /// direction: page 0 is the beginning and the swipe pages forward.
+    /// ← VAULT returns to the listing, × (or the leftward swipe) closes to
+    /// the canvas, the pen annotates and its ink simply stays.
+    NotePage {
+        note: vault::Note,
         page: usize,
         saved: Vec<u8>,
         return_to: Box<State>,
@@ -540,6 +551,9 @@ fn run() -> std::io::Result<()> {
     // Agent sessions arrive by poll, when a hub is configured. Dormant
     // without RIDDLE_BRIDGE_URL.
     bridge::spawn_poll();
+    // The vault listing likewise, when Vellum is configured. Dormant
+    // without RIDDLE_VELLUM_BASE.
+    vault::spawn_poll();
 
     let (disp, mut surf) = display::Display::open()?;
     // Anything that isn't the qtfb window owns the panel, raw input devices,
@@ -800,14 +814,16 @@ fn run() -> std::io::Result<()> {
                 // page — reading one session must not wall off the rest of
                 // the board. Whatever was open rides in `return_to`.
                 touch::Gesture::OpenDrawer if matches!(state,
-                    State::Listening { .. } | State::Lingering { .. } | State::SessionPage { .. }) => {
+                    State::Listening { .. } | State::Lingering { .. } | State::SessionPage { .. }
+                    | State::NotePage { .. }) => {
                     if let Some(p) = palette.take() {
                         let (px, py, pw, ph) = p.close(&mut surf).rect();
                         disp.update(px, py, pw, ph, false);
                         palette_until = None;
                     }
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
-                    open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection);
+                    open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection,
+                        ui::DrawerKind::Sessions);
                 }
                 touch::Gesture::CloseDrawer => {
                     close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
@@ -821,6 +837,9 @@ fn run() -> std::io::Result<()> {
                 // every page in one drag).
                 touch::Gesture::Page(delta) if matches!(state, State::SessionPage { .. }) => {
                     session_page_flip(delta, &mut state, &mut surf, &disp, &ui_font);
+                }
+                touch::Gesture::Page(delta) if matches!(state, State::NotePage { .. }) => {
+                    note_page_flip(delta, &mut state, &mut surf, &disp, &ui_font);
                 }
                 // Flipping the writing canvas: forward through the notebook
                 // (a fresh sheet past an inked last page), back to earlier
@@ -952,7 +971,22 @@ fn run() -> std::io::Result<()> {
                         // canvas, and the rest of the page is inert.
                         match ui::session_page_action(x, y) {
                             ui::Action::Sessions => {
-                                open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection);
+                                open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection,
+                                    ui::DrawerKind::Sessions);
+                            }
+                            ui::Action::Close => {
+                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                            }
+                            _ => {}
+                        }
+                    } else if matches!(state, State::NotePage { .. }) {
+                        // The note page's targets mirror the turn page's:
+                        // ← VAULT back to the listing, × to the canvas, the
+                        // rest of the page inert to fingers.
+                        match ui::note_page_action(x, y) {
+                            ui::Action::Vault => {
+                                open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection,
+                                    ui::DrawerKind::Vault);
                             }
                             ui::Action::Close => {
                                 close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
@@ -1199,8 +1233,9 @@ fn run() -> std::io::Result<()> {
                     }
                     // The turn page: the pen marks. Ink lands like anywhere
                     // else; pen-up reads it against the hit map and the
-                    // redraw absorbs it.
-                    State::SessionPage { .. } => {
+                    // redraw absorbs it. On a note page there is no hit map —
+                    // the pen annotates, and the ink simply stays.
+                    State::SessionPage { .. } | State::NotePage { .. } => {
                         pen_down = true;
                         if s.tool == pen::Tool::Pen {
                             let r = 2 + s.pressure * 3 / pen::MAX_PRESSURE;
@@ -1266,7 +1301,8 @@ fn run() -> std::io::Result<()> {
                             control_pen_latched = true;
                         }
                     } else if matches!(state, State::Settings { .. } | State::Drawer { .. }
-                        | State::ExpandedConversation { .. } | State::SessionPage { .. }) {
+                        | State::ExpandedConversation { .. } | State::SessionPage { .. }
+                        | State::NotePage { .. }) {
                         if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
                             control_pen_latched = true;
@@ -1965,6 +2001,7 @@ fn run() -> std::io::Result<()> {
             },
             // The turn page rests until the reader closes it.
             s @ State::SessionPage { .. } => s,
+            s @ State::NotePage { .. } => s,
 
             State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
@@ -2035,14 +2072,15 @@ fn reply_below_writing(wrote: BBox) -> (i32, bool) {
     }
 }
 
-/// Open the drawer on the AGENTS board over whatever is on screen — the
-/// canvas or an open turn page. What was open rides in `return_to`, so
-/// closing the drawer puts it back. History and Corpus stay one tab-tap
-/// away inside the drawer.
+/// Open the drawer over whatever is on screen — the canvas, an open turn
+/// page, or a note page. What was open rides in `return_to`, so closing the
+/// drawer puts it back. The swipe lands on the AGENTS board; ← VAULT from a
+/// note page lands on the vault listing; the other tabs stay one tap away.
 fn open_drawer(state: &mut State, surf: &mut Surface, disp: &display::Display,
-    ui_font: &FontRef, store: &Option<memory::MemoryStore>, selection: Option<usize>) {
+    ui_font: &FontRef, store: &Option<memory::MemoryStore>, selection: Option<usize>,
+    kind: ui::DrawerKind) {
     let old = std::mem::replace(state, State::Listening { last_pen: None });
-    let panel = ui::Drawer::open(surf, ui::DrawerKind::Sessions, selection, 0, None);
+    let panel = ui::Drawer::open(surf, kind, selection, 0, None);
     let snapshot = oracle::context_snapshot(store, memory_turns());
     ui::draw_drawer(surf, ui_font, store, &snapshot, &panel);
     disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
@@ -2062,7 +2100,7 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes);
             disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
-        State::SessionPage { saved, return_to, .. } => {
+        State::SessionPage { saved, return_to, .. } | State::NotePage { saved, return_to, .. } => {
             surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
             disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
@@ -2150,6 +2188,26 @@ fn session_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
 /// Anchored reading: where the mark landed, plus one cheap global property.
 /// A wide flat stroke through the box is the strike; any other deliberate
 /// mark whose center is inside the box is the tick.
+/// Flip the note page. A note reads front to back, so the swipe that moves
+/// "down through the document" (up-swipe, positive delta) turns to the next
+/// page — the same fingers as the turn page, pointed the way a book goes.
+fn note_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
+    disp: &display::Display, ui_font: &FontRef) {
+    let State::NotePage { note, page, .. } = state else { return };
+    let pages = vault::note_page_count(ui_font, note);
+    let want = if delta > 0 {
+        (*page + 1).min(pages.saturating_sub(1))
+    } else {
+        page.saturating_sub(1)
+    };
+    if want == *page {
+        return;
+    }
+    *page = want;
+    ui::draw_note_page(surf, ui_font, note, *page);
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+}
+
 fn classify_mark(stroke: &[(i32, i32, i32)], sb: &BBox, b: &ui::DecisionBox) -> Option<PageMark> {
     let (bx0, by0) = (b.x as i32, b.y as i32);
     let (bx1, by1) = (bx0 + b.w as i32, by0 + b.h as i32);
@@ -2271,7 +2329,8 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
         // saved underneath, so × always closes to the canvas in one step
         // and hopping between sessions cannot pile up saved screens.
         let (saved, old) = match std::mem::replace(state, State::Listening { last_pen: None }) {
-            State::SessionPage { saved, return_to, .. } => (saved, *return_to),
+            State::SessionPage { saved, return_to, .. }
+            | State::NotePage { saved, return_to, .. } => (saved, *return_to),
             other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
         };
         let boxr = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale, false, None, 0);
@@ -2280,6 +2339,33 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             session, remaining, stale: held.stale, armed: false, status: None, boxr,
             page: 0, saved, return_to: Box::new(old),
         };
+        return;
+    }
+    if let ui::Action::OpenNote(i) = action {
+        let held = vault::held();
+        let Some(meta) = held.notes.get(i) else { return };
+        // Synchronous, like `post_nudge`: the writer just ticked this row and
+        // the pause IS the page loading. A failed fetch still turns the page
+        // — an error the reader can see beats a drawer that shrugged.
+        let note = match vault::fetch_note(&meta.path) {
+            Ok(n) => n,
+            Err(e) => vault::Note {
+                path: meta.path.clone(),
+                title: meta.title.clone(),
+                text: format!("The vault could not be reached.\n\n{e}"),
+            },
+        };
+        close_overlay(state, surf, disp, selection, scroll);
+        // A note picked from a page's own drawer REPLACES that page, exactly
+        // like hopping between sessions: saved screens must not pile up.
+        let (saved, old) = match std::mem::replace(state, State::Listening { last_pen: None }) {
+            State::SessionPage { saved, return_to, .. }
+            | State::NotePage { saved, return_to, .. } => (saved, *return_to),
+            other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
+        };
+        ui::draw_note_page(surf, ui_font, &note, 0);
+        disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+        *state = State::NotePage { note, page: 0, saved, return_to: Box::new(old) };
         return;
     }
     let mut redraw = false;
@@ -2299,6 +2385,7 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             ui::Action::OpenThread(i) => { p.thread = Some(i); p.scroll = 0; p.selection = None; redraw = true; }
             ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.scroll = 0; redraw = true; }
             ui::Action::Sessions => { p.kind = ui::DrawerKind::Sessions; p.scroll = 0; redraw = true; }
+            ui::Action::Vault => { p.kind = ui::DrawerKind::Vault; p.scroll = 0; redraw = true; }
             ui::Action::None => redraw = true,
             _ => {}
         }
