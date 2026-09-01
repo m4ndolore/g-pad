@@ -663,6 +663,10 @@ fn run() -> std::io::Result<()> {
     };
     let mut learn_advance_pending = false;
     let mut learn_auto_at: Option<Instant> = None;
+    // While the praise is on show, a deliberate pen tap deals the next page at
+    // once — no waiting out the dwell (and no dwell needed at all). Real
+    // writing disarms it: a dot in a word must never tear the page away.
+    let mut learn_tap_advance = false;
     // Learn asks must never go to a capture sink (the pad's default model may
     // be one, archiving pages instead of marking them): prefer the dedicated
     // learn model, else the ask model, else whatever the pad uses.
@@ -880,6 +884,12 @@ fn run() -> std::io::Result<()> {
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
                             &mut user_ink, &mut notebook, &mut send_mode, &mut sleep_requested,
                             &mut prefs, &mut idle_commit, drawer_selection, drawer_scroll, &mut learn_session);
+                        // A control action closes the praise moment: a NEW
+                        // PAGE from the strip must not be followed by a stale
+                        // auto-deal or tap-deal on the fresh page.
+                        learn_advance_pending = false;
+                        learn_auto_at = None;
+                        learn_tap_advance = false;
                     } else if matches!(state, State::Settings { .. }) {
                         let action = ui::settings_action(x, y);
                         match action {
@@ -899,6 +909,7 @@ fn run() -> std::io::Result<()> {
                                 user_ink.clear();
                                 learn_advance_pending = false;
                                 learn_auto_at = None;
+                                learn_tap_advance = false;
                                 surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
                                 learn_session = match prefs.page {
                                     preferences::Page::Learn => {
@@ -1106,6 +1117,16 @@ fn run() -> std::io::Result<()> {
                                 // stroke landing in a decision box is a command.
                                 if let Some(tick) = learn_mark(&mut user_ink, session, &ui_font, &mut surf, &disp) {
                                     learn_tick = Some(tick);
+                                } else if learn_tap_advance && user_ink.last_stroke_is_tap() {
+                                    // The praise is on show and the child
+                                    // tapped: skip the dwell, deal the next
+                                    // page now — the tap is a NEW in spirit.
+                                    let _ = user_ink.pop_stroke();
+                                    learn_tick = Some(LearnTick::New);
+                                } else {
+                                    // Real writing: the child went back to
+                                    // the page; let them keep it.
+                                    learn_tap_advance = false;
                                 }
                             } else if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
@@ -1254,6 +1275,16 @@ fn run() -> std::io::Result<()> {
                                 // stroke landing in a decision box is a command.
                                 if let Some(tick) = learn_mark(&mut user_ink, session, &ui_font, &mut surf, &disp) {
                                     learn_tick = Some(tick);
+                                } else if learn_tap_advance && user_ink.last_stroke_is_tap() {
+                                    // The praise is on show and the child
+                                    // tapped: skip the dwell, deal the next
+                                    // page now — the tap is a NEW in spirit.
+                                    let _ = user_ink.pop_stroke();
+                                    learn_tick = Some(LearnTick::New);
+                                } else {
+                                    // Real writing: the child went back to
+                                    // the page; let them keep it.
+                                    learn_tap_advance = false;
                                 }
                             } else if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
@@ -1287,6 +1318,7 @@ fn run() -> std::io::Result<()> {
             // The child acted first: a pending auto-dealt page yields.
             learn_auto_at = None;
             learn_advance_pending = false;
+            learn_tap_advance = false;
             if matches!(state, State::Listening { .. }) {
                 if let Some(ref mut session) = learn_session {
                     // Marks the page answers locally: NEW deals, MENU opens
@@ -1374,6 +1406,7 @@ fn run() -> std::io::Result<()> {
                 learn_auto_at = None;
             } else if at <= Instant::now() && matches!(state, State::Listening { .. }) {
                 learn_auto_at = None;
+                learn_tap_advance = false;
                 if let Some(ref mut session) = learn_session {
                     session.next();
                     user_ink.clear();
@@ -1637,6 +1670,7 @@ fn run() -> std::io::Result<()> {
                     // verdict starts the dwell that deals the next page.
                     if learn_advance_pending {
                         learn_advance_pending = false;
+                        learn_tap_advance = true;
                         learn_auto_at = learn_next_dwell.map(|d| Instant::now() + d);
                     }
                     State::Listening { last_pen: None }
@@ -1799,6 +1833,7 @@ fn run() -> std::io::Result<()> {
                             // once, and a YES starts the deal-next dwell.
                             if learn_advance_pending {
                                 learn_advance_pending = false;
+                                learn_tap_advance = true;
                                 learn_auto_at = learn_next_dwell.map(|d| Instant::now() + d);
                             }
                             State::Listening { last_pen: None }

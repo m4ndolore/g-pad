@@ -91,8 +91,10 @@ payload — right, almost, try again — with zero reading help:
 - **YES** → a drawn check beside the answer, stars flanking the cheer, the
   ladder credits it, and — after a dwell long enough to enjoy the stamp
   (`RIDDLE_LEARN_NEXT_MS`, default 5000 ms, 0 disables) — the next page
-  deals itself, so a child on a roll never taps NEW. Pen-down cancels the
-  dwell.
+  deals itself, so a child on a roll never taps NEW. While the praise is
+  on show, a deliberate pen tap deals the next page at once — no waiting
+  out the dwell. Real writing cancels both: a dot in a word must never
+  tear the page away.
 - **ALMOST / NO** → a gentle underline ("look here again"), the ladder
   debits it. The hint suggests, never tells the answer.
 - **Anything else** → `Verdict::Unknown`: the text still shows small, but
@@ -113,7 +115,9 @@ Learn turns never enter the diary's memory.
 
 Every couple of correct answers earns a **play page** — the treat that keeps
 the worksheets moving (`RIDDLE_LEARN_PLAY` = `earned` (default) | `always` |
-`never`). Three games rotate, all on the same marks, all shaped by one
+`never`). Treats interrupt only the default mix: a topic chosen from the
+menu was asked for by name, and its pages keep coming until the menu says
+otherwise. Three games rotate, all on the same marks, all shaped by one
 hardware truth: the pad cannot fetch pictures, but it can draw geometry
 anchored to the child's ink, and it can write.
 

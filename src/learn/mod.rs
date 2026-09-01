@@ -122,6 +122,9 @@ impl Session {
     /// same game afresh. Under a practice focus a play page is dealt when
     /// earned (or always, under that policy); leaving a play page under the
     /// earned policy returns to practice — the next treat is earned again.
+    /// Earned treats interrupt only the default mix: a menu-chosen topic was
+    /// asked for by name, and its pages keep coming until the menu says
+    /// otherwise — "math mode" stays math mode.
     pub fn next(&mut self) {
         let topic = match self.focus {
             Focus::Game(g) => {
@@ -134,7 +137,9 @@ impl Session {
             PlayPolicy::Always => true,
             PlayPolicy::Never => false,
             PlayPolicy::Earned => {
-                self.earned >= PLAY_EVERY && matches!(self.page, Page::Practice(_))
+                topic == problems::Topic::Mix
+                    && self.earned >= PLAY_EVERY
+                    && matches!(self.page, Page::Practice(_))
             }
         };
         if deal_play {
@@ -388,6 +393,32 @@ mod tests {
         assert!(s.choose_menu(5));
         assert!(matches!(s.page, Page::Practice(_)));
         assert!(!s.choose_menu(99));
+    }
+
+    #[test]
+    fn a_chosen_topic_is_never_interrupted_by_treat_pages() {
+        // The bug this pins down: pick MATH from the menu, answer two
+        // questions right, and the earned-treat counter dealt a game page —
+        // the category "drifted". A named topic must hold its ground.
+        let mut s = Session::start_at(1, 5);
+        s.open_menu();
+        assert!(s.choose_menu(0));
+        for _ in 0..6 {
+            s.record(Verdict::Yes);
+            s.next();
+            assert!(
+                matches!(s.page, Page::Practice(_)),
+                "a menu-chosen topic must never deal a play page"
+            );
+        }
+        // The default mix still pays out the treat as before.
+        s.open_menu();
+        assert!(s.choose_menu(5));
+        s.record(Verdict::Yes);
+        s.next();
+        s.record(Verdict::Yes);
+        s.next();
+        assert!(matches!(s.page, Page::Play(_)), "the mix still earns treats");
     }
 
     #[test]

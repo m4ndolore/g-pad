@@ -145,6 +145,19 @@ impl Ink {
         Some(((sx / n) as i32, (sy / n) as i32))
     }
 
+    /// True when the most recent finished stroke is a deliberate tap: a dot,
+    /// not writing. The span test (not point count) is what matters — the pen
+    /// samples fast, so even a quick tap can report a dozen points, but they
+    /// all land within a few pixels of each other.
+    pub fn last_stroke_is_tap(&self) -> bool {
+        let Some(s) = self.strokes.last() else { return false };
+        let mut b = BBox::empty();
+        for &(x, y, _) in s {
+            b.add(x, y, 0);
+        }
+        !b.is_empty() && (b.x1 - b.x0) <= 14 && (b.y1 - b.y0) <= 14
+    }
+
     /// Rasterize the ink region to a grayscale PNG for the oracle.
     /// Crops to the ink bounding box and box-downscales so the long side stays
     /// ≤ 800px (at least 2x): the model reads handwriting fine at that scale,
@@ -255,6 +268,26 @@ mod tests {
                 assert!((x - 110).pow(2) + (y - 100).pow(2) > 22 * 22);
             }
         }
+    }
+
+    #[test]
+    fn a_dot_is_a_tap_and_a_stroke_is_not() {
+        let (_buf, mut s) = surf();
+        let mut ink = Ink::new();
+        // A quick tap: many samples, all within a few pixels.
+        for i in 0..10 {
+            ink.pen_point(&mut s, 100 + i % 3, 100 + i % 2, 3);
+        }
+        ink.pen_up();
+        assert!(ink.last_stroke_is_tap());
+        // Writing a digit spans far more than a dot.
+        for y in (100..160).step_by(5) {
+            ink.pen_point(&mut s, 200, y, 3);
+        }
+        ink.pen_up();
+        assert!(!ink.last_stroke_is_tap());
+        ink.clear();
+        assert!(!ink.last_stroke_is_tap(), "no stroke, no tap");
     }
 
     #[test]
