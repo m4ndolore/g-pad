@@ -168,6 +168,26 @@ pub fn paginate_forward<T>(blocks: &[T], start_y: usize, limit: usize, height: i
     pages
 }
 
+/// A working directory shown as a place. The parts that matter are the repo
+/// and the folder inside it — but a worktree path buries the repo name under
+/// `.claude/worktrees/`, so a plain tail cut keeps that noise and loses the
+/// repo. Collapse the noise first, then cut.
+///
+/// `/Users/p/Dev/g-pad/.claude/worktrees/agents-ux` → `g-pad/…/agents-ux`.
+pub fn place(s: &str, max: usize) -> String {
+    match s.split_once("/.claude/worktrees/") {
+        Some((repo_path, rest)) if !rest.is_empty() => {
+            let repo = repo_path.rsplit('/').next().unwrap_or("");
+            if repo.is_empty() {
+                tail(s, max)
+            } else {
+                tail(&format!("{repo}/…/{rest}"), max)
+            }
+        }
+        _ => tail(s, max),
+    }
+}
+
 /// The end of a reference is the part that identifies it — a path's file, a
 /// sha, a project directory. Keep the tail, mark the cut.
 pub fn tail(s: &str, max: usize) -> String {
@@ -295,6 +315,31 @@ mod tests {
     fn forward_no_blocks_still_reads_as_one_empty_page() {
         let pages = paginate_forward(&Vec::<usize>::new(), HEADER_H, limit(0), |b| *b);
         assert_eq!(pages, vec![0..0]);
+    }
+
+    #[test]
+    fn a_worktree_path_reads_as_repo_and_folder() {
+        assert_eq!(
+            place("/Users/p/Dev/g-pad/.claude/worktrees/agents-ux", 42),
+            "g-pad/…/agents-ux"
+        );
+        // Depth under the worktree survives.
+        assert_eq!(
+            place("/Users/p/Dev/g-pad/.claude/worktrees/agents-ux/hub", 42),
+            "g-pad/…/agents-ux/hub"
+        );
+        // A plain path is just a tail cut.
+        assert_eq!(place("/Users/p/Dev/g-pad", 42), "/Users/p/Dev/g-pad");
+        let cut = place(&format!("/very{}/Dev/g-pad", "/deep".repeat(20)), 20);
+        assert!(cut.starts_with('…') && cut.ends_with("Dev/g-pad"));
+        // A collapsed name still too long keeps its own tail — the folder.
+        let long = place(
+            "/Users/p/Dev/a-truly-unreasonably-long-repo-name/.claude/worktrees/the-feature",
+            22,
+        );
+        assert!(long.ends_with("the-feature"), "got {long:?}");
+        // Degenerate shapes fall back to the plain cut.
+        assert_eq!(place("/.claude/worktrees/x", 42), "/.claude/worktrees/x");
     }
 
     #[test]

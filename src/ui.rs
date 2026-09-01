@@ -232,7 +232,7 @@ fn draw_sessions(surf: &mut Surface, font: &FontRef, bridge: &crate::bridge::Bri
             let last = s.turns.iter().rev().find(|t| !t.text.trim().is_empty());
             last.map(|t| one_line(&t.text, 42)).unwrap_or_else(|| "(NOTHING YET)".into())
         } else {
-            crate::page::tail(&s.cwd, 42)
+            crate::page::place(&s.cwd, 42)
         };
         text(surf, font, &one_line(&s.title, 34), LABEL_PX, PAD, y, BLACK);
         text(surf, font, &meta, LABEL_PX, PAD, y + 42, BLUE);

@@ -155,7 +155,7 @@ pub fn layout_session_page(font: &FontRef, session: &Session, extra: usize, want
     let meta = page::meta_line(&session.state, &session.updated);
     // The repo the agent works in, handy on every page of the session. The
     // full-width page affords a long tail; the board's rows keep a short one.
-    let place = page::tail(&session.cwd, 60);
+    let place = page::place(&session.cwd, 60);
 
     let artifacts: Vec<Artifact> = session.artifacts.iter().take(MAX_ARTIFACTS).cloned().collect();
     let artifacts_omitted = session.artifacts.len().saturating_sub(artifacts.len());
@@ -548,6 +548,15 @@ mod tests {
         // No cwd, no line — and no room claimed for one.
         let bare = layout_session(&f, &session(vec![turn("you", "hi")]));
         assert!(bare.place.is_empty());
+    }
+
+    #[test]
+    fn a_worktree_cwd_shows_the_repo_not_the_scaffolding() {
+        let f = font();
+        let mut s = session(vec![turn("you", "hi")]);
+        s.cwd = "/Users/p/Dev/g-pad/.claude/worktrees/agent-mode-legibility".to_string();
+        let layout = layout_session(&f, &s);
+        assert_eq!(layout.place, "g-pad/…/agent-mode-legibility");
     }
 
     #[test]
