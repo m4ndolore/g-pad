@@ -76,14 +76,20 @@ fn main() {
         last_good: Mutex::new(HashMap::new()),
     };
 
-    let server = match tiny_http::Server::http(("0.0.0.0", port)) {
+    // Loopback only: the hub speaks unauthenticated HTTP, serves whole
+    // session transcripts, and its nudge endpoint types into live sessions.
+    // The pad reaches it through the reverse ssh tunnel (scripts/
+    // hub-tunnel.sh), so nothing on the LAN needs this port. HUB_BIND
+    // widens it deliberately, never by accident.
+    let bind = std::env::var("HUB_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let server = match tiny_http::Server::http((bind.as_str(), port)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("anthink-hub: cannot bind port {port}: {e}");
+            eprintln!("anthink-hub: cannot bind {bind}:{port}: {e}");
             std::process::exit(1);
         }
     };
-    eprintln!("anthink-hub: serving on :{port}");
+    eprintln!("anthink-hub: serving on {bind}:{port}");
 
     // One thread per request: a stalled client must not block the pad's next
     // poll. The Hub is all Mutex-guarded state, so sharing it is safe.
