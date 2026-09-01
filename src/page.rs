@@ -140,6 +140,34 @@ pub fn paginate<T>(blocks: &[T], start_y: usize, limit: usize, height: impl Fn(&
     pages
 }
 
+/// Split measured blocks into pages, first page first.
+///
+/// The forward twin of [`paginate`], for surfaces that read front to back —
+/// a vault note starts at its beginning, where a session starts at its end.
+/// The same guarantees hold: every block lands on exactly one page, and a
+/// block taller than the page gets a page alone rather than vanishing.
+pub fn paginate_forward<T>(blocks: &[T], start_y: usize, limit: usize, height: impl Fn(&T) -> usize) -> Vec<std::ops::Range<usize>> {
+    let mut pages = Vec::new();
+    let mut start = 0;
+    while start < blocks.len() {
+        let mut y = start_y;
+        let mut end = start;
+        while end < blocks.len() && y + height(&blocks[end]) <= limit {
+            y += height(&blocks[end]);
+            end += 1;
+        }
+        if end == start {
+            end = start + 1;
+        }
+        pages.push(start..end);
+        start = end;
+    }
+    if pages.is_empty() {
+        pages.push(0..0);
+    }
+    pages
+}
+
 /// The end of a reference is the part that identifies it — a path's file, a
 /// sha, a project directory. Keep the tail, mark the cut.
 pub fn tail(s: &str, max: usize) -> String {
@@ -235,6 +263,37 @@ mod tests {
     #[test]
     fn no_blocks_still_reads_as_one_empty_page() {
         let pages = paginate(&Vec::<usize>::new(), HEADER_H, limit(0), |b| *b);
+        assert_eq!(pages, vec![0..0]);
+    }
+
+    #[test]
+    fn forward_pages_cover_every_block_once_and_the_first_page_is_first() {
+        let blocks = vec![300usize; 20];
+        let pages = paginate_forward(&blocks, HEADER_H, limit(0), |b| *b);
+        assert!(pages.len() > 1, "20 blocks of 300px cannot be one page");
+        assert_eq!(pages[0].start, 0);
+        assert_eq!(pages.last().unwrap().end, blocks.len());
+        for w in pages.windows(2) {
+            assert_eq!(w[0].end, w[1].start);
+        }
+        for p in &pages {
+            let used: usize = HEADER_H + blocks[p.clone()].iter().sum::<usize>();
+            assert!(used <= limit(0), "a page must not run into the footer");
+        }
+    }
+
+    #[test]
+    fn forward_oversized_block_gets_a_page_alone() {
+        let blocks = vec![100, SCREEN_H * 2, 100];
+        let pages = paginate_forward(&blocks, HEADER_H, limit(0), |b| *b);
+        let covered: usize = pages.iter().map(|p| p.len()).sum();
+        assert_eq!(covered, 3, "every block must land on exactly one page");
+        assert!(pages.iter().any(|p| p.len() == 1 && blocks[p.start] > SCREEN_H));
+    }
+
+    #[test]
+    fn forward_no_blocks_still_reads_as_one_empty_page() {
+        let pages = paginate_forward(&Vec::<usize>::new(), HEADER_H, limit(0), |b| *b);
         assert_eq!(pages, vec![0..0]);
     }
 
