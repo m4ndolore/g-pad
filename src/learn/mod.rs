@@ -32,7 +32,7 @@ const PLAY_EVERY: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
-    Practice(problems::Problem),
+    Practice(problems::Set),
     Play(games::Game),
     /// The picker: every topic and game as a tick box. Dealt by a mark in
     /// the MENU footer box; a mark in a choice box deals the chosen page.
@@ -91,7 +91,7 @@ impl Session {
         let page = if policy == PlayPolicy::Always {
             Page::Play(games::Game::nth(0))
         } else {
-            Page::Practice(problems::generate(ladder.level, problems::Topic::Mix, 0, &mut rng))
+            Page::Practice(problems::generate_set(ladder.level, problems::Topic::Mix, 0, &mut rng))
         };
         let game_rot = usize::from(policy == PlayPolicy::Always);
         let focus = Focus::Practice(problems::Topic::Mix);
@@ -102,9 +102,10 @@ impl Session {
         self.ladder.level
     }
 
+    /// The graded problem of a practice page: the last on the sheet.
     pub fn as_practice(&self) -> Option<&problems::Problem> {
         match &self.page {
-            Page::Practice(p) => Some(p),
+            Page::Practice(set) => Some(set.graded()),
             _ => None,
         }
     }
@@ -112,7 +113,7 @@ impl Session {
     /// Draw the current page and remember its hit map.
     pub fn draw(&mut self, surf: &mut Surface, ui_font: &FontRef) {
         self.hits = match &self.page {
-            Page::Practice(p) => sheet::draw(surf, ui_font, p, self.ladder.level, self.ladder.streak()),
+            Page::Practice(set) => sheet::draw(surf, ui_font, set, self.ladder.level, self.ladder.streak()),
             Page::Play(g) => games::draw(surf, ui_font, g),
             Page::Menu => sheet::draw_menu(surf, ui_font),
         };
@@ -148,7 +149,7 @@ impl Session {
             self.game_rot += 1;
         } else {
             self.rot += 1;
-            self.page = Page::Practice(problems::generate(self.ladder.level, topic, self.rot, &mut self.rng));
+            self.page = Page::Practice(problems::generate_set(self.ladder.level, topic, self.rot, &mut self.rng));
         }
     }
 
@@ -181,7 +182,7 @@ impl Session {
             Focus::Game(g) => self.page = Page::Play(games::Game::nth(g)),
             Focus::Practice(topic) => {
                 self.rot += 1;
-                self.page = Page::Practice(problems::generate(self.ladder.level, topic, self.rot, &mut self.rng));
+                self.page = Page::Practice(problems::generate_set(self.ladder.level, topic, self.rot, &mut self.rng));
             }
         }
         true
@@ -260,7 +261,7 @@ impl Session {
     /// both oracle backends and never disturbs the pad's persona.
     pub fn instruction(&self) -> String {
         match &self.page {
-            Page::Practice(problem) => format!(
+            Page::Practice(set) => format!(
                 "LEARN MODE. You are a warm, playful tutor for a child aged four to eight \
                  who can barely read. The page shows only the child's pen work for this \
                  exercise: {brief}. \
@@ -275,7 +276,7 @@ impl Session {
                  simple words for a grown-up to read aloud — never the answer itself. \
                  Write nothing else: no sentences after YES, no questions, no greetings. \
                  Never mention pictures, images, or cameras.",
-                brief = problem.brief()
+                brief = set.graded().brief()
             ),
             Page::Play(game) => {
                 let pending = match game {
@@ -304,6 +305,7 @@ fn empty_hits() -> HitMap {
         new: BBox::empty(),
         menu: BBox::empty(),
         choices: Vec::new(),
+        blanks: Vec::new(),
     }
 }
 
@@ -320,7 +322,7 @@ mod tests {
         let (Page::Practice(a), Page::Practice(b)) = (&first, &s.page) else {
             panic!("earned policy starts in practice");
         };
-        assert_ne!(std::mem::discriminant(&a.kind), std::mem::discriminant(&b.kind));
+        assert_ne!(std::mem::discriminant(&a.graded().kind), std::mem::discriminant(&b.graded().kind));
     }
 
     #[test]
@@ -375,7 +377,7 @@ mod tests {
         assert_eq!(s.level(), 4);
         for _ in 0..6 {
             let Page::Practice(ref p) = s.page else { panic!("math focus must deal practice") };
-            assert!(!matches!(p.kind, problems::Kind::Trace { .. }));
+            assert!(!p.items.iter().any(|q| matches!(q.kind, problems::Kind::Trace { .. })));
             s.next();
         }
         // Writing deals tracing, and only tracing.
@@ -383,7 +385,7 @@ mod tests {
         assert!(s.choose_menu(4));
         for _ in 0..3 {
             let Page::Practice(ref p) = s.page else { panic!("writing focus must deal practice") };
-            assert!(matches!(p.kind, problems::Kind::Trace { .. }));
+            assert!(p.items.iter().all(|q| matches!(q.kind, problems::Kind::Trace { .. })));
             s.next();
         }
         // A game is sticky: NEW deals the same game afresh.

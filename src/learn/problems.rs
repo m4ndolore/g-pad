@@ -22,6 +22,20 @@ pub enum Kind {
     Share { total: u32, groups: u32 },
     /// Handwriting: trace the dashed word, then write it again below.
     Trace { word: &'static str },
+    /// Part-whole bar model: one bar split into two segments, the whole
+    /// bracketed beneath. One of the three numbers is the blank.
+    Bar { whole: u32, parts: [u32; 2], blank: Blank },
+    /// A number-line walk: start at `from`, take `delta.abs()` unit hops
+    /// (right when positive), on a line labeled 0..=`top`.
+    NumberLine { from: u32, delta: i32, top: u32 },
+    /// A place-value chart: `tens` ten-discs and `ones` one-dots; the child
+    /// writes the number they make.
+    PlaceValue { tens: u32, ones: u32 },
+    /// A hundred-chart window: the 3×3 neighborhood of `center` with the
+    /// middle cell blank.
+    HundredWindow { center: u32 },
+    /// Two numbers with an empty box between: the child writes <, =, or >.
+    Compare { left: u32, right: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,6 +90,18 @@ impl Problem {
             Kind::Array { rows, cols } => (rows * cols).to_string(),
             Kind::Share { total, groups } => (total / groups).to_string(),
             Kind::Trace { word } => (*word).to_string(),
+            Kind::Bar { whole, parts, blank } => match blank {
+                Blank::Whole => whole.to_string(),
+                Blank::Part(i) => parts[*i].to_string(),
+            },
+            Kind::NumberLine { from, delta, .. } => (*from as i32 + delta).to_string(),
+            Kind::PlaceValue { tens, ones } => (tens * 10 + ones).to_string(),
+            Kind::HundredWindow { center } => center.to_string(),
+            Kind::Compare { left, right } => match left.cmp(right) {
+                std::cmp::Ordering::Less => "<".to_string(),
+                std::cmp::Ordering::Equal => "=".to_string(),
+                std::cmp::Ordering::Greater => ">".to_string(),
+            },
         }
     }
 
@@ -114,6 +140,31 @@ impl Problem {
                 "handwriting practice for the word \"{word}\": the child traced it over guide letters on the upper lines, then wrote it freehand on the lower lines. \
                  Only the child's own pen strokes are shown — the printed guides are not. \
                  YES if the lower freehand copy is readable as \"{word}\", ALMOST if shaky but recognizable, NO if missing or unreadable"
+            ),
+            Kind::Bar { whole, parts, blank } => match blank {
+                Blank::Whole => format!(
+                    "a bar model with parts {} and {}; the child wrote the whole bar's total (correct answer {expected})",
+                    parts[0], parts[1]
+                ),
+                Blank::Part(i) => format!(
+                    "a bar model with whole {whole} and one part {}; the child wrote the missing part (correct answer {expected})",
+                    parts[1 - i]
+                ),
+            },
+            Kind::NumberLine { from, delta, .. } => {
+                let (sign, n) = if *delta >= 0 { ('+', *delta) } else { ('-', -delta) };
+                format!(
+                    "the equation {from} {sign} {n} = ___ shown as hops on a number line; the child wrote the landing number (correct answer {expected})"
+                )
+            }
+            Kind::PlaceValue { tens, ones } => format!(
+                "a place-value chart with {tens} tens and {ones} ones; the child wrote the number they make (correct answer {expected})"
+            ),
+            Kind::HundredWindow { .. } => format!(
+                "a hundred-chart window around a blank middle cell; the child wrote the missing middle number (correct answer {expected})"
+            ),
+            Kind::Compare { left, right } => format!(
+                "the numbers {left} and {right} with an empty box between them; the child wrote a comparison symbol, one of < or = or > (correct answer {expected})"
             ),
         }
     }
@@ -200,14 +251,14 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
     use Activity::*;
     match (topic, level) {
         (Topic::Writing, _) => &[Trace],
-        (Topic::Math, 1) => &[Count, Bond],
-        (Topic::Math, 2) => &[Bond, MakeTen, Equation],
-        (Topic::Math, 3) => &[Bond, Equation, MakeTen],
-        (Topic::Math, _) => &[Array, Equation, Share],
-        (Topic::Mix, 1) => &[Count, Bond, Trace],
-        (Topic::Mix, 2) => &[Bond, MakeTen, Trace, Equation],
-        (Topic::Mix, 3) => &[Bond, Equation, Trace, MakeTen],
-        (Topic::Mix, _) => &[Array, Equation, Share, Trace],
+        (Topic::Math, 1) => &[Count, Bond, Compare],
+        (Topic::Math, 2) => &[Bond, MakeTen, Equation, Compare, NumberLine, Bar],
+        (Topic::Math, 3) => &[Bond, Equation, NumberLine, Bar, MakeTen, PlaceValue],
+        (Topic::Math, _) => &[Array, Equation, Share, PlaceValue, HundredWindow, Bar],
+        (Topic::Mix, 1) => &[Count, Bond, Trace, Compare],
+        (Topic::Mix, 2) => &[Bond, MakeTen, Trace, Equation, Compare, NumberLine, Bar],
+        (Topic::Mix, 3) => &[Bond, Equation, Trace, NumberLine, Bar, PlaceValue],
+        (Topic::Mix, _) => &[Array, Equation, Trace, PlaceValue, HundredWindow, Bar],
     }
 }
 
@@ -220,12 +271,89 @@ enum Activity {
     Array,
     Share,
     Trace,
+    Bar,
+    NumberLine,
+    PlaceValue,
+    HundredWindow,
+    Compare,
+}
+
+/// A dealt page: one to four problems of a single activity, like a paper
+/// worksheet's row of sums. Dot-heavy figures and handwriting keep the page
+/// to themselves; the compact kinds deal two to four to a page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Set {
+    /// Never empty. The LAST item is the graded one: the MVP marks only the
+    /// final answer — right moves on, wrong flags the page for a grown-up.
+    pub items: Vec<Problem>,
+    /// The printed instruction line for the whole page.
+    pub prompt: &'static str,
+}
+
+impl Set {
+    /// The one problem the oracle is asked to mark: the last on the page.
+    pub fn graded(&self) -> &Problem {
+        self.items.last().expect("a set is never empty")
+    }
+}
+
+/// How many of `act` share a page.
+fn per_page(act: Activity, rng: &mut Rng) -> usize {
+    use Activity::*;
+    match act {
+        Equation | Compare => rng.range(3, 4) as usize,
+        PlaceValue => rng.range(2, 3) as usize,
+        NumberLine | Bar | HundredWindow => 2,
+        _ => 1,
+    }
+}
+
+/// The page's instruction line, agreeing in number with its questions.
+fn page_prompt(act: Activity, n: usize) -> &'static str {
+    use Activity::*;
+    let many = n > 1;
+    match act {
+        Equation => {
+            if many { "WRITE THE ANSWERS" } else { "WRITE THE ANSWER" }
+        }
+        Compare => "WRITE <, =, OR >",
+        NumberLine => "COUNT THE HOPS",
+        Bar | Bond => {
+            if many { "WRITE THE MISSING NUMBERS" } else { "WRITE THE MISSING NUMBER" }
+        }
+        PlaceValue => {
+            if many { "WRITE THE NUMBERS" } else { "WRITE THE NUMBER" }
+        }
+        HundredWindow => {
+            if many { "FILL THE MIDDLE BOXES" } else { "FILL THE MIDDLE BOX" }
+        }
+        Count => "HOW MANY DOTS?",
+        MakeTen => "HOW MANY MORE MAKE 10?",
+        Array => "HOW MANY DOTS IN ALL?",
+        Share => "HOW MANY IN EACH GROUP?",
+        Trace => "TRACE IT, THEN WRITE IT",
+    }
+}
+
+/// Generate the `rot`-th page at `level`, within `topic`'s rotation.
+pub fn generate_set(level: u8, topic: Topic, rot: usize, rng: &mut Rng) -> Set {
+    let acts = rotation(level.clamp(MIN_LEVEL, MAX_LEVEL), topic);
+    let act = acts[rot % acts.len()];
+    let n = per_page(act, rng);
+    let items = (0..n).map(|_| problem_for(act, level, rng)).collect();
+    Set { items, prompt: page_prompt(act, n) }
 }
 
 /// Generate the `rot`-th problem at `level`, within `topic`'s rotation.
+#[cfg(test)]
 pub fn generate(level: u8, topic: Topic, rot: usize, rng: &mut Rng) -> Problem {
     let acts = rotation(level.clamp(MIN_LEVEL, MAX_LEVEL), topic);
-    match acts[rot % acts.len()] {
+    problem_for(acts[rot % acts.len()], level, rng)
+}
+
+/// One problem of `act`, sized to `level`.
+fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
+    match act {
         Activity::Count => {
             let shown = rng.range(1, 5);
             Problem { kind: Kind::TenFrame { shown, make_ten: false }, prompt: "HOW MANY DOTS?" }
@@ -291,6 +419,63 @@ pub fn generate(level: u8, topic: Topic, rot: usize, rng: &mut Rng) -> Problem {
             };
             let word = words[rng.range(0, words.len() as u32 - 1) as usize];
             Problem { kind: Kind::Trace { word }, prompt: "TRACE IT, THEN WRITE IT" }
+        }
+        Activity::Bar => {
+            // Segments must stay wide enough to write in: each part at least
+            // a sixth of the whole, so no sliver ever has to hold a box.
+            let whole = if level <= 2 { rng.range(5, 10) } else { rng.range(8, 20) };
+            let lo = whole.div_ceil(6);
+            let p0 = rng.range(lo, whole - lo);
+            let parts = [p0, whole - p0];
+            let blank = match rng.range(0, 2) {
+                0 => Blank::Whole,
+                1 => Blank::Part(0),
+                _ => Blank::Part(1),
+            };
+            Problem { kind: Kind::Bar { whole, parts, blank }, prompt: "WRITE THE MISSING NUMBER" }
+        }
+        Activity::NumberLine => {
+            let top = if level <= 2 { 10 } else { 20 };
+            let hops = rng.range(2, 4) as i32;
+            if rng.range(0, 1) == 0 {
+                let from = rng.range(1, top - hops as u32);
+                Problem { kind: Kind::NumberLine { from, delta: hops, top }, prompt: "COUNT THE HOPS" }
+            } else {
+                let from = rng.range(hops as u32 + 1, top);
+                Problem { kind: Kind::NumberLine { from, delta: -hops, top }, prompt: "COUNT THE HOPS" }
+            }
+        }
+        Activity::PlaceValue => {
+            let (tens, ones) = if level <= 3 {
+                (1, rng.range(1, 9))
+            } else {
+                (rng.range(2, 9), rng.range(0, 9))
+            };
+            Problem { kind: Kind::PlaceValue { tens, ones }, prompt: "WRITE THE NUMBER" }
+        }
+        Activity::HundredWindow => {
+            // Row and column both 2..=9 so every neighbor stays on the chart
+            // and in the same row/column as a real hundred chart.
+            let center = (rng.range(2, 9) - 1) * 10 + rng.range(2, 9);
+            Problem { kind: Kind::HundredWindow { center }, prompt: "FILL THE MIDDLE BOX" }
+        }
+        Activity::Compare => {
+            let top = match level {
+                1 => 5,
+                2 => 10,
+                _ => 20,
+            };
+            // Equal pairs only by choice: consecutive LCG draws correlate
+            // under small moduli, so an independent `right` came out equal
+            // to `left` far too often. An offset-and-wrap never can.
+            let left = rng.range(1, top);
+            let right = if rng.range(0, 3) == 0 {
+                left
+            } else {
+                let stepped = left + rng.range(1, top - 1);
+                if stepped > top { stepped - top } else { stepped }
+            };
+            Problem { kind: Kind::Compare { left, right }, prompt: "WRITE <, =, OR >" }
         }
     }
 }
@@ -398,6 +583,110 @@ mod tests {
                 assert!(!matches!(math, Kind::Trace { .. }), "math topic dealt {math:?}");
                 let writing = generate(level, Topic::Writing, rot, &mut rng).kind;
                 assert!(matches!(writing, Kind::Trace { .. }), "writing topic dealt {writing:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn bar_models_sum_and_every_segment_can_hold_a_box() {
+        let mut rng = Rng::new(21);
+        for level in 2..=4 {
+            for rot in 0..60 {
+                if let Kind::Bar { whole, parts, .. } = generate(level, Topic::Math, rot, &mut rng).kind {
+                    assert_eq!(parts[0] + parts[1], whole);
+                    let lo = whole.div_ceil(6);
+                    assert!(parts[0] >= lo && parts[1] >= lo, "a sliver segment cannot hold a box: {parts:?} of {whole}");
+                    assert!(whole <= if level == 2 { 10 } else { 20 });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn number_line_walks_stay_on_the_line() {
+        let mut rng = Rng::new(23);
+        for level in 2..=4 {
+            for rot in 0..60 {
+                if let Kind::NumberLine { from, delta, top } = generate(level, Topic::Math, rot, &mut rng).kind {
+                    assert_eq!(top, if level == 2 { 10 } else { 20 });
+                    let land = from as i32 + delta;
+                    assert!(land >= 1 && land <= top as i32, "walk falls off the line: {from} {delta:+}");
+                    assert!((2..=4).contains(&delta.abs()), "hops must stay countable");
+                    assert!(from >= 1 && from <= top);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn place_value_charts_read_as_real_two_digit_numbers() {
+        let mut rng = Rng::new(29);
+        for level in 3..=4 {
+            for rot in 0..60 {
+                if let Kind::PlaceValue { tens, ones } = generate(level, Topic::Math, rot, &mut rng).kind {
+                    assert!((1..=9).contains(&tens) && ones <= 9);
+                    if level == 3 {
+                        assert_eq!(tens, 1, "level 3 stays in the teens");
+                        assert!(ones >= 1, "10 alone teaches nothing about ones");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hundred_windows_keep_every_neighbor_on_the_chart() {
+        let mut rng = Rng::new(31);
+        for rot in 0..60 {
+            if let Kind::HundredWindow { center } = generate(4, Topic::Math, rot, &mut rng).kind {
+                let (row, col) = ((center - 1) / 10 + 1, (center - 1) % 10 + 1);
+                assert!((2..=9).contains(&row) && (2..=9).contains(&col),
+                    "center {center} pushes a neighbor off the chart or across a row edge");
+            }
+        }
+    }
+
+    #[test]
+    fn compare_expects_the_true_symbol_and_deals_equals_sometimes() {
+        let p = Problem { kind: Kind::Compare { left: 7, right: 4 }, prompt: "" };
+        assert_eq!(p.expected(), ">");
+        let p = Problem { kind: Kind::Compare { left: 3, right: 3 }, prompt: "" };
+        assert_eq!(p.expected(), "=");
+        let p = Problem { kind: Kind::Compare { left: 2, right: 9 }, prompt: "" };
+        assert_eq!(p.expected(), "<");
+        let mut rng = Rng::new(37);
+        let (mut saw_eq, mut saw_ne) = (false, false);
+        for rot in 0..80 {
+            if let Kind::Compare { left, right } = generate(1, Topic::Math, rot, &mut rng).kind {
+                assert!((1..=5).contains(&left) && (1..=5).contains(&right), "level 1 compares within 1..=5");
+                if left == right { saw_eq = true } else { saw_ne = true }
+            }
+        }
+        assert!(saw_eq && saw_ne, "equals must appear, but not always");
+    }
+
+    #[test]
+    fn sets_deal_worksheet_pages_and_keep_big_figures_alone() {
+        let mut rng = Rng::new(41);
+        for level in 1..=4 {
+            for topic in [Topic::Mix, Topic::Math, Topic::Writing] {
+                for rot in 0..10 {
+                    let set = generate_set(level, topic, rot, &mut rng);
+                    assert!((1..=4).contains(&set.items.len()));
+                    let d = std::mem::discriminant(&set.items[0].kind);
+                    assert!(set.items.iter().all(|p| std::mem::discriminant(&p.kind) == d),
+                        "a page is one activity, like a worksheet");
+                    let solo_only = matches!(set.items[0].kind,
+                        Kind::Bond { .. } | Kind::TenFrame { .. } | Kind::Array { .. }
+                        | Kind::Share { .. } | Kind::Trace { .. });
+                    if solo_only {
+                        assert_eq!(set.items.len(), 1, "{:?} needs the whole page", set.items[0].kind);
+                    } else {
+                        assert!(set.items.len() >= 2, "{:?} deals a worksheet row", set.items[0].kind);
+                    }
+                    assert!(!set.prompt.is_empty());
+                    assert_eq!(set.graded().expected(), set.items.last().unwrap().expected());
+                }
             }
         }
     }
