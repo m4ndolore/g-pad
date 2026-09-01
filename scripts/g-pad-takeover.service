@@ -13,8 +13,12 @@ ExecStart=/bin/bash /home/root/xovi/exthome/appload/g-pad/g-pad-boot.sh
 # Any exit — crash, five-finger leave, power button — lands on the stock
 # UI and stays there until the next boot. Never a restart loop.
 Restart=no
-# Whatever killed the pad, put the stock UI back.
-ExecStopPost=/bin/systemctl start xochitl
+# Whatever killed the pad, put the stock UI back. --no-block matters:
+# a blocking start deadlocks `systemctl restart g-pad-takeover` — the
+# After=xochitl ordering queues xochitl's start behind this unit's stop,
+# which is itself waiting on this very command (seen wedged on hardware,
+# "State 'stop-sigterm' timed out").
+ExecStopPost=/bin/systemctl start --no-block xochitl
 
 [Install]
 WantedBy=multi-user.target
