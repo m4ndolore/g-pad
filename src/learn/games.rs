@@ -188,7 +188,7 @@ pub fn parse_draw_turn(reply: &str) -> DrawTurn {
         let stroke = matches!(lead.as_str(), "D" | "DRAW") && pts.len() >= 2;
         if stroke && turn.strokes.len() < MAX_STROKES {
             turn.strokes.push(pts);
-        } else if lead != "D" {
+        } else if !stroke && lead != "D" {
             caption_lines.push(t);
         }
     }
@@ -554,6 +554,11 @@ mod tests {
         // A mural is trimmed to a turn: stroke and point caps hold.
         let long = format!("Hi!\n{}", "D 1,1 2,2 3,3\n".repeat(9));
         assert_eq!(parse_draw_turn(&long).strokes.len(), MAX_STROKES);
+        // An overflow stroke spelled DRAW is dropped too, never caption.
+        let long = format!("Hi!\n{}", "DRAW 1,1 2,2 3,3\n".repeat(9));
+        let turn = parse_draw_turn(&long);
+        assert_eq!(turn.strokes.len(), MAX_STROKES);
+        assert_eq!(turn.caption, "Hi!");
         let dense: String = (0..40).map(|i| format!(" {i},{i}")).collect();
         let turn = parse_draw_turn(&format!("Hi!\nD{dense}"));
         assert_eq!(turn.strokes[0].len(), MAX_POINTS);
