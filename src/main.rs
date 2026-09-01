@@ -433,22 +433,22 @@ fn learn_test(answer: Option<&str>) -> i32 {
     println!("exercise: {}", problem.brief());
     println!("child writes: {written}");
 
-    // "Handwrite" the answer into the blank with the reply pipeline.
+    // "Handwrite" the answer into the blank, tracked as real user ink so the
+    // round trip exercises the live ink-only crop path.
     let b = session.hits.answer;
+    let mut sim_ink = ink::Ink::new();
     let mut raster = script::rasterize_line(&hand, written, 110.0);
     script::thin(&mut raster);
     let (cx, cy) = ((b.x0 + b.x1) / 2 - raster.width as i32 / 2, (b.y0 + b.y1) / 2 - raster.height as i32 / 2);
     for stroke in script::trace(&raster) {
-        for (i, &(sx, sy)) in stroke.iter().enumerate() {
-            if i > 0 {
-                let (px, py) = stroke[i - 1];
-                surf.brush_line(cx + px, cy + py, cx + sx, cy + sy, 3, BLACK);
-            }
+        for &(sx, sy) in stroke.iter() {
+            sim_ink.pen_point(&mut surf, cx + sx, cy + sy, 3);
         }
+        sim_ink.pen_up();
     }
 
     let png = "/tmp/g-pad-learn-test.png";
-    if let Err(e) = ink::region_png(&surf, b, png) {
+    if let Err(e) = sim_ink.ink_png(&b, 80, png) {
         eprintln!("g-pad: region png failed: {e}");
         return 1;
     }
@@ -1374,12 +1374,20 @@ fn run() -> std::io::Result<()> {
                                 let plan = plan_reply(&font, nudge, Some(learn::sheet::feedback_y()));
                                 state = State::Replying { plan, next: Instant::now(), rx: None };
                             } else if let Some(ref o) = oracle {
-                                // The crop follows the child's ink past the
-                                // printed box: a digit written too big must
-                                // reach the tutor whole, never amputated at
-                                // the box border (that read as NO every time).
-                                let crop = user_ink.crop_for(&session.hits.answer, 80);
-                                if let Err(e) = ink::region_png(&surf, crop, PNG_PATH) {
+                                // Practice sends the child's pen work alone
+                                // on white: a digit written too big or over
+                                // the printed box must reach the tutor whole
+                                // and untangled — cropped or furniture-merged
+                                // glyphs read as NO every time. Play pages
+                                // keep the page crop: their drawings live on
+                                // the canvas the game printed.
+                                let sent = if matches!(session.page, learn::Page::Practice(_)) {
+                                    user_ink.ink_png(&session.hits.answer, 80, PNG_PATH)
+                                } else {
+                                    let crop = user_ink.crop_for(&session.hits.answer, 80);
+                                    ink::region_png(&surf, crop, PNG_PATH)
+                                };
+                                if let Err(e) = sent {
                                     eprintln!("g-pad: rasterize answer failed: {e}");
                                 }
                                 let ctx = oracle::TurnContext {

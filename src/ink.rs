@@ -212,6 +212,47 @@ impl Ink {
     pub fn to_png(&self, surf: &Surface, path: &str) -> std::io::Result<()> {
         region_png(surf, self.bbox, path)
     }
+
+    /// The child's pen work near an answer blank, alone on white paper: every
+    /// stroke within `margin` of `region` is redrawn on a clean canvas and
+    /// written as the oracle's PNG. The printed sheet — box borders, bond
+    /// rings, dashed guides — never reaches the tutor, so a digit tangled
+    /// with the furniture is still read as just a digit.
+    pub fn ink_png(&self, region: &BBox, margin: i32, path: &str) -> std::io::Result<()> {
+        let crop = self.crop_for(region, margin);
+        if crop.is_empty() {
+            return Err(std::io::Error::other("no ink"));
+        }
+        let (w, h) = ((crop.x1 - crop.x0 + 1) as usize + 40, (crop.y1 - crop.y0 + 1) as usize + 40);
+        let mut buf = vec![0xFFu8; w * h * 4];
+        let ptr = buf.as_mut_ptr();
+        let mut tmp = Surface::new(ptr, buf.len(), w, h, w * 4, crate::surface::PixFmt::Rgb32);
+        let (ox, oy) = (crop.x0 - 20, crop.y0 - 20);
+        for stroke in &self.strokes {
+            let mut b = BBox::empty();
+            for &(x, y, r) in stroke {
+                b.add(x, y, r + 2);
+            }
+            let near = !b.is_empty()
+                && b.x0 <= region.x1 + margin
+                && b.x1 >= region.x0 - margin
+                && b.y0 <= region.y1 + margin
+                && b.y1 >= region.y0 - margin;
+            if !near {
+                continue;
+            }
+            let mut prev: Option<(i32, i32, i32)> = None;
+            for &(x, y, r) in stroke {
+                let (tx, ty) = (x - ox, y - oy);
+                match prev {
+                    Some((px, py, pr)) => tmp.brush_line(px, py, tx, ty, r.min(pr + 1), BLACK),
+                    None => tmp.stamp(tx, ty, r, BLACK),
+                }
+                prev = Some((tx, ty, r));
+            }
+        }
+        region_png(&tmp, BBox { x0: 20, y0: 20, x1: w as i32 - 21, y1: h as i32 - 21 }, path)
+    }
 }
 
 /// Rasterize any page region to the oracle's grayscale PNG. Learn mode sends
@@ -343,6 +384,43 @@ mod tests {
         // An empty region stays empty — DONE with no blank sends nothing.
         let empty = ink.crop_for(&BBox::empty(), 60);
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn ink_png_carries_the_strokes_and_none_of_the_page() {
+        let (_buf, mut s) = surf();
+        // Printed furniture: a black box on the page the tutor must not see.
+        for x in 100..=200 {
+            s.put_px(x, 100, BLACK);
+            s.put_px(x, 200, BLACK);
+        }
+        let mut ink = Ink::new();
+        // The child's digit: a stroke inside and past the box.
+        for y in (120..=260).step_by(10) {
+            ink.pen_point(&mut s, 150, y, 3);
+        }
+        ink.pen_up();
+
+        let region = BBox { x0: 100, y0: 100, x1: 200, y1: 200 };
+        let path = std::env::temp_dir().join("g-pad-ink-png-test.png");
+        let path = path.to_str().unwrap();
+        ink.ink_png(&region, 60, path).unwrap();
+
+        let dec = png::Decoder::new(std::fs::File::open(path).unwrap());
+        let mut reader = dec.read_info().unwrap();
+        let mut img = vec![0u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut img).unwrap();
+        let (w, h) = (info.width as usize, info.height as usize);
+        let dark: usize = img[..w * h].iter().filter(|&&p| p < 128).count();
+        assert!(dark > 20, "the stroke must be on the canvas ({dark} dark px)");
+        // The page's printed box would put a solid dark row near the top; the
+        // ink-only canvas has none — count dark pixels on each row: no row may
+        // be mostly dark the way a printed rule would be.
+        for y in 0..h {
+            let row_dark = img[y * w..(y + 1) * w].iter().filter(|&&p| p < 128).count();
+            assert!(row_dark < w / 2, "row {y} looks like printed furniture");
+        }
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

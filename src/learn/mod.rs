@@ -258,7 +258,7 @@ impl Session {
         match &self.page {
             Page::Practice(problem) => format!(
                 "LEARN MODE. You are a warm, playful tutor for a child aged four to eight \
-                 who can barely read. The page shows the child's pen work for this \
+                 who can barely read. The page shows only the child's pen work for this \
                  exercise: {brief}. \
                  Decide whether the child's writing shows the correct answer. \
                  Your reply MUST start with exactly one word: YES if it is right, \

@@ -111,9 +111,9 @@ impl Problem {
                 "{total} dots shared into {groups} equal groups; the child wrote how many in each group (correct answer {expected})"
             ),
             Kind::Trace { word } => format!(
-                "handwriting practice for the word \"{word}\": dashed guide letters to trace on the upper lines, then the same word written freehand on the lower lines. \
-                 Judge only the child's own thick continuous pen strokes; the thin dashed skeleton letters are the printed guide. \
-                 YES if the freehand copy is readable as \"{word}\", ALMOST if shaky but recognizable, NO if missing or unreadable"
+                "handwriting practice for the word \"{word}\": the child traced it over guide letters on the upper lines, then wrote it freehand on the lower lines. \
+                 Only the child's own pen strokes are shown — the printed guides are not. \
+                 YES if the lower freehand copy is readable as \"{word}\", ALMOST if shaky but recognizable, NO if missing or unreadable"
             ),
         }
     }
