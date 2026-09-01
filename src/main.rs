@@ -1374,7 +1374,12 @@ fn run() -> std::io::Result<()> {
                                 let plan = plan_reply(&font, nudge, Some(learn::sheet::feedback_y()));
                                 state = State::Replying { plan, next: Instant::now(), rx: None };
                             } else if let Some(ref o) = oracle {
-                                if let Err(e) = ink::region_png(&surf, session.hits.answer, PNG_PATH) {
+                                // The crop follows the child's ink past the
+                                // printed box: a digit written too big must
+                                // reach the tutor whole, never amputated at
+                                // the box border (that read as NO every time).
+                                let crop = user_ink.crop_for(&session.hits.answer, 80);
+                                if let Err(e) = ink::region_png(&surf, crop, PNG_PATH) {
                                     eprintln!("g-pad: rasterize answer failed: {e}");
                                 }
                                 let ctx = oracle::TurnContext {

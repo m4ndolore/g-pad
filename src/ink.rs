@@ -177,6 +177,34 @@ impl Ink {
             || cy > rest.y1 + margin
     }
 
+    /// The region the oracle should see for an answer blank: the declared
+    /// region grown to hold every finished stroke that comes within `margin`
+    /// of it. A child's digit rarely respects the printed box — a stroke
+    /// leaning over its edge must never be cropped mid-glyph — while marks
+    /// far away (the DONE tick, stray doodles) stay excluded.
+    pub fn crop_for(&self, region: &BBox, margin: i32) -> BBox {
+        let mut out = *region;
+        if region.is_empty() {
+            return out;
+        }
+        for stroke in &self.strokes {
+            let mut b = BBox::empty();
+            for &(x, y, r) in stroke {
+                b.add(x, y, r + 2);
+            }
+            if !b.is_empty()
+                && b.x0 <= region.x1 + margin
+                && b.x1 >= region.x0 - margin
+                && b.y0 <= region.y1 + margin
+                && b.y1 >= region.y0 - margin
+            {
+                out.add(b.x0, b.y0, 0);
+                out.add(b.x1, b.y1, 0);
+            }
+        }
+        out
+    }
+
     /// Rasterize the ink region to a grayscale PNG for the oracle.
     /// Crops to the ink bounding box and box-downscales so the long side stays
     /// ≤ 800px (at least 2x): the model reads handwriting fine at that scale,
@@ -287,6 +315,34 @@ mod tests {
                 assert!((x - 110).pow(2) + (y - 100).pow(2) > 22 * 22);
             }
         }
+    }
+
+    #[test]
+    fn the_answer_crop_follows_ink_that_leans_over_the_box() {
+        let (_buf, mut s) = surf();
+        let mut ink = Ink::new();
+        let region = BBox { x0: 100, y0: 100, x1: 200, y1: 200 };
+        // A digit written too big: one stroke starts inside the box and
+        // runs well past its bottom edge.
+        for y in (150..=260).step_by(10) {
+            ink.pen_point(&mut s, 150, y, 3);
+        }
+        ink.pen_up();
+        // The DONE tick, far away in its own box: never part of the answer.
+        for i in 0..5 {
+            ink.pen_point(&mut s, 40 + i, 380, 3);
+        }
+        ink.pen_up();
+
+        let crop = ink.crop_for(&region, 60);
+        assert!(crop.y1 >= 260, "the overflowing stroke must stay whole (y1={})", crop.y1);
+        assert!(crop.x0 >= 90 && crop.x1 <= 210, "the crop must not swallow the page");
+        assert!(crop.y0 <= 100 && crop.x0 <= 100, "the declared region is always included");
+        assert!(!(crop.x1 >= 380 || crop.y1 >= 370), "a far-off tick must be excluded");
+
+        // An empty region stays empty — DONE with no blank sends nothing.
+        let empty = ink.crop_for(&BBox::empty(), 60);
+        assert!(empty.is_empty());
     }
 
     #[test]
