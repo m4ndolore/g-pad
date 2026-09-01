@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Keeps scripts/hub-tunnel.sh running so the tablet always finds the
+     Anthink hub at its own http://127.0.0.1:9707. See that script's header. -->
+<dict>
+  <key>Label</key>
+  <string>com.paulgarcia.gpad-hub-tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/paulgarcia/.local/bin/gpad-hub-tunnel</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/tmp/gpad-hub-tunnel.log</string>
+</dict>
+</plist>
