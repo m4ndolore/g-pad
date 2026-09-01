@@ -158,6 +158,25 @@ impl Ink {
         !b.is_empty() && (b.x1 - b.x0) <= 14 && (b.y1 - b.y0) <= 14
     }
 
+    /// True when the most recent finished stroke sits at least `margin`
+    /// pixels away from every other stroke on the page (trivially true when
+    /// it is the only one). A tap this far from the child's writing is a
+    /// deliberate command, not a dot on an 'i'.
+    pub fn last_stroke_clear_of_rest(&self, margin: i32) -> bool {
+        let Some((cx, cy)) = self.last_stroke_centroid() else { return false };
+        let mut rest = BBox::empty();
+        for st in &self.strokes[..self.strokes.len() - 1] {
+            for &(x, y, r) in st {
+                rest.add(x, y, r);
+            }
+        }
+        rest.is_empty()
+            || cx < rest.x0 - margin
+            || cx > rest.x1 + margin
+            || cy < rest.y0 - margin
+            || cy > rest.y1 + margin
+    }
+
     /// Rasterize the ink region to a grayscale PNG for the oracle.
     /// Crops to the ink bounding box and box-downscales so the long side stays
     /// ≤ 800px (at least 2x): the model reads handwriting fine at that scale,
@@ -288,6 +307,27 @@ mod tests {
         assert!(!ink.last_stroke_is_tap());
         ink.clear();
         assert!(!ink.last_stroke_is_tap(), "no stroke, no tap");
+    }
+
+    #[test]
+    fn a_tap_clear_of_the_writing_is_a_command_and_a_dot_on_an_i_is_ink() {
+        let (_buf, mut s) = surf();
+        let mut ink = Ink::new();
+        assert!(!ink.last_stroke_clear_of_rest(100), "no stroke, no command");
+        // A word's stem near (100, 100)...
+        for y in (80..120).step_by(5) {
+            ink.pen_point(&mut s, 100, y, 3);
+        }
+        ink.pen_up();
+        assert!(ink.last_stroke_clear_of_rest(100), "the only stroke is trivially clear");
+        // ...its dot lands close by: ink, not a command.
+        ink.pen_point(&mut s, 102, 70, 3);
+        ink.pen_up();
+        assert!(!ink.last_stroke_clear_of_rest(100));
+        // A tap across the page is clear of it all.
+        ink.pen_point(&mut s, 350, 350, 3);
+        ink.pen_up();
+        assert!(ink.last_stroke_clear_of_rest(100));
     }
 
     #[test]

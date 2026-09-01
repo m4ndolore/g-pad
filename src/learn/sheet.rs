@@ -226,28 +226,30 @@ fn draw_share(surf: &mut Surface, font: &FontRef, total: u32, groups: u32) -> BB
 /// trace, an empty rule group below to write on. The guide is drawn from the
 /// same rasterize→thin→trace pipeline the pad's own hand uses.
 ///
-/// The rules are sized FROM the font, not the other way round: the template
-/// is scaled so a 'd' ascender spans the full writing height, and the dashed
-/// midline is placed at the font's true x-height — so the guide letters
-/// actually touch the lines the child is told to reach.
+/// The rules are the classic equal-spaced trio — top line, dashed midline at
+/// exactly half the writing height, heavy baseline — and the glyphs are
+/// sized FROM the midline: the template is scaled so the font's true
+/// x-height lands on the dashed line, because "small letters stop at the
+/// middle" is the lesson. Tall letters then rise above the midline toward
+/// the top line without quite touching it — the print-font compromise every
+/// paper worksheet set in a regular font makes.
 fn draw_trace(surf: &mut Surface, font: &FontRef, word: &str) -> BBox {
     let gap = (H * 55 / 1000) as i32; // half the writing height
     let base1 = (H * 34 / 100) as i32;
     let base2 = (H * 56 / 100) as i32;
 
-    // Fit: ascender span → 2*gap, capped by the content width.
+    // Fit: x-height → gap (the midline), capped by the content width.
     let probe = 100.0f32;
-    let asc_h = tight_text_height(font, "d", probe).max(1) as f32;
-    let mut px = probe * (2 * gap) as f32 / asc_h;
+    let x_h = tight_text_height(font, "x", probe).max(1) as f32;
+    let mut px = probe * gap as f32 / x_h;
     let max_w = (W - 2 * MARGIN) as f32;
     let w = script::measure(font, word, px);
     if w > max_w {
         px *= max_w / w;
     }
-    let mid_off = tight_text_height(font, "x", px); // true x-height at px
 
     for &base in &[base1, base2] {
-        rule_group(surf, base, 2 * gap, mid_off);
+        rule_group(surf, base, 2 * gap, gap);
     }
 
     let scaled = font.as_scaled(PxScale::from(px));
@@ -270,8 +272,9 @@ fn draw_trace(surf: &mut Surface, font: &FontRef, word: &str) -> BBox {
     answer
 }
 
-/// One handwriting rule group: ascender line at `top_h` above the heavy
-/// baseline, dashed midline at `mid_off` above it (the letters' x-height).
+/// One handwriting rule group: top line at `top_h` above the heavy
+/// baseline, dashed midline at `mid_off` above it (half the writing
+/// height — where the small letters stop).
 fn rule_group(surf: &mut Surface, baseline: i32, top_h: i32, mid_off: i32) {
     let (x0, x1) = (MARGIN as i32, (W - MARGIN) as i32);
     line(surf, x0, baseline - top_h, x1, baseline - top_h, 1, FADED);

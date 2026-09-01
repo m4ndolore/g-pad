@@ -664,8 +664,10 @@ fn run() -> std::io::Result<()> {
     let mut learn_advance_pending = false;
     let mut learn_auto_at: Option<Instant> = None;
     // While the praise is on show, a deliberate pen tap deals the next page at
-    // once — no waiting out the dwell (and no dwell needed at all). Real
-    // writing disarms it: a dot in a word must never tear the page away.
+    // once — no waiting out the dwell (and no dwell needed at all). It stays
+    // armed until the page turns; writing cancels only the timed auto-deal,
+    // and a tap must land clear of the child's own ink, so a dot in a word
+    // never tears the page away but a clear tap always turns it.
     let mut learn_tap_advance = false;
     // Learn asks must never go to a capture sink (the pad's default model may
     // be one, archiving pages instead of marking them): prefer the dedicated
@@ -1117,16 +1119,20 @@ fn run() -> std::io::Result<()> {
                                 // stroke landing in a decision box is a command.
                                 if let Some(tick) = learn_mark(&mut user_ink, session, &ui_font, &mut surf, &disp) {
                                     learn_tick = Some(tick);
-                                } else if learn_tap_advance && user_ink.last_stroke_is_tap() {
+                                } else if learn_tap_advance
+                                    && user_ink.last_stroke_is_tap()
+                                    && user_ink.last_stroke_clear_of_rest(100)
+                                {
                                     // The praise is on show and the child
-                                    // tapped: skip the dwell, deal the next
-                                    // page now — the tap is a NEW in spirit.
+                                    // tapped clear of their own ink: deal the
+                                    // next page now — the tap is a NEW in
+                                    // spirit. A dot near the writing is just
+                                    // ink (an 'i' keeps its dot); writing
+                                    // cancels only the timed auto-deal, so a
+                                    // clear tap afterwards still turns the
+                                    // page.
                                     let _ = user_ink.pop_stroke();
                                     learn_tick = Some(LearnTick::New);
-                                } else {
-                                    // Real writing: the child went back to
-                                    // the page; let them keep it.
-                                    learn_tap_advance = false;
                                 }
                             } else if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);
@@ -1275,16 +1281,20 @@ fn run() -> std::io::Result<()> {
                                 // stroke landing in a decision box is a command.
                                 if let Some(tick) = learn_mark(&mut user_ink, session, &ui_font, &mut surf, &disp) {
                                     learn_tick = Some(tick);
-                                } else if learn_tap_advance && user_ink.last_stroke_is_tap() {
+                                } else if learn_tap_advance
+                                    && user_ink.last_stroke_is_tap()
+                                    && user_ink.last_stroke_clear_of_rest(100)
+                                {
                                     // The praise is on show and the child
-                                    // tapped: skip the dwell, deal the next
-                                    // page now — the tap is a NEW in spirit.
+                                    // tapped clear of their own ink: deal the
+                                    // next page now — the tap is a NEW in
+                                    // spirit. A dot near the writing is just
+                                    // ink (an 'i' keeps its dot); writing
+                                    // cancels only the timed auto-deal, so a
+                                    // clear tap afterwards still turns the
+                                    // page.
                                     let _ = user_ink.pop_stroke();
                                     learn_tick = Some(LearnTick::New);
-                                } else {
-                                    // Real writing: the child went back to
-                                    // the page; let them keep it.
-                                    learn_tap_advance = false;
                                 }
                             } else if let Some(mode) = absorb_send_rule(&mut user_ink, &mut surf, &disp) {
                                 send_mode = Some(mode);

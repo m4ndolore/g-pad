@@ -93,8 +93,10 @@ payload — right, almost, try again — with zero reading help:
   (`RIDDLE_LEARN_NEXT_MS`, default 5000 ms, 0 disables) — the next page
   deals itself, so a child on a roll never taps NEW. While the praise is
   on show, a deliberate pen tap deals the next page at once — no waiting
-  out the dwell. Real writing cancels both: a dot in a word must never
-  tear the page away.
+  out the dwell. Writing cancels only the timed auto-deal (the child went
+  back to the page); the tap stays live for a tap landing clear of their
+  own ink, so a dot in a word never tears the page away but a deliberate
+  tap in open space always turns it. Marking NEW works as everywhere.
 - **ALMOST / NO** → a gentle underline ("look here again"), the ladder
   debits it. The hint suggests, never tells the answer.
 - **Anything else** → `Verdict::Unknown`: the text still shows small, but
