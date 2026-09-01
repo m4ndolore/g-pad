@@ -42,8 +42,54 @@ impl Preferences {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, format!("mode={}\nidle_send_ms={}\npage={}\n",
-            self.mode.as_str(), self.idle_send_ms, self.page.as_str()))
+        // The bubble vocabulary is edited by hand in this same file; a save
+        // of the core keys must carry those lines forward, not erase them.
+        let kept: String = std::fs::read_to_string(&path)
+            .ok()
+            .map(|t| {
+                t.lines()
+                    .filter(|l| l.trim_start().starts_with("bubble."))
+                    .map(|l| format!("{l}\n"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        std::fs::write(path, format!("mode={}\nidle_send_ms={}\npage={}\n{}",
+            self.mode.as_str(), self.idle_send_ms, self.page.as_str(), kept))
+    }
+}
+
+/// The turn page's canned nudges: what each tag says when marked. A tag is
+/// what fits in a bubble; its phrase is the full sentence the session hears.
+pub const DEFAULT_BUBBLES: &[(&str, &str)] = &[
+    ("CONTINUE", "continue"),
+    ("SHIP IT", "ship it: commit, push, and open a PR if that is the natural next step"),
+    ("RUN TESTS", "run the full test suite and report what fails"),
+    ("EXPLAIN", "explain what you are blocked on and what you would do next"),
+];
+
+/// The bubble vocabulary: `bubble.<TAG>=<phrase>` lines from the preferences
+/// file, in file order, or the defaults when the file declares none.
+pub fn bubbles() -> Vec<(String, String)> {
+    bubbles_from(std::fs::read_to_string(path()).ok().as_deref())
+}
+
+fn bubbles_from(saved: Option<&str>) -> Vec<(String, String)> {
+    let found: Vec<(String, String)> = saved
+        .map(|text| {
+            text.lines()
+                .filter_map(|line| {
+                    let (k, v) = line.split_once('=')?;
+                    let tag = k.trim().strip_prefix("bubble.")?.trim();
+                    (!tag.is_empty() && !v.trim().is_empty())
+                        .then(|| (tag.to_string(), v.trim().to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if found.is_empty() {
+        DEFAULT_BUBBLES.iter().map(|&(t, p)| (t.to_string(), p.to_string())).collect()
+    } else {
+        found
     }
 }
 
@@ -129,6 +175,25 @@ mod tests {
         assert_eq!(resolve(Some("page=learn\n"), None, None, Some("pad")).page, Page::Pad);
         assert_eq!(resolve(None, None, None, Some("learn")).page, Page::Learn);
         assert_eq!(resolve(None, None, None, None).page, Page::Pad);
+    }
+
+    #[test]
+    fn bubble_lines_override_the_default_vocabulary() {
+        let vocab = bubbles_from(Some("mode=guided\nbubble.GO=carry on\nbubble.HALT=stop and summarize\n"));
+        assert_eq!(vocab, vec![
+            ("GO".to_string(), "carry on".to_string()),
+            ("HALT".to_string(), "stop and summarize".to_string()),
+        ]);
+    }
+
+    #[test]
+    fn a_file_without_bubbles_serves_the_defaults() {
+        let vocab = bubbles_from(Some("mode=stealth\n"));
+        assert_eq!(vocab.len(), DEFAULT_BUBBLES.len());
+        assert_eq!(vocab[0].0, "CONTINUE");
+        // Malformed bubble lines are ignored, not served as empty phrases.
+        assert_eq!(bubbles_from(Some("bubble.=x\nbubble.EMPTY=\n")).len(), DEFAULT_BUBBLES.len());
+        assert_eq!(bubbles_from(None).len(), DEFAULT_BUBBLES.len());
     }
 
     #[test]

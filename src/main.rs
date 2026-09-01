@@ -129,17 +129,61 @@ enum State {
     /// sends); `status` is the last nudge's outcome; `page` is which page is
     /// open — 0 the newest, the swipe pages backward.
     SessionPage {
-        session: bridge::Session,
+        session: Box<bridge::Session>,
         remaining: usize,
         stale: bool,
         armed: bool,
         status: Option<String>,
-        boxr: Option<ui::DecisionBox>,
+        controls: ui::PageControls,
         page: usize,
         saved: Vec<u8>,
         return_to: Box<State>,
+        /// Strokes that hit no control: the reviewer's own words, each tagged
+        /// with the page it was written on. A tick sends the visible page's
+        /// words (docs/plans/2026-08-31-ink-continuation-design.md); strokes
+        /// on other pages wait, hidden, until their page is turned back to.
+        note: Vec<NoteStroke>,
+        scribe: Scribe,
     },
 }
+
+/// The handwritten-nudge flow on the turn page: ink present flips a tick's
+/// meaning to "send my words" — the pad reads the note, offers the
+/// transcription back, and only a second tick commits it.
+enum Scribe {
+    Idle,
+    /// The oracle is reading the note. `acc` collects the streamed reply;
+    /// only the complete text is ever offered — a partial instruction must
+    /// never be sent. `postscript` keeps the diary protocol's ⁂-transcription
+    /// if one arrives: with memory on, both backends carry that protocol in
+    /// their system prompt (Pi bakes it at spawn, so it cannot be suppressed
+    /// per turn), and a model may follow it instead of the transcribe
+    /// instruction — putting the real transcription after ⁂.
+    Reading { rx: OracleRx, acc: String, postscript: Option<String>, since: Instant },
+    /// The transcription, offered back. It expires quietly: a stale SEND
+    /// must not be tickable days later.
+    Confirm { text: String, since: Instant },
+}
+
+impl Scribe {
+    fn face(&self) -> ui::BoxFace<'_> {
+        match self {
+            Scribe::Idle => ui::BoxFace::Idle,
+            Scribe::Reading { .. } => ui::BoxFace::Reading,
+            Scribe::Confirm { text, .. } => ui::BoxFace::Confirm(text),
+        }
+    }
+}
+
+/// One note stroke — the pen's (x, y, radius) points — tagged with the turn
+/// page it was written on.
+type NoteStroke = (usize, Vec<(i32, i32, i32)>);
+
+/// How long an offered transcription stays tickable.
+const CONFIRM_PATIENCE: Duration = Duration::from_secs(60);
+/// The note's snapshot, rendered strokes-only so the oracle never reads the
+/// page's printed text as part of the reviewer's words.
+const NOTE_PNG: &str = "/tmp/g-pad-note.png";
 
 /// What a pen stroke on the turn page meant, once anchored to the hit map.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -583,6 +627,9 @@ fn run() -> std::io::Result<()> {
     // The diary's memory (None = RIDDLE_MEMORY=off or the dir is unusable).
     let mut store = memory::MemoryStore::open();
     let mut prefs = preferences::Preferences::load();
+    // The turn page's canned nudges, read once: edits to the preferences
+    // file take effect on the next start.
+    let vocab = preferences::bubbles();
     if let Some(ref s) = store {
         eprintln!("g-pad: memory holds {} pages", s.entries.len());
     }
@@ -815,7 +862,7 @@ fn run() -> std::io::Result<()> {
                 // scroll, which fires once per frame and would tear through
                 // every page in one drag).
                 touch::Gesture::Page(delta) if matches!(state, State::SessionPage { .. }) => {
-                    session_page_flip(delta, &mut state, &mut surf, &disp, &ui_font);
+                    session_page_flip(delta, &mut state, &mut surf, &disp, &ui_font, &vocab);
                 }
                 // Flipping the writing canvas: forward through the notebook
                 // (a fresh sheet past an inked last page), back to earlier
@@ -980,7 +1027,7 @@ fn run() -> std::io::Result<()> {
                             _ => ui::Action::None,
                         };
                         handle_drawer_action(action, &mut state, &mut surf, &disp, &ui_font, &font, &store,
-                            &mut drawer_selection, &mut drawer_scroll);
+                            &mut drawer_selection, &mut drawer_scroll, &vocab);
                     }
                 }
                 _ => {}
@@ -1138,7 +1185,8 @@ fn run() -> std::io::Result<()> {
                                 send_mode = Some(mode);
                             }
                         } else if matches!(state, State::SessionPage { .. }) {
-                            session_page_mark(&mut state, &mut user_ink, &mut surf, &disp, &ui_font);
+                            session_page_mark(&mut state, &mut user_ink, &mut surf, &disp, &ui_font,
+                                &oracle, &vocab);
                         }
                     }
                     continue;
@@ -1936,8 +1984,22 @@ fn run() -> std::io::Result<()> {
                 None if stylus_on => State::Settings { saved: None, return_to },
                 None => *return_to,
             },
-            // The turn page rests until the reader closes it.
-            s @ State::SessionPage { .. } => s,
+            // The turn page rests until the reader closes it — except the
+            // scribe: a transcription under way is collected here, offered
+            // when whole, and expired when it goes stale.
+            State::SessionPage { session, remaining, stale, armed, mut status, mut controls,
+                page, saved, return_to, note, scribe } => {
+                let (scribe, status_change, redraw) = scribe_tick(scribe, ORACLE_PATIENCE);
+                if let Some(s) = status_change {
+                    status = s;
+                }
+                if redraw {
+                    redraw_session_page(&mut surf, &disp, &ui_font, &session, remaining, stale,
+                        armed, status.as_deref(), page, &vocab, &scribe, &note, &mut controls);
+                }
+                State::SessionPage { session, remaining, stale, armed, status, controls,
+                    page, saved, return_to, note, scribe }
+            }
 
             State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
@@ -2050,34 +2112,85 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
 /// pending action counts as destructive: the first tick arms the box, the
 /// second sends. Reject is always cheaper — a strike takes effect at once.
 /// See docs/anthink-interaction.md.
+#[allow(clippy::too_many_arguments)]
 fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
-    disp: &display::Display, ui_font: &FontRef) {
+    disp: &display::Display, ui_font: &FontRef, oracle: &Option<oracle::Oracle>,
+    vocab: &[(String, String)]) {
     let Some(stroke) = ink.stroke_list().last().cloned() else { return };
     let _ = ink.pop_stroke();
-    let State::SessionPage { session, remaining, stale, armed, status, boxr, page, .. } = state else {
+    let State::SessionPage { session, remaining, stale, armed, status, controls, page,
+        note, scribe, .. } = state else {
         return;
     };
     let mut sb = BBox::empty();
     for &(x, y, r) in &stroke {
         sb.add(x, y, r);
     }
-    match boxr.as_ref().and_then(|b| classify_mark(&stroke, &sb, b)) {
-        // A mark that hit nothing is a note. Its ink stays on the page (the
-        // stroke is already absorbed from the data, so it can never be
-        // committed) — wiping it instantly read as breakage on hardware.
-        None => return,
-        Some(PageMark::Strike) => {
-            // Only a pending action has something to reject.
-            if boxr.map(|b| b.decision) == Some(ui::Decision::Approve) {
-                *status = Some(match bridge::post_nudge(&session.id, "strike", None) {
-                    Ok(()) => "REJECTED · SENT".to_string(),
-                    Err(e) => e.to_uppercase(),
-                });
-                *armed = false;
-            }
+    let mark = controls.boxr.as_ref().and_then(|b| classify_mark(&stroke, &sb, b));
+    let bubble = bubble_hit(&sb, &controls.bubbles);
+    let has_note = note.iter().any(|(p, _)| p == page);
+    match mark_act(mark, bubble.is_some(), scribe, *armed, has_note,
+        controls.boxr.map(|b| b.decision)) {
+        MarkAct::Note => {
+            note.push((*page, stroke));
+            return;
         }
-        Some(PageMark::Tick) if *armed => {
-            let sent = match boxr.map(|b| b.decision) {
+        MarkAct::Ignore => return,
+        MarkAct::Bubble => {
+            let b = bubble.expect("Bubble acts only on a hit");
+            *status = Some(match bridge::post_nudge(&session.id, "text", Some(&b.phrase)) {
+                Ok(()) => format!("SENT · {}", b.tag),
+                Err(e) => e.to_uppercase(),
+            });
+            *armed = false;
+        }
+        MarkAct::BubbleBlocked => {
+            *status = Some("NOTE ON PAGE · TICK SENDS IT · STRIKE CLEARS IT".to_string());
+        }
+        MarkAct::SendNote => {
+            let Scribe::Confirm { text, .. } = scribe else { unreachable!() };
+            let sent = bridge::post_nudge(&session.id, "text", Some(text));
+            *status = Some(match sent {
+                Ok(()) => "SENT".to_string(),
+                Err(e) => e.to_uppercase(),
+            });
+            note.retain(|(p, _)| p != page);
+            *scribe = Scribe::Idle;
+            *armed = false;
+        }
+        // The offered transcription, declined: back to the pen. The ink
+        // stays so one bad word can be fixed and the note re-ticked.
+        MarkAct::DropOffer => {
+            *scribe = Scribe::Idle;
+            *status = None;
+        }
+        MarkAct::Transcribe => {
+            *scribe = match begin_transcription(note, *page, oracle) {
+                Ok(rx) => {
+                    *status = None;
+                    Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() }
+                }
+                Err(e) => {
+                    eprintln!("g-pad: note snapshot failed: {e}");
+                    *status = Some("INK NOT READ · TRY AGAIN OR USE A BUBBLE".to_string());
+                    Scribe::Idle
+                }
+            };
+            *armed = false;
+        }
+        MarkAct::ClearNote => {
+            note.retain(|(p, _)| p != page);
+            *status = Some("NOTE CLEARED".to_string());
+        }
+        MarkAct::Reject => {
+            *status = Some(match bridge::post_nudge(&session.id, "strike", None) {
+                Ok(()) => "REJECTED · SENT".to_string(),
+                Err(e) => e.to_uppercase(),
+            });
+            *armed = false;
+        }
+        MarkAct::SendCanned => {
+            let sent = match controls.boxr.map(|b| b.decision) {
                 Some(ui::Decision::Continue) => bridge::post_nudge(&session.id, "text", Some("continue")),
                 _ => bridge::post_nudge(&session.id, "tick", None),
             };
@@ -2087,22 +2200,193 @@ fn session_page_mark(state: &mut State, ink: &mut ink::Ink, surf: &mut Surface,
             });
             *armed = false;
         }
-        Some(PageMark::Tick) => {
+        MarkAct::Arm => {
             *armed = true;
             *status = None;
         }
     }
-    *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
-        status.as_deref(), *page);
+    redraw_session_page(surf, disp, ui_font, session, *remaining, *stale, *armed,
+        status.as_deref(), *page, vocab, scribe, note, controls);
+}
+
+/// What a mark on the turn page does. Every input is where the ink landed
+/// or what the page already holds; nothing here touches the world, so the
+/// whole decision table is testable without a screen or a network.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MarkAct {
+    /// The stroke is the reviewer's words: keep it, ink and data both.
+    Note,
+    /// Send the bubble's canned phrase.
+    Bubble,
+    /// A bubble was marked while this page holds a note; the two must not
+    /// race, so the bubble stays quiet and the box says why.
+    BubbleBlocked,
+    /// Confirm tick: the offered transcription goes to the session.
+    SendNote,
+    /// Confirm strike: decline the offer, keep the ink for correction.
+    DropOffer,
+    /// Idle tick with ink on the page: read the note.
+    Transcribe,
+    /// Idle strike with ink on the page: absorb the note.
+    ClearNote,
+    /// Idle strike on a pending action, page clean: reject it.
+    Reject,
+    /// Idle armed tick, page clean: approve, or nudge forward.
+    SendCanned,
+    Arm,
+    Ignore,
+}
+
+/// The design's one rule, as a table: ink on the page changes what a mark
+/// means — a tick sends the words, a strike clears them. Command marks act
+/// on the session only while the visible page is clean of note ink.
+fn mark_act(mark: Option<PageMark>, bubble: bool, scribe: &Scribe, armed: bool,
+    has_note: bool, decision: Option<ui::Decision>) -> MarkAct {
+    if mark.is_none() && bubble {
+        return match scribe {
+            // While reading or offering, chrome is inert — a mark on it is
+            // neither a command nor the reviewer's words.
+            Scribe::Reading { .. } | Scribe::Confirm { .. } => MarkAct::Ignore,
+            Scribe::Idle if has_note => MarkAct::BubbleBlocked,
+            Scribe::Idle => MarkAct::Bubble,
+        };
+    }
+    let Some(mark) = mark else {
+        // Off every control: the reviewer's words. Deliberately kept even
+        // while reading or offering — write the fix first, then strike the
+        // offer and re-tick: the next snapshot carries the amended note.
+        return MarkAct::Note;
+    };
+    match (mark, scribe) {
+        (_, Scribe::Reading { .. }) => MarkAct::Ignore,
+        (PageMark::Tick, Scribe::Confirm { .. }) => MarkAct::SendNote,
+        (PageMark::Strike, Scribe::Confirm { .. }) => MarkAct::DropOffer,
+        (PageMark::Tick, Scribe::Idle) if has_note => MarkAct::Transcribe,
+        (PageMark::Strike, Scribe::Idle) if has_note => MarkAct::ClearNote,
+        (PageMark::Tick, Scribe::Idle) if armed => MarkAct::SendCanned,
+        (PageMark::Tick, Scribe::Idle) => MarkAct::Arm,
+        (PageMark::Strike, Scribe::Idle) if decision == Some(ui::Decision::Approve) => MarkAct::Reject,
+        (PageMark::Strike, Scribe::Idle) => MarkAct::Ignore,
+    }
+}
+
+/// Redraw the whole turn page and repaint the note over it: the redraw
+/// absorbs command ink, but the reviewer's words must survive it.
+#[allow(clippy::too_many_arguments)]
+fn redraw_session_page(surf: &mut Surface, disp: &display::Display, ui_font: &FontRef,
+    session: &bridge::Session, remaining: usize, stale: bool, armed: bool,
+    status: Option<&str>, page: usize, vocab: &[(String, String)], scribe: &Scribe,
+    note: &[NoteStroke], controls: &mut ui::PageControls) {
+    *controls = ui::draw_session_page(surf, ui_font, session, remaining, stale, armed,
+        status, page, vocab, scribe.face());
+    repaint_note(surf, note, page);
     disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+}
+
+/// Re-ink the visible page's note strokes exactly as the pen laid them down.
+/// Other pages' strokes stay hidden until their page is turned back to.
+fn repaint_note(surf: &mut Surface, note: &[NoteStroke], page: usize) {
+    let mut tmp = ink::Ink::new();
+    for (_, stroke) in note.iter().filter(|(p, _)| *p == page) {
+        for &(x, y, r) in stroke {
+            tmp.pen_point(surf, x, y, r);
+        }
+        tmp.pen_up();
+    }
+}
+
+/// Snapshot the visible page's note — strokes alone on a white page, so the
+/// oracle never reads printed text as the reviewer's words — and ask for a
+/// transcription.
+fn begin_transcription(note: &[NoteStroke], page: usize,
+    oracle: &Option<oracle::Oracle>) -> Result<OracleRx, String> {
+    let Some(o) = oracle else {
+        return Err("no oracle configured".to_string());
+    };
+    let mut buf = vec![0xFFu8; SCREEN_W * SCREEN_H * 4];
+    let ptr = buf.as_mut_ptr();
+    let mut scratch = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
+    let mut tmp = ink::Ink::new();
+    for (_, stroke) in note.iter().filter(|(p, _)| *p == page) {
+        for &(x, y, r) in stroke {
+            tmp.pen_point(&mut scratch, x, y, r);
+        }
+        tmp.pen_up();
+    }
+    ink::region_png(&scratch, tmp.bbox, NOTE_PNG).map_err(|e| e.to_string())?;
+    let (tx, rx) = mpsc::channel();
+    o.ask(NOTE_PNG, &oracle::transcribe_context(), tx);
+    if std::env::var_os("RIDDLE_KEEP_PAGE").is_none() {
+        let _ = std::fs::remove_file(NOTE_PNG);
+    }
+    Ok(rx)
+}
+
+/// A deliberate mark whose center lands inside a bubble picks that bubble.
+fn bubble_hit<'a>(sb: &BBox, bubbles: &'a [ui::Bubble]) -> Option<&'a ui::Bubble> {
+    let (cx, cy) = ((sb.x0 + sb.x1) / 2, (sb.y0 + sb.y1) / 2);
+    bubbles.iter().find(|b| {
+        cx >= b.x as i32 && cx < (b.x + b.w) as i32 && cy >= b.y as i32 && cy < (b.y + b.h) as i32
+    })
+}
+
+/// Advance the scribe between frames: collect the oracle's reply, offer the
+/// finished transcription, expire a stale offer. Returns the new scribe, a
+/// status to show (None = leave the status alone), and whether to redraw.
+fn scribe_tick(scribe: Scribe, patience: Duration) -> (Scribe, Option<Option<String>>, bool) {
+    const FAILED: &str = "INK NOT READ · TRY AGAIN OR USE A BUBBLE";
+    match scribe {
+        Scribe::Reading { rx, mut acc, mut postscript, since } => loop {
+            match rx.try_recv() {
+                Ok(Ok(Event::Ink(s))) => {
+                    if !acc.is_empty() {
+                        acc.push(' ');
+                    }
+                    acc.push_str(s.trim());
+                }
+                // The diary protocol's ⁂-postscript: kept as the fallback —
+                // a model obeying that protocol over the transcribe
+                // instruction puts the writer's words here, not in prose.
+                Ok(Ok(Event::Transcript(t))) => postscript = Some(t),
+                Ok(Ok(Event::Show(_))) => {}
+                Ok(Err(e)) => {
+                    eprintln!("g-pad: transcription failed: {e}");
+                    return (Scribe::Idle, Some(Some(FAILED.to_string())), true);
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    if since.elapsed() > patience {
+                        eprintln!("g-pad: transcription timed out");
+                        return (Scribe::Idle, Some(Some(FAILED.to_string())), true);
+                    }
+                    return (Scribe::Reading { rx, acc, postscript, since }, None, false);
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    let mut text = acc.trim().to_string();
+                    if text.is_empty() {
+                        text = postscript.map(|p| p.trim().to_string()).unwrap_or_default();
+                    }
+                    return if text.is_empty() {
+                        (Scribe::Idle, Some(Some(FAILED.to_string())), true)
+                    } else {
+                        (Scribe::Confirm { text, since: Instant::now() }, Some(None), true)
+                    };
+                }
+            }
+        },
+        Scribe::Confirm { since, .. } if since.elapsed() > patience.min(CONFIRM_PATIENCE) => {
+            (Scribe::Idle, Some(None), true)
+        }
+        other => (other, None, false),
+    }
 }
 
 /// Flip the turn page: a downward swipe pages back to earlier turns, an
 /// upward swipe returns toward the newest. The whole page redraws (the box
 /// and its hit map ride along), and a flip past either end simply holds.
 fn session_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
-    disp: &display::Display, ui_font: &FontRef) {
-    let State::SessionPage { session, remaining, stale, armed, status, boxr, page, .. } = state else {
+    disp: &display::Display, ui_font: &FontRef, vocab: &[(String, String)]) {
+    let State::SessionPage { session, remaining, stale, armed, status, controls, page,
+        note, scribe, .. } = state else {
         return;
     };
     let pages = ui::session_page_count(ui_font, session);
@@ -2115,9 +2399,8 @@ fn session_page_flip(delta: i32, state: &mut State, surf: &mut Surface,
         return;
     }
     *page = want;
-    *boxr = ui::draw_session_page(surf, ui_font, session, *remaining, *stale, *armed,
-        status.as_deref(), *page);
-    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+    redraw_session_page(surf, disp, ui_font, session, *remaining, *stale, *armed,
+        status.as_deref(), *page, vocab, scribe, note, controls);
 }
 
 /// Anchored reading: where the mark landed, plus one cheap global property.
@@ -2220,9 +2503,10 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surface,
     disp: &display::Display, ui_font: &FontRef, reply_font: &FontRef, store: &Option<memory::MemoryStore>,
-    selection: &mut Option<usize>, scroll: &mut i32) {
+    selection: &mut Option<usize>, scroll: &mut i32, vocab: &[(String, String)]) {
     if action == ui::Action::Close {
         close_overlay(state, surf, disp, selection, scroll); return;
     }
@@ -2247,11 +2531,13 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             State::SessionPage { saved, return_to, .. } => (saved, *return_to),
             other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
         };
-        let boxr = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale, false, None, 0);
+        let controls = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale,
+            false, None, 0, vocab, ui::BoxFace::Idle);
         disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
         *state = State::SessionPage {
-            session, remaining, stale: held.stale, armed: false, status: None, boxr,
-            page: 0, saved, return_to: Box::new(old),
+            session: Box::new(session), remaining, stale: held.stale, armed: false,
+            status: None, controls, page: 0, saved, return_to: Box::new(old),
+            note: Vec::new(), scribe: Scribe::Idle,
         };
         return;
     }
@@ -2672,6 +2958,155 @@ mod ux_tests {
         // Center inside: aimed.
         let aimed = stroke_between(600, 1590, 620, 1690);
         assert_eq!(classify_mark(&aimed, &bbox_of(&aimed), &b), Some(PageMark::Tick));
+    }
+
+    fn bubble(x: usize, tag: &str) -> ui::Bubble {
+        ui::Bubble { x, y: 1500, w: 220, h: 64, tag: tag.into(), phrase: format!("{tag} phrase") }
+    }
+
+    #[test]
+    fn a_mark_centered_in_a_bubble_picks_it_and_a_miss_picks_none() {
+        let bubbles = vec![bubble(44, "CONTINUE"), bubble(300, "SHIP IT")];
+        let inside = bbox_of(&stroke_between(320, 1520, 360, 1550));
+        assert_eq!(bubble_hit(&inside, &bubbles).map(|b| b.tag.as_str()), Some("SHIP IT"));
+        let above = bbox_of(&stroke_between(320, 1300, 360, 1350));
+        assert!(bubble_hit(&above, &bubbles).is_none());
+        assert!(bubble_hit(&inside, &[]).is_none());
+    }
+
+    #[test]
+    fn the_scribe_offers_the_whole_reply_and_only_the_whole_reply() {
+        // The fake oracle: a hand-fed channel, exactly what ask() would use.
+        let (tx, rx) = mpsc::channel();
+        let scribe = Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() };
+        tx.send(Ok(Event::Ink("run the tests".into()))).unwrap();
+        let (scribe, status, redraw) = scribe_tick(scribe, ORACLE_PATIENCE);
+        // Chunks arrived but the stream is open: still reading, no offer.
+        assert!(matches!(scribe, Scribe::Reading { .. }));
+        assert!(status.is_none() && !redraw);
+        tx.send(Ok(Event::Ink("again, please.".into()))).unwrap();
+        // The diary protocol's postscript is not the reviewer's words.
+        tx.send(Ok(Event::Transcript("run the tests".into()))).unwrap();
+        drop(tx);
+        let (scribe, status, redraw) = scribe_tick(scribe, ORACLE_PATIENCE);
+        match scribe {
+            Scribe::Confirm { text, .. } => assert_eq!(text, "run the tests again, please."),
+            _ => panic!("a closed stream with text must offer the transcription"),
+        }
+        assert_eq!(status, Some(None));
+        assert!(redraw);
+    }
+
+    #[test]
+    fn a_failed_or_empty_transcription_returns_to_idle_with_the_ink_kept() {
+        let (tx, rx) = mpsc::channel();
+        tx.send(Err("http 500: oracle down".to_string())).unwrap();
+        let (scribe, status, redraw) =
+            scribe_tick(Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() }, ORACLE_PATIENCE);
+        assert!(matches!(scribe, Scribe::Idle));
+        assert_eq!(status, Some(Some("INK NOT READ · TRY AGAIN OR USE A BUBBLE".to_string())));
+        assert!(redraw);
+        // A stream that closes without a word reads as failure, never as
+        // an empty instruction to send.
+        let (tx, rx) = mpsc::channel::<Result<Event, String>>();
+        drop(tx);
+        let (scribe, status, _) =
+            scribe_tick(Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() }, ORACLE_PATIENCE);
+        assert!(matches!(scribe, Scribe::Idle));
+        assert_eq!(status, Some(Some("INK NOT READ · TRY AGAIN OR USE A BUBBLE".to_string())));
+    }
+
+    #[test]
+    fn the_postscript_is_the_fallback_never_the_preference() {
+        // With memory on, the diary protocol makes the model end with a
+        // ⁂-transcription. When the prose reply is empty, those are the
+        // writer's words; when prose exists, the instruction-following
+        // reply wins.
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(Event::Transcript("ship the fix".into()))).unwrap();
+        drop(tx);
+        let (scribe, _, _) = scribe_tick(
+            Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() },
+            ORACLE_PATIENCE);
+        match scribe {
+            Scribe::Confirm { text, .. } => assert_eq!(text, "ship the fix"),
+            _ => panic!("an empty prose reply must fall back to the postscript"),
+        }
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(Event::Ink("ship the fix now".into()))).unwrap();
+        tx.send(Ok(Event::Transcript("shp the fx".into()))).unwrap();
+        drop(tx);
+        let (scribe, _, _) = scribe_tick(
+            Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() },
+            ORACLE_PATIENCE);
+        match scribe {
+            Scribe::Confirm { text, .. } => assert_eq!(text, "ship the fix now"),
+            _ => panic!("prose must win over the postscript"),
+        }
+    }
+
+    #[test]
+    fn ink_on_the_page_flips_what_a_mark_means() {
+        use ui::Decision::{Approve, Continue};
+        // The one rule: with note ink, tick sends the words, strike clears
+        // them — for a waiting session exactly as for a done one.
+        for d in [Some(Approve), Some(Continue)] {
+            assert_eq!(mark_act(Some(PageMark::Tick), false, &Scribe::Idle, false, true, d),
+                MarkAct::Transcribe);
+            assert_eq!(mark_act(Some(PageMark::Strike), false, &Scribe::Idle, false, true, d),
+                MarkAct::ClearNote);
+        }
+        // A clean page keeps the old meanings.
+        assert_eq!(mark_act(Some(PageMark::Tick), false, &Scribe::Idle, false, false, Some(Approve)),
+            MarkAct::Arm);
+        assert_eq!(mark_act(Some(PageMark::Tick), false, &Scribe::Idle, true, false, Some(Approve)),
+            MarkAct::SendCanned);
+        assert_eq!(mark_act(Some(PageMark::Strike), false, &Scribe::Idle, false, false, Some(Approve)),
+            MarkAct::Reject);
+        assert_eq!(mark_act(Some(PageMark::Strike), false, &Scribe::Idle, false, false, Some(Continue)),
+            MarkAct::Ignore);
+    }
+
+    #[test]
+    fn bubbles_are_blocked_by_a_note_and_inert_while_reading_or_offering() {
+        let (_tx, rx) = mpsc::channel();
+        let reading = Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() };
+        let confirm = Scribe::Confirm { text: "words".into(), since: Instant::now() };
+        assert_eq!(mark_act(None, true, &Scribe::Idle, false, false, None), MarkAct::Bubble);
+        assert_eq!(mark_act(None, true, &Scribe::Idle, false, true, None), MarkAct::BubbleBlocked);
+        assert_eq!(mark_act(None, true, &reading, false, true, None), MarkAct::Ignore);
+        assert_eq!(mark_act(None, true, &confirm, false, true, None), MarkAct::Ignore);
+        // Box marks while reading are ignored; while offering they decide.
+        assert_eq!(mark_act(Some(PageMark::Tick), false, &reading, false, true, None), MarkAct::Ignore);
+        assert_eq!(mark_act(Some(PageMark::Tick), false, &confirm, false, true, None), MarkAct::SendNote);
+        assert_eq!(mark_act(Some(PageMark::Strike), false, &confirm, false, true, None), MarkAct::DropOffer);
+        // Off every control, ink is always the reviewer's words — even while
+        // an offer is up: write the fix, strike the offer, tick again.
+        assert_eq!(mark_act(None, false, &confirm, false, true, None), MarkAct::Note);
+        assert_eq!(mark_act(None, false, &reading, false, false, None), MarkAct::Note);
+        assert_eq!(mark_act(None, false, &Scribe::Idle, false, false, None), MarkAct::Note);
+    }
+
+    #[test]
+    fn a_silent_oracle_times_out_and_a_stale_offer_expires() {
+        let (tx, rx) = mpsc::channel::<Result<Event, String>>();
+        std::thread::sleep(Duration::from_millis(2));
+        let (scribe, status, _) =
+            scribe_tick(Scribe::Reading { rx, acc: String::new(), postscript: None, since: Instant::now() - Duration::from_millis(1) },
+                Duration::ZERO);
+        assert!(matches!(scribe, Scribe::Idle), "silence past patience gives the page back");
+        assert!(status.is_some());
+        drop(tx);
+        let (scribe, status, redraw) =
+            scribe_tick(Scribe::Confirm { text: "old words".into(), since: Instant::now() - Duration::from_millis(1) },
+                Duration::ZERO);
+        assert!(matches!(scribe, Scribe::Idle), "a stale SEND must not stay tickable");
+        assert_eq!(status, Some(None));
+        assert!(redraw);
+        // A fresh offer holds.
+        let (scribe, _, _) =
+            scribe_tick(Scribe::Confirm { text: "new words".into(), since: Instant::now() }, ORACLE_PATIENCE);
+        assert!(matches!(scribe, Scribe::Confirm { .. }));
     }
 
     #[test]

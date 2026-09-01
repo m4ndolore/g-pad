@@ -1,7 +1,7 @@
 # Ink Continuation — freeform and canned nudges from the turn page
 
 Date: 2026-08-31
-Status: design approved, not yet implemented
+Status: implemented (see "As built" at the end for review-driven refinements)
 
 ## Problem
 
@@ -97,3 +97,31 @@ with a fake oracle channel (the `rx` is an mpsc receiver, so tests feed
 canned transcriptions — no network); `classify_mark` grows bubble-hit cases
 from synthetic strokes; hub tests stand untouched. Final verification is a
 hardware read on the rM2, as the turn page received.
+
+## As built
+
+The review pass sharpened four points; the code follows these, not the
+sections above, where they differ:
+
+- **The one rule is symmetric.** Ink on the page flips *both* marks: a tick
+  sends the words, a strike clears them (`NOTE CLEARED`). Rejecting a
+  pending action with a strike requires a page clean of note ink — so a
+  reject can never silently coexist with unspoken words. The
+  strike-on-`SEND:` offer still declines without clearing, which is the
+  fix-one-word loop.
+- **Notes are per page.** Each stroke is tagged with the turn page it was
+  written on; flips hide other pages' strokes rather than smearing them over
+  new text, and a tick transcribes and sends only the visible page's words.
+- **Bubbles block on a pending note.** A bubble marked while the visible
+  page holds note ink does not fire; the box explains
+  (`NOTE ON PAGE · TICK SENDS IT · STRIKE CLEARS IT`). Bubbles are also
+  inert while reading or offering.
+- **The memory protocol is tolerated, not fought.** With the pad's memory
+  on, both oracle backends carry the diary's ⁂-postscript protocol in their
+  system prompt (Pi bakes it at spawn; it cannot be suppressed per turn). A
+  model may follow it instead of the transcribe instruction, so the
+  collector keeps the ⁂ transcription as a fallback used when the prose
+  reply is empty. The confirm-before-send face remains the guard either way.
+- The mark semantics live in a pure decision table (`mark_act`), tested
+  exhaustively without a screen or network; `session_page_mark` only carries
+  out its verdicts.

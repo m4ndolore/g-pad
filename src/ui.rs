@@ -248,8 +248,42 @@ pub struct DecisionBox {
     pub decision: Decision,
 }
 
+/// One canned nudge, rendered as a small outlined tag above the decision
+/// box. A mark whose center lands inside sends `phrase` to the session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bubble {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub tag: String,
+    pub phrase: String,
+}
+
+/// Everything on the turn page a pen mark can hit, returned by drawing so
+/// the hit map can never drift from what was painted.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PageControls {
+    pub boxr: Option<DecisionBox>,
+    pub bubbles: Vec<Bubble>,
+}
+
+/// The decision box's face while the pad reads or offers back a note.
+/// `Idle` is the box as it always was; the other two belong to the
+/// handwritten-nudge flow (see docs/plans/2026-08-31-ink-continuation-design.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoxFace<'a> {
+    Idle,
+    Reading,
+    Confirm(&'a str),
+}
+
 /// Room the decision box claims above the footer, gap included.
 const DECISION_H: usize = 170;
+/// Room the nudge-bubble row claims above the decision box, gap included.
+const BUBBLE_ROW_H: usize = 90;
+/// A bubble's height; the rest of BUBBLE_ROW_H is the gap below it.
+const BUBBLE_H: usize = 64;
 /// Labels on the full page are set for the panel's density, not the drawer's.
 const PAGE_LABEL_PX: f32 = 36.0;
 
@@ -266,8 +300,13 @@ fn decision_for(state: &str) -> Option<Decision> {
 /// `draw_session_page` will draw it — the flip handler must not step past
 /// what drawing can show.
 pub fn session_page_count(font: &FontRef, session: &crate::bridge::Session) -> usize {
-    let reserved = if decision_for(&session.state).is_some() { DECISION_H } else { 0 };
-    crate::bridge::layout_session_page(font, session, reserved, 0).pages
+    crate::bridge::layout_session_page(font, session, page_reserved(&session.state), 0).pages
+}
+
+/// Room the page's controls claim above the footer: the decision box plus
+/// the bubble row, or nothing when the session asks nothing of the human.
+fn page_reserved(state: &str) -> usize {
+    if decision_for(state).is_some() { DECISION_H + BUBBLE_ROW_H } else { 0 }
 }
 
 /// The turn page's header targets. `← AGENTS` on the left returns to the
@@ -302,10 +341,10 @@ pub fn session_page_action(x: i32, y: i32) -> Action {
 #[allow(clippy::too_many_arguments)]
 pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::bridge::Session,
     remaining: usize, stale: bool, armed: bool, status: Option<&str>,
-    want_page: usize) -> Option<DecisionBox> {
+    want_page: usize, vocab: &[(String, String)], face: BoxFace) -> PageControls {
     use crate::page;
     let decision = decision_for(&session.state);
-    let reserved = if decision.is_some() { DECISION_H } else { 0 };
+    let reserved = page_reserved(&session.state);
     let layout = crate::bridge::layout_session_page(font, session, reserved, want_page);
     // Full-page surface: `text` clips at the drawer's PANEL_W, which on the
     // first hardware read left the right half of every line blank.
@@ -354,27 +393,64 @@ pub fn draw_session_page(surf: &mut Surface, font: &FontRef, session: &crate::br
     if !footer.is_empty() {
         full_text(surf, font, &footer.to_uppercase(), PAGE_LABEL_PX, page::PAD, SCREEN_H - 66, BLUE);
     }
-    decision.map(|d| draw_decision_box(surf, font, d, armed, status))
+    match decision {
+        Some(d) => PageControls {
+            bubbles: draw_bubbles(surf, font, vocab),
+            boxr: Some(draw_decision_box(surf, font, d, armed, status, face)),
+        },
+        None => PageControls::default(),
+    }
+}
+
+/// The bubble row: small outlined tags above the decision box, each sized to
+/// its label. Tags that would run off the page are simply not drawn — the
+/// vocabulary is the reviewer's own, and a too-long list loses its tail.
+fn draw_bubbles(surf: &mut Surface, font: &FontRef, vocab: &[(String, String)]) -> Vec<Bubble> {
+    use crate::page;
+    let y = page::limit(0) - (DECISION_H - 40) - BUBBLE_ROW_H + (BUBBLE_ROW_H - BUBBLE_H);
+    let mut x = page::PAD;
+    let mut out = Vec::new();
+    for (tag, phrase) in vocab {
+        let w = script::measure(font, tag, PAGE_LABEL_PX) as usize + 48;
+        if x + w > SCREEN_W - page::PAD {
+            break;
+        }
+        surf.fill_rect(x, y, w, 3, BLACK);
+        surf.fill_rect(x, y + BUBBLE_H - 3, w, 3, BLACK);
+        surf.fill_rect(x, y, 3, BUBBLE_H, BLACK);
+        surf.fill_rect(x + w - 3, y, 3, BUBBLE_H, BLACK);
+        full_text(surf, font, tag, PAGE_LABEL_PX, x + 24, y + BUBBLE_H / 2 - 20, BLACK);
+        out.push(Bubble { x, y, w, h: BUBBLE_H, tag: tag.clone(), phrase: phrase.clone() });
+        x += w + 24;
+    }
+    out
 }
 
 /// The box itself: a fixed, known, anchored target that requires no
 /// recognition and no precision. Armed, it inverts — the pad's stand-in for
 /// vermilion, and unmistakable on a grayscale panel.
 fn draw_decision_box(surf: &mut Surface, font: &FontRef, decision: Decision, armed: bool,
-    status: Option<&str>) -> DecisionBox {
+    status: Option<&str>, face: BoxFace) -> DecisionBox {
     use crate::page;
     let x = page::PAD;
     let w = SCREEN_W - page::PAD * 2;
     let h = DECISION_H - 40; // the rest is the gap above
     let y = page::limit(0) - h;
-    let label = match (status, armed, decision) {
-        (Some(s), _, _) => one_line(s, 56),
-        (None, false, Decision::Approve) => "PENDING ACTION · TICK TO APPROVE · STRIKE TO REJECT".into(),
-        (None, true, Decision::Approve) => "TICK AGAIN TO APPROVE — TREATED AS DESTRUCTIVE".into(),
-        (None, false, Decision::Continue) => "TURN FINISHED · TICK TO NUDGE FORWARD".into(),
-        (None, true, Decision::Continue) => "TICK AGAIN TO SEND CONTINUE".into(),
+    let label = match face {
+        BoxFace::Reading => "READING YOUR INK…".to_string(),
+        // The note offered back, hot like an armed box: one tick commits it.
+        BoxFace::Confirm(t) => one_line(&format!("SEND \u{201c}{t}\u{201d} · TICK TO SEND · STRIKE TO DISCARD"), 72),
+        BoxFace::Idle => match (status, armed, decision) {
+            (Some(s), _, _) => one_line(s, 56),
+            (None, false, Decision::Approve) => "PENDING ACTION · TICK TO APPROVE · STRIKE TO REJECT".into(),
+            (None, true, Decision::Approve) => "TICK AGAIN TO APPROVE — TREATED AS DESTRUCTIVE".into(),
+            (None, false, Decision::Continue) => "TURN FINISHED · TICK TO NUDGE FORWARD".into(),
+            (None, true, Decision::Continue) => "TICK AGAIN TO SEND CONTINUE".into(),
+        },
     };
-    if armed && status.is_none() {
+    let hot = matches!(face, BoxFace::Confirm(_))
+        || (face == BoxFace::Idle && armed && status.is_none());
+    if hot {
         surf.fill_rect(x, y, w, h, BLACK);
         full_text(surf, font, &label, PAGE_LABEL_PX, x + 32, y + h / 2 - 20, WHITE);
     } else {
@@ -867,25 +943,42 @@ mod tests {
                 label: "edited".into(),
             }],
         };
+        let vocab = crate::preferences::DEFAULT_BUBBLES
+            .iter()
+            .map(|&(t, p)| (t.to_string(), p.to_string()))
+            .collect::<Vec<_>>();
         // Waiting: the decision box is on the page, and arming redraws it.
-        let boxr = draw_session_page(&mut surf, &font, &session, 3, true, false, None, 0);
-        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Approve));
-        let armed = draw_session_page(&mut surf, &font, &session, 3, true, true, None, 0);
-        assert_eq!(armed, boxr, "arming changes the drawing, never the hit map");
-        // Done: a tick means nudge forward. Running: nothing to decide.
+        let c = draw_session_page(&mut surf, &font, &session, 3, true, false, None, 0, &vocab, BoxFace::Idle);
+        assert_eq!(c.boxr.map(|b| b.decision), Some(Decision::Approve));
+        let armed = draw_session_page(&mut surf, &font, &session, 3, true, true, None, 0, &vocab, BoxFace::Idle);
+        assert_eq!(armed, c, "arming changes the drawing, never the hit map");
+        // The bubble row rides above the box: every tag laid out, none
+        // overlapping the box, and the same hit map on every face.
+        assert_eq!(c.bubbles.len(), vocab.len());
+        let boxr = c.boxr.unwrap();
+        for b in &c.bubbles {
+            assert!(b.y + b.h <= boxr.y, "a bubble must sit above the box");
+            assert!(b.x + b.w <= SCREEN_W, "a bubble must stay on the page");
+        }
+        let confirm = draw_session_page(&mut surf, &font, &session, 3, true, false, None, 0,
+            &vocab, BoxFace::Confirm("run the tests again"));
+        assert_eq!(confirm, c, "the face changes the drawing, never the hit map");
+        // Done: a tick means nudge forward. Running: nothing to decide, no bubbles.
         let mut done = session.clone();
         done.state = "done".into();
-        let boxr = draw_session_page(&mut surf, &font, &done, 0, false, false, None, 0);
-        assert_eq!(boxr.map(|b| b.decision), Some(Decision::Continue));
+        let c = draw_session_page(&mut surf, &font, &done, 0, false, false, None, 0, &vocab, BoxFace::Idle);
+        assert_eq!(c.boxr.map(|b| b.decision), Some(Decision::Continue));
+        assert!(!c.bubbles.is_empty(), "a finished session accepts text");
         let mut running = session.clone();
         running.state = "running".into();
-        assert_eq!(draw_session_page(&mut surf, &font, &running, 0, false, false, None, 0), None);
+        let c = draw_session_page(&mut surf, &font, &running, 0, false, false, None, 0, &vocab, BoxFace::Idle);
+        assert_eq!(c, PageControls::default());
         // 30 turns run past one page; the box (and its hit map) rides every
         // page, so a decision is never out of reach while reading earlier.
         let pages = session_page_count(&font, &session);
         assert!(pages > 1, "30 turns cannot fit one page");
-        let later = draw_session_page(&mut surf, &font, &session, 3, true, false, None, pages - 1);
-        assert_eq!(later.map(|b| b.decision), Some(Decision::Approve));
+        let later = draw_session_page(&mut surf, &font, &session, 3, true, false, None, pages - 1, &vocab, BoxFace::Idle);
+        assert_eq!(later.boxr.map(|b| b.decision), Some(Decision::Approve));
     }
 
     #[test]
@@ -909,7 +1002,7 @@ mod tests {
             }],
             artifacts: Vec::new(),
         };
-        draw_session_page(&mut surf, &font, &session, 0, false, false, None, 0);
+        draw_session_page(&mut surf, &font, &session, 0, false, false, None, 0, &[], BoxFace::Idle);
         let dark_right = (PANEL_W..SCREEN_W).step_by(3).any(|x| {
             (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
         });
