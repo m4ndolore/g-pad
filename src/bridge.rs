@@ -277,14 +277,29 @@ pub fn spawn_poll() {
             .timeout(std::time::Duration::from_secs(10))
             .build();
         let url = sessions_url(&base);
+        let auth = bearer();
         loop {
-            match agent.get(&url).call().ok().and_then(|r| r.into_string().ok()) {
+            let mut req = agent.get(&url);
+            if let Some(a) = &auth {
+                req = req.set("Authorization", a);
+            }
+            match req.call().ok().and_then(|r| r.into_string().ok()) {
                 Some(body) => replace(Bridge { sessions: parse_sessions(&body), stale: false }),
                 None => mark_stale(),
             }
             std::thread::sleep(std::time::Duration::from_secs(every));
         }
     });
+}
+
+/// The hub's token as a ready header value. A hub with `HUB_TOKEN` set
+/// refuses everything without it; without one the header simply never rides.
+fn bearer() -> Option<String> {
+    std::env::var("RIDDLE_BRIDGE_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("Bearer {t}"))
 }
 
 /// Carry one mark to the hub. Synchronous and short-fused: the hub is one
@@ -300,11 +315,13 @@ pub fn post_nudge(id: &str, mark: &str, text: Option<&str>) -> Result<(), String
         None => format!(r#"{{"mark":"{mark}"}}"#),
     };
     let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(5)).build();
-    match agent
+    let mut req = agent
         .post(&nudge_url(&base, id))
-        .set("Content-Type", "application/json")
-        .send_string(&body)
-    {
+        .set("Content-Type", "application/json");
+    if let Some(a) = bearer() {
+        req = req.set("Authorization", &a);
+    }
+    match req.send_string(&body) {
         Ok(_) => Ok(()),
         Err(ureq::Error::Status(code, r)) => {
             let detail = r.into_string().unwrap_or_default();

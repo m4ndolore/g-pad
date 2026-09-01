@@ -14,6 +14,14 @@
 //! shows its last-known sessions as `stale` — state is never invented.
 //!
 //! The pad never learns tmux or ssh exists.
+//!
+//! A nudge types into a real shell, so the hub is not open: without
+//! `HUB_TOKEN` it binds loopback only, and with one it requires
+//! `Authorization: Bearer` on every request (the pad sends
+//! `RIDDLE_BRIDGE_TOKEN`). Requests that arrive under a DNS name are
+//! refused — a browser on the LAN can be lured to `evil.example` rebound
+//! to this address, but it cannot send a bare IP in `Host`. `HUB_HOST`
+//! allowlists a real name if one is ever needed.
 
 mod config;
 mod tmux;
@@ -52,11 +60,92 @@ struct Hub {
     last_good: Mutex<HashMap<String, Vec<SessionData>>>,
 }
 
+/// What every request must pass before the hub will even route it.
+struct Gate {
+    /// The bearer token, when one is configured. None means the hub bound
+    /// loopback and trusts the machine it lives on.
+    token: Option<String>,
+    /// Hostnames allowed in `Host` beyond IP literals and localhost.
+    hosts: Vec<String>,
+}
+
+impl Gate {
+    fn from_env() -> Gate {
+        Gate {
+            token: std::env::var("HUB_TOKEN")
+                .ok()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty()),
+            hosts: std::env::var("HUB_HOST")
+                .map(|h| {
+                    h.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+
+    /// None when the request may proceed; otherwise why it may not.
+    fn deny(&self, host: Option<&str>, auth: Option<&str>) -> Option<(u16, &'static str)> {
+        // A browser always sends the name it navigated to, so a DNS name
+        // here is the rebinding tell. Non-browser clients send the IP they
+        // dialed, or nothing.
+        if let Some(h) = host {
+            if !host_is_safe(h, &self.hosts) {
+                return Some((403, "host not recognized"));
+            }
+        }
+        if let Some(token) = &self.token {
+            let sent = auth.and_then(|a| a.strip_prefix("Bearer "));
+            if !sent.is_some_and(|s| ct_eq(s.trim().as_bytes(), token.as_bytes())) {
+                return Some((401, "missing or wrong token"));
+            }
+        }
+        None
+    }
+}
+
+/// An acceptable `Host`: an IP literal, localhost, or an allowlisted name —
+/// with or without a port. `[::1]:9707` keeps its brackets off the IP.
+fn host_is_safe(host: &str, extra: &[String]) -> bool {
+    let bare = match host.strip_prefix('[') {
+        // Bracketed IPv6: the authority is what the brackets hold.
+        Some(rest) => match rest.split_once(']') {
+            Some((ip, _)) => ip,
+            None => return false,
+        },
+        None => host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host),
+    };
+    bare.parse::<std::net::IpAddr>().is_ok()
+        || bare.eq_ignore_ascii_case("localhost")
+        || extra.iter().any(|e| e.eq_ignore_ascii_case(bare))
+}
+
+/// Byte comparison that spends the same time on every wrong guess.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 fn main() {
     let port = std::env::var("HUB_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(9707u16);
+    let gate = Gate::from_env();
+    // Loopback by default either way: the pad reaches the hub through the
+    // reverse ssh tunnel (scripts/hub-tunnel.sh), so nothing on the LAN
+    // needs this port. With a token, HUB_BIND widens it deliberately;
+    // without one, a hub that can type into shells refuses to listen
+    // beyond the machine it trusts at all.
+    let bind = match &gate.token {
+        Some(_) => std::env::var("HUB_BIND").unwrap_or_else(|_| "127.0.0.1".to_string()),
+        None => {
+            eprintln!("anthink-hub: no HUB_TOKEN — loopback only; set one to gate requests");
+            "127.0.0.1".to_string()
+        }
+    };
     let default_projects = format!("{}/.claude/projects", home());
     let clients = config::load(&default_projects);
     for c in &clients {
@@ -76,12 +165,6 @@ fn main() {
         last_good: Mutex::new(HashMap::new()),
     };
 
-    // Loopback only: the hub speaks unauthenticated HTTP, serves whole
-    // session transcripts, and its nudge endpoint types into live sessions.
-    // The pad reaches it through the reverse ssh tunnel (scripts/
-    // hub-tunnel.sh), so nothing on the LAN needs this port. HUB_BIND
-    // widens it deliberately, never by accident.
-    let bind = std::env::var("HUB_BIND").unwrap_or_else(|_| "127.0.0.1".to_string());
     let server = match tiny_http::Server::http((bind.as_str(), port)) {
         Ok(s) => s,
         Err(e) => {
@@ -94,9 +177,25 @@ fn main() {
     // One thread per request: a stalled client must not block the pad's next
     // poll. The Hub is all Mutex-guarded state, so sharing it is safe.
     let hub = std::sync::Arc::new(hub);
+    let gate = std::sync::Arc::new(gate);
     for mut request in server.incoming_requests() {
         let hub = hub.clone();
+        let gate = gate.clone();
         std::thread::spawn(move || {
+            let header = |name: &'static str| {
+                request
+                    .headers()
+                    .iter()
+                    .find(|h| h.field.equiv(name))
+                    .map(|h| h.value.as_str().to_string())
+            };
+            if let Some((code, why)) = gate.deny(
+                header("Host").as_deref(),
+                header("Authorization").as_deref(),
+            ) {
+                let _ = request.respond(err_json(code, why));
+                return;
+            }
             let method = request.method().to_string();
             let url = request.url().to_string();
             let response = match (method.as_str(), url.as_str()) {
@@ -535,6 +634,80 @@ mod tests {
         assert_eq!(sent.len(), MAX_TURNS);
         assert_eq!(sent[0]["text"], "t6");
         assert_eq!(sent[MAX_TURNS - 1]["text"], "t29");
+    }
+
+    #[test]
+    fn hosts_pass_as_ips_and_fail_as_names() {
+        let none: &[String] = &[];
+        for ok in [
+            "192.168.1.76:9707",
+            "192.168.1.76",
+            "127.0.0.1:9707",
+            "localhost:9707",
+            "LOCALHOST",
+            "[::1]:9707",
+            "[fe80::1]",
+        ] {
+            assert!(host_is_safe(ok, none), "{ok} should pass");
+        }
+        for bad in ["evil.example", "evil.example:9707", "hub.lan:9707", "[::1"] {
+            assert!(!host_is_safe(bad, none), "{bad} should fail");
+        }
+        let extra = vec!["hub.lan".to_string()];
+        assert!(host_is_safe("hub.lan:9707", &extra));
+        assert!(host_is_safe("HUB.LAN", &extra));
+        assert!(!host_is_safe("evil.example", &extra));
+    }
+
+    #[test]
+    fn the_gate_requires_the_exact_token_and_refuses_dns_hosts() {
+        let gate = Gate {
+            token: Some("s3cret".into()),
+            hosts: vec![],
+        };
+        // The pad: IP host, right token.
+        assert!(gate
+            .deny(Some("192.168.1.76:9707"), Some("Bearer s3cret"))
+            .is_none());
+        // No token, wrong token, wrong scheme: 401.
+        assert_eq!(gate.deny(Some("192.168.1.76:9707"), None).unwrap().0, 401);
+        assert_eq!(
+            gate.deny(Some("192.168.1.76:9707"), Some("Bearer nope"))
+                .unwrap()
+                .0,
+            401
+        );
+        assert_eq!(
+            gate.deny(Some("192.168.1.76:9707"), Some("s3cret"))
+                .unwrap()
+                .0,
+            401
+        );
+        // A rebound browser sends its DNS name: 403 before auth is weighed.
+        assert_eq!(
+            gate.deny(Some("evil.example"), Some("Bearer s3cret"))
+                .unwrap()
+                .0,
+            403
+        );
+        // A raw client with no Host still needs the token.
+        assert!(gate.deny(None, Some("Bearer s3cret")).is_none());
+        // Loopback-only hub (no token): host rule still holds, auth does not.
+        let open = Gate {
+            token: None,
+            hosts: vec![],
+        };
+        assert!(open.deny(Some("127.0.0.1:9707"), None).is_none());
+        assert_eq!(open.deny(Some("evil.example"), None).unwrap().0, 403);
+    }
+
+    #[test]
+    fn token_comparison_is_exact() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"abcd"));
+        assert!(!ct_eq(b"", b"a"));
+        assert!(ct_eq(b"", b""));
     }
 
     #[test]
