@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1150">
+  <!-- A blue heeler pup, mid-wave. Tones: outline #1a1a1a, crown/ears #9a9a9a,
+       dark patches #5e5e5e, body #b4b4b4, face/belly #efefef, inner-ear #d8d8d8 -->
+  <g stroke="#1a1a1a" stroke-width="9" stroke-linejoin="round" stroke-linecap="round">
+
+    <!-- ==== tail: thick, banded, up and wagging ==== -->
+    <path d="M755 660 Q 900 640 920 520 Q 928 470 895 445 Q 905 520 830 570 Q 780 600 740 610 Z" fill="#9a9a9a"/>
+    <path d="M898 452 Q 905 515 838 563 L 812 578 Q 850 540 858 480 Q 880 460 898 452 Z" fill="#efefef" stroke-width="7"/>
+
+    <!-- ==== legs ==== -->
+    <path d="M400 850 L 400 1030 Q 400 1065 435 1065 L 470 1065 Q 490 1065 490 1040 L 478 850 Z" fill="#b4b4b4"/>
+    <path d="M620 850 L 620 1030 Q 620 1065 655 1065 L 690 1065 Q 710 1065 710 1040 L 695 850 Z" fill="#b4b4b4"/>
+    <path d="M400 1000 L 400 1030 Q 400 1065 435 1065 L 470 1065 Q 490 1065 490 1040 L 488 1000 Z" fill="#5e5e5e"/>
+    <path d="M620 1000 L 620 1030 Q 620 1065 655 1065 L 690 1065 Q 710 1065 710 1040 L 707 1000 Z" fill="#5e5e5e"/>
+
+    <!-- ==== body ==== -->
+    <path d="M385 560 Q 330 700 375 850 Q 380 890 430 890 L 680 890 Q 740 890 745 830 Q 780 690 715 555 Q 640 500 550 505 Q 450 505 385 560 Z" fill="#b4b4b4"/>
+    <!-- belly patch -->
+    <path d="M455 620 Q 420 720 450 850 Q 455 885 505 885 L 640 885 Q 690 885 692 830 Q 710 720 675 620 Q 565 570 455 620 Z" fill="#efefef" stroke-width="7"/>
+    <!-- back spot -->
+    <ellipse cx="720" cy="700" rx="30" ry="42" fill="#5e5e5e" stroke="none"/>
+
+    <!-- ==== waving arm, up and clear of the head ==== -->
+    <path d="M400 600 Q 285 575 205 480 Q 175 440 200 415 Q 230 395 255 425 Q 320 505 430 530 Z" fill="#b4b4b4"/>
+    <path d="M218 470 Q 175 440 200 415 Q 230 395 255 425 Q 272 448 262 464 Q 240 482 218 470 Z" fill="#5e5e5e" stroke-width="7"/>
+    <!-- other arm, down -->
+    <path d="M700 570 Q 760 620 770 700 Q 772 735 740 740 Q 710 742 700 710 Q 690 650 660 610 Z" fill="#b4b4b4"/>
+    <path d="M770 690 Q 774 735 740 740 Q 712 742 701 712 Q 698 695 706 682 Q 740 670 770 690 Z" fill="#5e5e5e" stroke-width="7"/>
+
+    <!-- ==== ears: tall, pointed, dark-tipped ==== -->
+    <path d="M305 265 Q 290 130 330 45 Q 340 25 358 40 Q 430 110 450 215 Z" fill="#9a9a9a"/>
+    <path d="M330 45 Q 340 25 358 40 Q 395 77 418 128 Q 380 130 345 108 Q 332 75 330 45 Z" fill="#5e5e5e" stroke-width="7"/>
+    <path d="M340 220 Q 335 150 355 105 Q 395 150 420 215 Z" fill="#d8d8d8" stroke-width="7"/>
+    <path d="M695 265 Q 710 130 670 45 Q 660 25 642 40 Q 570 110 550 215 Z" fill="#9a9a9a"/>
+    <path d="M670 45 Q 660 25 642 40 Q 605 77 582 128 Q 620 130 655 108 Q 668 75 670 45 Z" fill="#5e5e5e" stroke-width="7"/>
+    <path d="M660 220 Q 665 150 645 105 Q 605 150 580 215 Z" fill="#d8d8d8" stroke-width="7"/>
+
+    <!-- ==== head: wide, rounded ==== -->
+    <path d="M285 350 Q 285 205 500 205 Q 715 205 715 350 Q 715 420 690 470 Q 640 545 500 545 Q 360 545 310 470 Q 285 420 285 350 Z" fill="#9a9a9a"/>
+    <!-- eye patch on the crown -->
+    <path d="M560 240 Q 640 225 680 275 Q 690 330 655 360 Q 600 355 565 320 Q 550 275 560 240 Z" fill="#5e5e5e" stroke="none"/>
+    <!-- face mask: light muzzle and cheeks -->
+    <path d="M330 430 Q 330 355 420 340 Q 470 330 500 330 Q 530 330 580 340 Q 670 355 670 430 Q 670 480 640 505 Q 580 540 500 540 Q 420 540 360 505 Q 330 480 330 430 Z" fill="#efefef" stroke-width="7"/>
+    <!-- eyes -->
+    <ellipse cx="430" cy="380" rx="52" ry="58" fill="#fdfdfd"/>
+    <circle cx="443" cy="392" r="17" fill="#1a1a1a" stroke="none"/>
+    <ellipse cx="570" cy="380" rx="52" ry="58" fill="#fdfdfd"/>
+    <circle cx="557" cy="392" r="17" fill="#1a1a1a" stroke="none"/>
+    <!-- brows -->
+    <path d="M395 305 Q 430 292 462 302" fill="none" stroke-width="8"/>
+    <path d="M538 302 Q 570 292 605 305" fill="none" stroke-width="8"/>
+    <!-- nose and grin -->
+    <path d="M462 462 Q 500 445 538 462 Q 530 495 500 495 Q 470 495 462 462 Z" fill="#1a1a1a"/>
+    <path d="M500 495 L 500 515" fill="none" stroke-width="8"/>
+    <path d="M430 512 Q 500 560 570 512" fill="none" stroke-width="9"/>
+  </g>
+</svg>

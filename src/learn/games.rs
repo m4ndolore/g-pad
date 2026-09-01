@@ -1,15 +1,16 @@
 //! The play pages — where Learn mode stops drilling and starts giggling.
 //!
 //! Three games, all riding the same anchored-mark vocabulary as the
-//! worksheets, and all shaped by one hardware truth: the pad cannot fetch
-//! pictures, but it can draw geometry and it can write. So the pad's "turns"
-//! are decorations built from primitives and anchored to the child's own
-//! ink, and its voice is a sentence in the reply hand:
+//! worksheets. The pad cannot fetch pictures, but it can carry them: the
+//! critter game ships a deck of real grayscale character art (like the sleep
+//! page's brand mark), and the model's turn is to pick a card and place it.
+//! Its voice is a sentence in the reply hand:
 //!
-//! - **Critter**: the child doodles, marks DONE, and the pad adds exactly one
-//!   decoration (googly eyes, stick legs, a party hat…) and names the
-//!   creature. Turn-taking drawing where the pad's wit carries the humor and
-//!   its geometry stays honest.
+//! - **Critter**: the child doodles, marks DONE, and the pad plays one
+//!   picture card from a themed deck — a character lands next to the doodle,
+//!   never on top of it (the child's ink is composited darken-only, so it
+//!   can never be painted away). The model picks the card, the spot, and
+//!   the joke; the pad guarantees the art.
 //! - **Guess**: reverse Pictionary. The child draws; the pad guesses, starting
 //!   sensible and getting sillier, then asks for one more detail.
 //! - **Story**: a choose-your-own-adventure. Each beat ends in three choice
@@ -27,11 +28,92 @@ const W: usize = SCREEN_W;
 const H: usize = SCREEN_H;
 const MARGIN: usize = W * 8 / 100;
 
+/// A card theme: every card played onto one doodle stays in one world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Theme {
+    Heelers,
+    StarWars,
+}
+
+/// One picture card: real grayscale art shipped in the binary.
+pub struct Card {
+    /// The word the model plays it with.
+    pub key: &'static str,
+    /// One line telling the model what the picture shows.
+    pub blurb: &'static str,
+    /// 8-bit grayscale PNG (see scripts/make-learn-art.sh).
+    pub png: &'static [u8],
+}
+
+pub const HEELERS: &[Card] = &[
+    Card {
+        key: "BLUEY",
+        blurb: "a blue heeler pup waving hello",
+        png: include_bytes!("../../assets/learn/bluey.png"),
+    },
+    Card {
+        key: "BINGO",
+        blurb: "her little sister cheering with both paws up",
+        png: include_bytes!("../../assets/learn/bingo.png"),
+    },
+];
+
+pub const STAR_WARS: &[Card] = &[
+    Card {
+        key: "R2D2",
+        blurb: "a brave little dome-headed droid",
+        png: include_bytes!("../../assets/learn/r2d2.png"),
+    },
+    Card {
+        key: "BB8",
+        blurb: "a round rolling droid with a wobbly head",
+        png: include_bytes!("../../assets/learn/bb8.png"),
+    },
+    Card {
+        key: "GROGU",
+        blurb: "a tiny green youngling with huge ears",
+        png: include_bytes!("../../assets/learn/grogu.png"),
+    },
+    Card {
+        key: "VADER",
+        blurb: "the deep-breathing dark helmet, secretly a softie",
+        png: include_bytes!("../../assets/learn/vader.png"),
+    },
+    Card {
+        key: "XWING",
+        blurb: "a four-winged starfighter zooming past",
+        png: include_bytes!("../../assets/learn/xwing.png"),
+    },
+];
+
+impl Theme {
+    pub fn deck(self) -> &'static [Card] {
+        match self {
+            Theme::Heelers => HEELERS,
+            Theme::StarWars => STAR_WARS,
+        }
+    }
+
+    /// A coin flip on the wall clock: which world this doodle joins.
+    pub fn random() -> Self {
+        if now_seed() & 1 == 0 { Theme::Heelers } else { Theme::StarWars }
+    }
+}
+
+/// Nanoseconds of the wall clock — entropy enough for a card game.
+fn now_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64 ^ d.as_secs())
+        .unwrap_or(7)
+}
+
 /// Which game a play page carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Game {
-    /// `round` counts the pad's decorating turns on this doodle.
-    Critter { round: u8 },
+    /// `round` counts the pad's card turns on this doodle; `last` remembers
+    /// the card just played so the next turn deals a different one.
+    Critter { round: u8, theme: Theme, last: Option<&'static str> },
     Guess,
     Story {
         /// (choice the child made, beat the pad told) — oldest first.
@@ -48,10 +130,15 @@ impl Game {
         Game::Story { log: Vec::new(), choices: Vec::new(), pending: None }
     }
 
+    /// A fresh critter page: theme flipped on the clock, no cards played yet.
+    pub fn critter() -> Self {
+        Game::Critter { round: 0, theme: Theme::random(), last: None }
+    }
+
     /// The rotation NEW deals: critter → guess → story → critter…
     pub fn nth(i: usize) -> Self {
         match i % 3 {
-            0 => Game::Critter { round: 0 },
+            0 => Game::critter(),
             1 => Game::Guess,
             _ => Game::story(),
         }
@@ -59,7 +146,7 @@ impl Game {
 
     pub fn prompt(&self) -> &'static str {
         match self {
-            Game::Critter { round: 0 } => "DRAW ANYTHING. I DARE YOU.",
+            Game::Critter { round: 0, .. } => "DRAW ANYTHING. I DARE YOU.",
             Game::Critter { .. } => "ADD MORE, THEN MARK DONE",
             Game::Guess => "DRAW SOMETHING. I WILL GUESS IT.",
             Game::Story { log, .. } if log.is_empty() => "DRAW YOUR HERO, THEN MARK DONE",
@@ -74,22 +161,30 @@ impl Game {
                     Be funny, warm, and gentle — playground silly, never mean or scary. \
                     Never mention pictures, images, or cameras. ";
         match self {
-            Game::Critter { round } => format!(
-                "{base}The page shows the child's doodle{prior}. Take a REAL drawing turn: \
-                 add one generous new thing that makes it funnier — big wings, a tiny friend, \
-                 a wobbly house, a sun with a face, a skateboard, whatever fits the doodle. \
-                 Reply with EXACTLY this shape: \
-                 first line: one funny caption of at most eight very simple words that names \
-                 the creature or reacts to it. \
-                 Then 4 to 10 more lines, each one pen stroke: the letter D, a space, then \
-                 2 to 12 points as x,y pairs separated by spaces, like `D 10,80 30,60 50,80`. \
-                 Coordinates run 0-100 across the whole picture: 0,0 is top-left, 100,100 \
-                 bottom-right. Strokes are drawn in your order with a child's marker pen. \
-                 Draw BIG — your addition should be about as large as the doodle itself — \
-                 and make it touch the doodle so it belongs to it. Surprise the child: \
-                 not just a hat every time. Write nothing else.",
-                prior = if *round > 0 { " (some parts you added on earlier turns)" } else { "" }
-            ),
+            Game::Critter { round, theme, last } => {
+                let hand = hand_line(*theme, *last);
+                let example = theme
+                    .deck()
+                    .iter()
+                    .find(|c| Some(c.key) != *last)
+                    .map(|c| c.key)
+                    .unwrap_or("R2D2");
+                format!(
+                    "{base}The page shows the child's doodle{prior}. You are playing picture \
+                     cards with the child: you pick one card and it lands on the page as a \
+                     real drawing. Your hand: {hand}. \
+                     Pick the ONE card that makes the doodle funniest, as if it just walked \
+                     into the child's picture. Reply with EXACTLY two lines and nothing else. \
+                     Line 1: one funny caption of at most eight very simple words tying your \
+                     card to the doodle. \
+                     Line 2: PLAY <CARD> AT x,y SIZE s — <CARD> is the card word from your \
+                     hand; x,y is the CENTER of a big EMPTY spot (whole numbers 0-100, 0,0 \
+                     top-left, 100,100 bottom-right) chosen so the card lands NEXT TO the \
+                     child's drawing, never on top of it; s is how wide the card lands as a \
+                     share of the page, 30 to 55. Example: PLAY {example} AT 72,30 SIZE 42",
+                    prior = if *round > 0 { " (a card you played is already on it)" } else { "" }
+                )
+            }
             Game::Guess => format!(
                 "{base}The child drew something and you must guess what it is. Give two short \
                  guesses in one sentence, first sensible then silly, and end by asking for one \
@@ -119,123 +214,248 @@ impl Game {
     }
 }
 
-// ---- the pad's turn: decorations ------------------------------------------
+// ---- the pad's turn: playing a card ---------------------------------------
 
-/// The decoration menu. Every entry is drawable geometry anchored to a bbox.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Deco {
-    Eyes,
-    Legs,
-    Arms,
-    Hat,
-    Antenna,
-    Tail,
-    Rays,
-    Crown,
-    Mustache,
-    Bubble(String),
+/// The dealt hand, written for the model: every theme card but the one just
+/// played. Two-card themes therefore alternate; bigger decks read as a menu.
+fn hand_line(theme: Theme, last: Option<&str>) -> String {
+    theme
+        .deck()
+        .iter()
+        .filter(|c| Some(c.key) != last)
+        .map(|c| format!("{} ({})", c.key, c.blurb))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// The pad's drawing turn, parsed: strokes the model drew itself (in 0–100
-/// picture coordinates), or a menu decoration when it fell back to the old
-/// vocabulary, and the caption either way.
-pub struct CritterTurn {
-    /// Model-drawn pen strokes: polylines in 0–100 of the picture it saw.
-    pub strokes: Vec<Vec<(f32, f32)>>,
-    /// The menu fallback, when the reply led with a decoration word instead.
-    pub deco: Option<Deco>,
+/// The model's card turn, parsed: which card it named (if any), where it
+/// wants it, how big, and the caption.
+pub struct CardTurn {
+    /// The card word from the PLAY line, uppercased, unvalidated.
+    pub key: Option<String>,
+    /// Landing center in 0–100 of the picture it saw.
+    pub center: Option<(f32, f32)>,
+    /// Landing width as a share of the picture, 0–100.
+    pub size: Option<f32>,
     pub caption: String,
 }
 
-/// Parse a critter reply. `D x,y x,y …` lines are the model's own pen
-/// strokes; every other non-empty line joins the caption. A reply with no
-/// stroke lines degrades to the old menu-word protocol, and an unknown lead
-/// means caption only — the game never stalls on a chatty model.
-pub fn parse_critter_turn(reply: &str) -> CritterTurn {
-    let mut strokes: Vec<Vec<(f32, f32)>> = Vec::new();
+/// Parse a critter reply. The line leading with PLAY names the card and its
+/// landing spot; every other non-empty line joins the caption. Any missing
+/// piece stays None — the game never stalls on a chatty model, because the
+/// pad can always deal a random card into empty space itself.
+pub fn parse_card_turn(reply: &str) -> CardTurn {
+    let mut turn = CardTurn { key: None, center: None, size: None, caption: String::new() };
     let mut caption_lines: Vec<&str> = Vec::new();
     for line in reply.lines() {
         let t = line.trim();
         if t.is_empty() {
             continue;
         }
-        let is_stroke = (t.starts_with("D ") || t.starts_with("d "))
-            && t[2..].trim_start().starts_with(|c: char| c.is_ascii_digit());
-        if !is_stroke {
+        let mut words = t.split_whitespace();
+        let lead: String = words
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .collect::<String>()
+            .to_ascii_uppercase();
+        if lead != "PLAY" || turn.key.is_some() {
             caption_lines.push(t);
             continue;
         }
-        let mut pts: Vec<(f32, f32)> = Vec::new();
-        for pair in t[2..].split_whitespace() {
-            let Some((xs, ys)) = pair.split_once(',') else { continue };
-            let (Ok(x), Ok(y)) = (xs.trim().parse::<f32>(), ys.trim().parse::<f32>()) else {
+        // The card: the first word that isn't protocol furniture.
+        for w in words {
+            let word: String =
+                w.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_ascii_uppercase();
+            if word.is_empty() || word.chars().all(|c| c.is_ascii_digit()) {
                 continue;
-            };
-            if x.is_finite() && y.is_finite() {
-                pts.push((x.clamp(0.0, 100.0), y.clamp(0.0, 100.0)));
             }
-            if pts.len() >= 12 {
+            if !matches!(word.as_str(), "AT" | "SIZE") {
+                turn.key = Some(word);
                 break;
             }
         }
-        if pts.len() >= 2 {
-            strokes.push(pts);
+        // The numbers, in order, however they were punctuated: two or more
+        // read as x,y (+ size); a lone number can only be the size.
+        let mut nums: Vec<f32> = Vec::new();
+        let mut cur = String::new();
+        let mut prev = ' ';
+        for c in t.chars().chain(std::iter::once(' ')) {
+            // A digit glued to a letter is part of a name (BB8, R2D2),
+            // never a coordinate.
+            let extend = !cur.is_empty() && (c.is_ascii_digit() || c == '.');
+            let start = cur.is_empty()
+                && !prev.is_alphabetic()
+                && (c.is_ascii_digit() || c == '-');
+            if extend || start {
+                cur.push(c);
+            } else if !cur.is_empty() {
+                if let Ok(n) = cur.parse::<f32>() {
+                    if n.is_finite() {
+                        nums.push(n);
+                    }
+                }
+                cur.clear();
+            }
+            prev = c;
+        }
+        if nums.len() >= 2 {
+            turn.center = Some((nums[0].clamp(0.0, 100.0), nums[1].clamp(0.0, 100.0)));
+        }
+        match nums.len() {
+            1 => turn.size = Some(nums[0].clamp(25.0, 60.0)),
+            n if n >= 3 => turn.size = Some(nums[n - 1].clamp(25.0, 60.0)),
+            _ => {}
         }
     }
-    strokes.truncate(10);
-    if !strokes.is_empty() {
-        return CritterTurn { strokes, deco: None, caption: caption_lines.join(" ") };
-    }
-    let (deco, caption) = parse_critter(reply);
-    CritterTurn { strokes: Vec::new(), deco, caption }
+    turn.caption = caption_lines.join(" ");
+    turn
 }
 
-/// Parse a critter reply: leading menu word (BUBBLE takes the next word as
-/// its text), rest is the caption. An unknown lead means no decoration —
-/// the caption still lands, the game never stalls on a chatty model.
-pub fn parse_critter(reply: &str) -> (Option<Deco>, String) {
-    let trimmed = reply.trim();
-    let mut words = trimmed.split_whitespace();
-    let Some(first) = words.next() else { return (None, String::new()) };
-    let key: String = first
-        .chars()
-        .filter(|c| c.is_alphabetic())
-        .collect::<String>()
-        .to_ascii_uppercase();
-    let strip = |n: usize| -> String {
-        trimmed
-            .split_whitespace()
-            .skip(n)
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim_start_matches(|c: char| matches!(c, '.' | ',' | ':' | ';' | '!' | '-' | '—'))
-            .trim()
-            .to_string()
-    };
-    let deco = match key.as_str() {
-        "EYES" => Some(Deco::Eyes),
-        "LEGS" => Some(Deco::Legs),
-        "ARMS" => Some(Deco::Arms),
-        "HAT" => Some(Deco::Hat),
-        "ANTENNA" => Some(Deco::Antenna),
-        "TAIL" => Some(Deco::Tail),
-        "RAYS" => Some(Deco::Rays),
-        "CROWN" => Some(Deco::Crown),
-        "MUSTACHE" => Some(Deco::Mustache),
-        "BUBBLE" => {
-            let word: String = words
-                .next()
-                .unwrap_or("WOW")
-                .chars()
-                .filter(|c| c.is_alphanumeric())
-                .take(8)
-                .collect::<String>()
-                .to_ascii_uppercase();
-            return (Some(Deco::Bubble(word)), strip(2));
+/// Turn the model's card word into a real card from this doodle's theme.
+/// An unknown or missing word falls back to chance — any theme card but the
+/// one just played — so a chatty model still plays a proper turn.
+pub fn resolve_card(theme: Theme, last: Option<&str>, want: Option<&str>) -> &'static Card {
+    let deck = theme.deck();
+    if let Some(w) = want {
+        if let Some(c) = deck.iter().find(|c| c.key == w) {
+            return c;
         }
-        _ => return (None, trimmed.to_string()),
+    }
+    let fresh: Vec<&'static Card> = deck.iter().filter(|c| Some(c.key) != last).collect();
+    fresh[(now_seed() as usize) % fresh.len()]
+}
+
+/// Decode a card's art: (width, height, gray bytes). None rather than a
+/// panic — a bad asset must never end the game.
+fn card_gray(card: &Card) -> Option<(usize, usize, Vec<u8>)> {
+    let dec = png::Decoder::new(card.png);
+    let mut reader = dec.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Grayscale || info.bit_depth != png::BitDepth::Eight {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    Some((info.width as usize, info.height as usize, buf))
+}
+
+/// Play `card` onto the page. `frame` is the rectangle the model's 0–100
+/// coordinates cover (the crop it was shown); `clip` is the open canvas the
+/// art must stay inside; `ink` is the child's drawing, which the card dodges
+/// and — because the art is composited darken-only — can never erase.
+/// Returns the dirty region (empty if the asset is unreadable).
+pub fn play_card(
+    surf: &mut Surface,
+    frame: &BBox,
+    clip: &BBox,
+    ink: &BBox,
+    card: &Card,
+    center: Option<(f32, f32)>,
+    size: Option<f32>,
+) -> BBox {
+    if frame.is_empty() || clip.is_empty() {
+        return BBox::empty();
+    }
+    let Some((sw, sh, gray)) = card_gray(card) else {
+        return BBox::empty();
     };
-    (deco, strip(1))
+    let (fx, fy, fw, fh) = frame.rect();
+    let (_, _, cw, ch) = clip.rect();
+
+    // The landing box: model's size as a share of the frame, kept generous
+    // but on-canvas, aspect true to the art.
+    let pct = size.unwrap_or(42.0).clamp(25.0, 60.0);
+    let mut w = (fw as f32 * pct / 100.0) as i32;
+    w = w.clamp(220.min(cw), (cw * 3 / 5).max(220)).min(cw);
+    let mut h = w * sh as i32 / sw as i32;
+    if h > ch * 3 / 5 {
+        h = ch * 3 / 5;
+        w = h * sw as i32 / sh as i32;
+    }
+
+    // The landing spot: the model's pick, or the open corner farthest from
+    // the child's ink when it named none.
+    let (mut cx, mut cy) = match center {
+        Some((nx, ny)) => (fx + (nx / 100.0 * fw as f32) as i32, fy + (ny / 100.0 * fh as f32) as i32),
+        None => farthest_corner(clip, ink),
+    };
+    // On-canvas, whole card visible.
+    cx = cx.clamp(clip.x0 + w / 2, (clip.x1 - w / 2).max(clip.x0 + w / 2));
+    cy = cy.clamp(clip.y0 + h / 2, (clip.y1 - h / 2).max(clip.y0 + h / 2));
+
+    // The child's drawing is locked: if the card would squat on it, slide the
+    // card sideways toward the roomier half before it lands.
+    if !ink.is_empty() {
+        let overlap_w = ((cx + w / 2).min(ink.x1) - (cx - w / 2).max(ink.x0)).max(0);
+        let overlap_h = ((cy + h / 2).min(ink.y1) - (cy - h / 2).max(ink.y0)).max(0);
+        if overlap_w * overlap_h > w * h / 4 {
+            let room_left = ink.x0 - clip.x0;
+            let room_right = clip.x1 - ink.x1;
+            cx = if room_right >= room_left {
+                (ink.x1 + w / 2 + 20).min(clip.x1 - w / 2)
+            } else {
+                (ink.x0 - w / 2 - 20).max(clip.x0 + w / 2)
+            };
+        }
+    }
+
+    // Land it: bilinear from the asset, darken-only onto the page, so the
+    // art keeps its 16 grays and the child's ink shows through everywhere.
+    let (x0, y0) = (cx - w / 2, cy - h / 2);
+    for row in 0..h {
+        let sy = ((row as f32 + 0.5) * sh as f32 / h as f32 - 0.5).max(0.0);
+        let (syi, syf) = (sy as usize, sy.fract());
+        let sy1 = (syi + 1).min(sh - 1);
+        for col in 0..w {
+            let sx = ((col as f32 + 0.5) * sw as f32 / w as f32 - 0.5).max(0.0);
+            let (sxi, sxf) = (sx as usize, sx.fract());
+            let sx1 = (sxi + 1).min(sw - 1);
+            let g00 = gray[syi * sw + sxi] as f32;
+            let g01 = gray[syi * sw + sx1] as f32;
+            let g10 = gray[sy1 * sw + sxi] as f32;
+            let g11 = gray[sy1 * sw + sx1] as f32;
+            let g = (g00 * (1.0 - sxf) + g01 * sxf) * (1.0 - syf)
+                + (g10 * (1.0 - sxf) + g11 * sxf) * syf;
+            let g = g as u8;
+            if g >= 248 {
+                continue; // paper stays paper
+            }
+            let (x, y) = (x0 + col, y0 + row);
+            let under = surf.luma(x, y);
+            let g = g.min(under);
+            let q = (g as u16) >> 3;
+            surf.put_px(x, y, (q << 11) | (((g as u16) >> 2) << 5) | q);
+        }
+    }
+    let mut dirty = BBox::empty();
+    dirty.add(x0, y0, 4);
+    dirty.add(x0 + w, y0 + h, 4);
+    dirty
+}
+
+/// The canvas corner with the most daylight between it and the ink.
+fn farthest_corner(clip: &BBox, ink: &BBox) -> (i32, i32) {
+    let (ix, iy) = if ink.is_empty() {
+        ((clip.x0 + clip.x1) / 2, (clip.y0 + clip.y1) / 2)
+    } else {
+        ((ink.x0 + ink.x1) / 2, (ink.y0 + ink.y1) / 2)
+    };
+    let inset_x = (clip.x1 - clip.x0) / 4;
+    let inset_y = (clip.y1 - clip.y0) / 4;
+    [
+        (clip.x0 + inset_x, clip.y0 + inset_y),
+        (clip.x1 - inset_x, clip.y0 + inset_y),
+        (clip.x0 + inset_x, clip.y1 - inset_y),
+        (clip.x1 - inset_x, clip.y1 - inset_y),
+    ]
+    .into_iter()
+    .max_by_key(|(x, y)| {
+        let (dx, dy) = ((x - ix) as i64, (y - iy) as i64);
+        dx * dx + dy * dy
+    })
+    .unwrap()
 }
 
 /// Parse a story reply into (beat text, three choices). Choices are the last
@@ -281,194 +501,6 @@ fn shorten(s: &str, max: usize) -> String {
         out.push_str(w);
     }
     out.to_uppercase()
-}
-
-// ---- drawing the pad's turn -----------------------------------------------
-
-/// Draw `deco` anchored to the child's ink bbox. Returns the dirty region.
-/// Everything is brush strokes, so the pad's additions look penned, not
-/// printed — it is taking a turn, not stamping a sticker.
-pub fn draw_deco(surf: &mut Surface, ink: &BBox, deco: &Deco, ui_font: &FontRef) -> BBox {
-    if ink.is_empty() {
-        return BBox::empty();
-    }
-    let (bx, by, bw, bh) = ink.rect();
-    let (cx, top, bottom) = (bx + bw / 2, by, by + bh);
-    let s = bw.max(bh).clamp(120, 700);
-    let r = 4;
-    let mut dirty = BBox::empty();
-    let mark = |d: &mut BBox, x: i32, y: i32| d.add(x, y, 24);
-
-    match deco {
-        Deco::Eyes => {
-            let er = (s * 8 / 100).max(16);
-            for dx in [-er * 2, er * 2] {
-                let (ex, ey) = (cx + dx, top + bh / 4);
-                // A white pad under each eye so it sits ON the doodle.
-                surf.stamp(ex, ey, er, WHITE);
-                ring(surf, ex, ey, er, 3);
-                surf.stamp(ex + er / 3, ey + er / 4, er / 3, BLACK); // pupil, slightly unhinged
-                mark(&mut dirty, ex, ey);
-            }
-        }
-        Deco::Legs => {
-            let len = (s / 4).max(60);
-            for dx in [-bw / 4, bw / 4] {
-                let x = cx + dx;
-                surf.brush_line(x, bottom, x, bottom + len, r, BLACK);
-                surf.brush_line(x, bottom + len, x + 30, bottom + len, r, BLACK); // a foot
-                mark(&mut dirty, x, bottom + len);
-            }
-            mark(&mut dirty, cx, bottom);
-        }
-        Deco::Arms => {
-            let len = (s / 4).max(60);
-            let y = top + bh / 2;
-            surf.brush_line(bx, y, bx - len, y - len, r, BLACK);
-            surf.brush_line(bx + bw, y, bx + bw + len, y - len, r, BLACK);
-            mark(&mut dirty, bx - len, y - len);
-            mark(&mut dirty, bx + bw + len, y - len);
-        }
-        Deco::Hat => {
-            // A party cone with a pompom: never not funny.
-            let hw = (s / 5).max(50);
-            let hh = (s / 3).max(70);
-            surf.brush_line(cx - hw, top, cx, top - hh, r, BLACK);
-            surf.brush_line(cx + hw, top, cx, top - hh, r, BLACK);
-            surf.brush_line(cx - hw, top, cx + hw, top, r, BLACK);
-            surf.stamp(cx, top - hh, 12, BLACK);
-            mark(&mut dirty, cx, top - hh);
-            mark(&mut dirty, cx - hw, top);
-            mark(&mut dirty, cx + hw, top);
-        }
-        Deco::Antenna => {
-            let len = (s / 3).max(80);
-            for dx in [-bw / 5, bw / 5] {
-                let (x0, x1) = (cx + dx, cx + dx * 2);
-                surf.brush_line(x0, top, x1, top - len, 3, BLACK);
-                ring(surf, x1, top - len, 14, 4);
-                mark(&mut dirty, x1, top - len);
-            }
-            mark(&mut dirty, cx, top);
-        }
-        Deco::Tail => {
-            // A curly pig tail off the right side.
-            let (ox, oy) = (bx + bw, top + bh / 2);
-            let mut prev = (ox, oy);
-            for i in 1..=40 {
-                let t = i as f32 * 0.35;
-                let rad = 8.0 + t * 4.0;
-                let x = ox + (t * 9.0) as i32 + (rad * t.cos()) as i32;
-                let y = oy + (rad * t.sin()) as i32;
-                surf.brush_line(prev.0, prev.1, x, y, 3, BLACK);
-                prev = (x, y);
-                mark(&mut dirty, x, y);
-            }
-        }
-        Deco::Rays => {
-            let cr = (bw.max(bh) / 2) + 30;
-            let (ccx, ccy) = (cx, top + bh / 2);
-            for i in 0..8 {
-                let a = i as f32 * std::f32::consts::TAU / 8.0;
-                let (dx, dy) = (a.cos(), a.sin());
-                let (x0, y0) = (ccx + (dx * cr as f32) as i32, ccy + (dy * cr as f32) as i32);
-                let (x1, y1) = (ccx + (dx * (cr + 70) as f32) as i32, ccy + (dy * (cr + 70) as f32) as i32);
-                surf.brush_line(x0, y0, x1, y1, r, BLACK);
-                mark(&mut dirty, x1, y1);
-            }
-        }
-        Deco::Crown => {
-            let hw = (bw / 2).min(s / 2).max(60);
-            let hh = (s / 4).max(50);
-            let base = top - 10;
-            let mut prev = (cx - hw, base);
-            for i in 0..=6 {
-                let x = cx - hw + hw * i / 3;
-                let y = if i % 2 == 1 { base - hh } else { base };
-                surf.brush_line(prev.0, prev.1, x, y, r, BLACK);
-                prev = (x, y);
-            }
-            surf.brush_line(cx - hw, base, cx + hw, base, r, BLACK);
-            mark(&mut dirty, cx - hw, base - hh);
-            mark(&mut dirty, cx + hw, base);
-        }
-        Deco::Mustache => {
-            // Two proud curls just below center.
-            let y = top + bh * 3 / 5;
-            for side in [-1i32, 1] {
-                let mut prev = (cx, y);
-                for i in 1..=24 {
-                    let t = i as f32 / 24.0;
-                    let x = cx + side * (t * (s as f32 / 4.0)) as i32;
-                    let yy = y - ((t * 3.0).sin() * 24.0 * t) as i32;
-                    surf.brush_line(prev.0, prev.1, x, yy, r, BLACK);
-                    prev = (x, yy);
-                    mark(&mut dirty, x, yy);
-                }
-            }
-        }
-        Deco::Bubble(word) => {
-            let raster = script::rasterize_line(ui_font, word, 44.0);
-            let (tw, th) = (raster.width as i32, raster.height as i32);
-            let (bw2, bh2) = (tw + 60, th + 30);
-            // Top-right of the doodle, pulled back on-screen if needed.
-            let x = (bx + bw - 20).min(W as i32 - bw2 - 20).max(20);
-            let y = (top - bh2 - 60).max(20);
-            surf.fill_rect(x as usize, y as usize, bw2 as usize, bh2 as usize, WHITE);
-            rect_outline(surf, x, y, bw2, bh2, 4);
-            for row in 0..raster.height {
-                for col in 0..raster.width {
-                    if raster.mask[row * raster.width + col] {
-                        surf.put_px(x + 30 + col as i32, y + 15 + row as i32, BLACK);
-                    }
-                }
-            }
-            // The tail points at the creature's face, not through its hat.
-            let (fx, fy) = (bx + bw * 3 / 4, top + bh / 4);
-            surf.brush_line(x + bw2 / 4, y + bh2, fx, fy, 3, BLACK);
-            mark(&mut dirty, x, y);
-            mark(&mut dirty, x + bw2, y + bh2);
-            mark(&mut dirty, fx, fy);
-        }
-    }
-    dirty
-}
-
-/// Draw the model's own pen strokes. `frame` is the page rectangle its 0–100
-/// coordinates cover (the crop that was sent as the picture); `clip` keeps
-/// every point on the open canvas so a wild stroke never scribbles over the
-/// decision boxes or the caption. Returns the dirty region.
-pub fn draw_strokes(surf: &mut Surface, frame: &BBox, clip: &BBox, strokes: &[Vec<(f32, f32)>]) -> BBox {
-    if frame.is_empty() || clip.is_empty() {
-        return BBox::empty();
-    }
-    let (fx, fy, fw, fh) = frame.rect();
-    let mut dirty = BBox::empty();
-    for stroke in strokes {
-        let mut prev: Option<(i32, i32)> = None;
-        for &(nx, ny) in stroke {
-            let x = (fx + (nx / 100.0 * fw as f32) as i32).clamp(clip.x0, clip.x1);
-            let y = (fy + (ny / 100.0 * fh as f32) as i32).clamp(clip.y0, clip.y1);
-            if let Some((px, py)) = prev {
-                surf.brush_line(px, py, x, y, 4, BLACK);
-            }
-            dirty.add(x, y, 8);
-            prev = Some((x, y));
-        }
-    }
-    dirty
-}
-
-fn ring(surf: &mut Surface, cx: i32, cy: i32, radius: i32, thick: i32) {
-    let (lo2, hi2) = ((radius - thick) * (radius - thick), radius * radius);
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
-            let d2 = dx * dx + dy * dy;
-            if d2 >= lo2 && d2 <= hi2 {
-                surf.put_px(cx + dx, cy + dy, BLACK);
-            }
-        }
-    }
 }
 
 fn rect_outline(surf: &mut Surface, x: i32, y: i32, w: i32, h: i32, t: i32) {
@@ -602,122 +634,157 @@ mod tests {
     }
 
     #[test]
-    fn critter_replies_parse_into_decoration_and_caption() {
-        let (d, cap) = parse_critter("EYES! His name is Kevin and he is late for soup.");
-        assert_eq!(d, Some(Deco::Eyes));
-        assert_eq!(cap, "His name is Kevin and he is late for soup.");
+    fn card_replies_parse_into_card_spot_size_and_caption() {
+        let turn = parse_card_turn("A droid moved into your house!\nPLAY R2D2 AT 72,30 SIZE 45");
+        assert_eq!(turn.key.as_deref(), Some("R2D2"));
+        assert_eq!(turn.center, Some((72.0, 30.0)));
+        assert_eq!(turn.size, Some(45.0));
+        assert_eq!(turn.caption, "A droid moved into your house!");
 
-        let (d, cap) = parse_critter("BUBBLE moo — this cow has opinions.");
-        assert_eq!(d, Some(Deco::Bubble("MOO".into())));
-        assert!(cap.starts_with("this cow"));
+        // Punctuation, case, and chatter are tamed, not fatal.
+        let turn = parse_card_turn("Bluey wants a turn!\nplay bluey at (20, 60) size 50 please");
+        assert_eq!(turn.key.as_deref(), Some("BLUEY"));
+        assert_eq!(turn.center, Some((20.0, 60.0)));
+        assert_eq!(turn.size, Some(50.0));
 
-        // A chatty model that skips the menu still lands its caption.
-        let (d, cap) = parse_critter("What a magnificent potato!");
-        assert_eq!(d, None);
-        assert_eq!(cap, "What a magnificent potato!");
-    }
+        // Missing pieces stay missing; the caption still lands.
+        let turn = parse_card_turn("PLAY GROGU");
+        assert_eq!(turn.key.as_deref(), Some("GROGU"));
+        assert!(turn.center.is_none() && turn.size.is_none());
 
-    #[test]
-    fn a_drawing_turn_parses_strokes_and_caption() {
-        let reply = "Sir Wigglebottom grew wings!\nD 10,80 30,60 50,80\nD 50,80 70,60 90,80\nD 45,20 55,20";
-        let turn = parse_critter_turn(reply);
-        assert_eq!(turn.strokes.len(), 3);
-        assert_eq!(turn.strokes[0], vec![(10.0, 80.0), (30.0, 60.0), (50.0, 80.0)]);
-        assert_eq!(turn.caption, "Sir Wigglebottom grew wings!");
-        assert!(turn.deco.is_none(), "strokes win over the menu");
-
-        // Out-of-range and junk points are tamed, not fatal.
-        let turn = parse_critter_turn("Wow\nD 150,-20 50,50\nD nonsense\nD 1,1");
-        assert_eq!(turn.strokes.len(), 1);
-        assert_eq!(turn.strokes[0][0], (100.0, 0.0));
-
-        // No stroke lines: the old menu protocol still works.
-        let turn = parse_critter_turn("EYES! His name is Kevin.");
-        assert!(turn.strokes.is_empty());
-        assert_eq!(turn.deco, Some(Deco::Eyes));
-        assert_eq!(turn.caption, "His name is Kevin.");
-
-        // A chatty model with neither still lands its caption.
-        let turn = parse_critter_turn("What a magnificent potato!");
-        assert!(turn.strokes.is_empty() && turn.deco.is_none());
+        // No PLAY line at all: caption only, the pad deals for itself.
+        let turn = parse_card_turn("What a magnificent potato!");
+        assert!(turn.key.is_none());
         assert_eq!(turn.caption, "What a magnificent potato!");
+
+        // Out-of-range numbers are clamped to the page and the size band.
+        let turn = parse_card_turn("Zoom!\nPLAY XWING AT 150,-20 SIZE 99");
+        assert_eq!(turn.center, Some((100.0, 0.0)));
+        assert_eq!(turn.size, Some(60.0));
     }
 
     #[test]
-    fn model_strokes_draw_scaled_into_the_frame_and_clipped_to_the_canvas() {
-        let (_buf, mut surf) = page();
-        let frame = BBox { x0: 200, y0: 400, x1: 1200, y1: 1400 };
-        let clip = BBox { x0: 100, y0: 300, x1: 1300, y1: 1500 };
-        let strokes = vec![vec![(0.0, 0.0), (100.0, 100.0)], vec![(50.0, 0.0), (50.0, 100.0)]];
-        let dirty = draw_strokes(&mut surf, &frame, &clip, &strokes);
-        assert!(!dirty.is_empty());
-        // The diagonal spans the frame, so ink lands mid-frame.
-        assert!(surf.luma(700, 900) < 128, "mid-frame stroke missing");
-        // Points scale into the frame, never past the clip.
-        assert!(dirty.x0 >= clip.x0 - 8 && dirty.x1 <= clip.x1 + 8);
-
-        // A frame never sent (empty) draws nothing.
-        assert!(draw_strokes(&mut surf, &BBox::empty(), &clip, &strokes).is_empty());
-    }
-
-    #[test]
-    fn story_replies_parse_into_beat_and_exactly_three_choices() {
-        let reply = "The potato knight reached a wobbly bridge.\nA troll asked for a password.\n1. Say please\n2. Sing loudly\n3. Wobble back";
-        let (beat, choices) = parse_story(reply);
-        assert!(beat.contains("wobbly bridge"));
-        assert_eq!(choices, vec!["SAY PLEASE", "SING LOUDLY", "WOBBLE BACK"]);
-
-        // A model that forgets choices still leaves the child a way onward.
-        let (_, defaults) = parse_story("The end of the bridge. That's all I know.");
-        assert_eq!(defaults.len(), 3);
-        assert_eq!(defaults[0], "GO ON");
-    }
-
-    #[test]
-    fn long_choice_labels_are_shortened_not_overflowed() {
-        let reply = "Beat.\n1. Ask the enormous purple dinosaur very politely\n2. Run\n3. Hide";
-        let (_, choices) = parse_story(reply);
-        assert!(choices[0].len() <= 16, "{}", choices[0]);
-    }
-
-    #[test]
-    fn every_decoration_draws_something_near_the_doodle() {
-        let font = ui_font();
-        let decos = [
-            Deco::Eyes, Deco::Legs, Deco::Arms, Deco::Hat, Deco::Antenna,
-            Deco::Tail, Deco::Rays, Deco::Crown, Deco::Mustache, Deco::Bubble("MOO".into()),
-        ];
-        for deco in decos {
-            let (_buf, mut surf) = page();
-            let mut ink = BBox::empty();
-            ink.add(600, 900, 0);
-            ink.add(900, 1200, 0);
-            let dirty = draw_deco(&mut surf, &ink, &deco, &font);
-            assert!(!dirty.is_empty(), "{deco:?} drew nothing");
-            let mut dark = 0;
-            for y in dirty.y0..=dirty.y1 {
-                for x in dirty.x0..=dirty.x1 {
-                    if surf.luma(x, y) < 128 {
-                        dark += 1;
-                    }
-                }
-            }
-            assert!(dark > 30, "{deco:?} left almost no ink ({dark})");
+    fn cards_resolve_from_the_theme_with_a_fresh_fallback() {
+        // A named card in the theme is honored.
+        let c = resolve_card(Theme::StarWars, None, Some("VADER"));
+        assert_eq!(c.key, "VADER");
+        // A card from the wrong world, or nonsense, falls back into theme…
+        let c = resolve_card(Theme::Heelers, None, Some("VADER"));
+        assert!(HEELERS.iter().any(|h| h.key == c.key));
+        // …and the fallback never repeats the card just played.
+        for _ in 0..12 {
+            let c = resolve_card(Theme::Heelers, Some("BLUEY"), None);
+            assert_eq!(c.key, "BINGO");
         }
     }
 
     #[test]
-    fn decorating_an_empty_page_is_a_no_op() {
-        let font = ui_font();
+    fn the_dealt_hand_skips_the_card_just_played() {
+        let h = hand_line(Theme::Heelers, Some("BLUEY"));
+        assert!(h.contains("BINGO") && !h.contains("BLUEY"));
+        let h = hand_line(Theme::StarWars, None);
+        for c in STAR_WARS {
+            assert!(h.contains(c.key), "{} missing from the hand", c.key);
+        }
+    }
+
+    #[test]
+    fn every_card_decodes_as_8_bit_grayscale_art_with_real_tone() {
+        for card in HEELERS.iter().chain(STAR_WARS) {
+            let (w, h, gray) = card_gray(card)
+                .unwrap_or_else(|| panic!("{} must decode as 8-bit grayscale", card.key));
+            assert!(w >= 400 && h >= 400, "{} too small: {w}x{h}", card.key);
+            // Continuous tone must survive to the GC16 panel: at least 8
+            // distinct ink levels, with real black and a genuine mid-gray.
+            let mut seen = [false; 16];
+            for &g in &gray {
+                seen[(g >> 4) as usize] = true;
+            }
+            let levels = seen.iter().filter(|&&s| s).count();
+            assert!(levels >= 8, "{} has only {levels} distinct ink levels", card.key);
+            assert!(seen[0] || seen[1], "{} carries no near-black stroke", card.key);
+            assert!(
+                seen[5] || seen[6] || seen[7] || seen[8],
+                "{} carries no genuine mid-gray",
+                card.key
+            );
+        }
+    }
+
+    #[test]
+    fn a_played_card_lands_in_frame_with_tone_and_never_erases_ink() {
         let (_buf, mut surf) = page();
-        assert!(draw_deco(&mut surf, &BBox::empty(), &Deco::Eyes, &font).is_empty());
+        let frame = BBox { x0: 112, y0: 224, x1: 1292, y1: 1548 };
+        let clip = frame.clone();
+        // The child's ink: a black blot on the left half.
+        let mut ink = BBox::empty();
+        for y in 700..900 {
+            for x in 300..500 {
+                surf.put_px(x, y, BLACK);
+            }
+        }
+        ink.add(300, 700, 0);
+        ink.add(500, 900, 0);
+        let card = &STAR_WARS[0];
+        let dirty = play_card(&mut surf, &frame, &clip, &ink, card, Some((75.0, 40.0)), Some(45.0));
+        assert!(!dirty.is_empty());
+        assert!(dirty.x0 >= clip.x0 - 8 && dirty.x1 <= clip.x1 + 8);
+        assert!(dirty.y0 >= clip.y0 - 8 && dirty.y1 <= clip.y1 + 8);
+        // Real grayscale landed, not a silhouette.
+        let mut seen = [false; 16];
+        for y in dirty.y0..dirty.y1 {
+            for x in dirty.x0..dirty.x1 {
+                seen[(surf.luma(x, y) >> 4) as usize] = true;
+            }
+        }
+        let levels = seen.iter().filter(|&&s| s).count();
+        assert!(levels >= 6, "card landed with only {levels} ink levels");
+        // The child's ink is locked: still black everywhere it was.
+        for y in 700..900 {
+            for x in 300..500 {
+                assert!(surf.luma(x, y) < 32, "ink erased at {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_card_aimed_at_the_ink_slides_off_it() {
+        let (_buf, mut surf) = page();
+        let frame = BBox { x0: 112, y0: 224, x1: 1292, y1: 1548 };
+        let mut ink = BBox::empty();
+        ink.add(300, 700, 0);
+        ink.add(650, 1100, 0);
+        // The model aims dead at the doodle; the card must land mostly off it.
+        let dirty =
+            play_card(&mut surf, &frame, &frame, &ink, &STAR_WARS[0], Some((30.0, 55.0)), Some(40.0));
+        assert!(!dirty.is_empty());
+        let overlap_w = (dirty.x1.min(ink.x1) - dirty.x0.max(ink.x0)).max(0);
+        let overlap_h = (dirty.y1.min(ink.y1) - dirty.y0.max(ink.y0)).max(0);
+        let area = (dirty.x1 - dirty.x0) * (dirty.y1 - dirty.y0);
+        assert!(
+            overlap_w * overlap_h <= area / 3,
+            "card still squats on the doodle: {}x{} of {}",
+            overlap_w,
+            overlap_h,
+            area
+        );
+    }
+
+    #[test]
+    fn an_unsent_frame_plays_no_card() {
+        let (_buf, mut surf) = page();
+        let clip = BBox { x0: 112, y0: 224, x1: 1292, y1: 1548 };
+        let dirty =
+            play_card(&mut surf, &BBox::empty(), &clip, &BBox::empty(), &HEELERS[0], None, None);
+        assert!(dirty.is_empty());
     }
 
     #[test]
     fn play_pages_declare_canvas_and_story_choice_targets() {
         let font = ui_font();
         let (_buf, mut surf) = page();
-        let map = draw(&mut surf, &font, &Game::Critter { round: 0 });
+        let critter = Game::Critter { round: 0, theme: Theme::StarWars, last: None };
+        let map = draw(&mut surf, &font, &critter);
         assert!(!map.answer.is_empty());
         assert!(map.choices.is_empty());
         assert!(map.answer.y1 < map.done.y0);
@@ -740,16 +807,19 @@ mod tests {
 
     #[test]
     fn the_game_rotation_cycles_all_three() {
-        assert_eq!(Game::nth(0), Game::Critter { round: 0 });
+        assert!(matches!(Game::nth(0), Game::Critter { round: 0, last: None, .. }));
         assert_eq!(Game::nth(1), Game::Guess);
         assert!(matches!(Game::nth(2), Game::Story { .. }));
-        assert_eq!(Game::nth(3), Game::Critter { round: 0 });
+        assert!(matches!(Game::nth(3), Game::Critter { round: 0, last: None, .. }));
     }
 
     #[test]
     fn instructions_carry_the_protocol_each_parser_expects() {
-        let c = Game::Critter { round: 0 }.instruction(None);
-        assert!(c.contains("D 10,80") && c.contains("0-100"), "critter must teach the stroke protocol");
+        let c = Game::Critter { round: 0, theme: Theme::StarWars, last: Some("R2D2") }
+            .instruction(None);
+        assert!(c.contains("PLAY") && c.contains("0-100"), "critter must teach the card protocol");
+        assert!(c.contains("GROGU (") && !c.contains("R2D2 ("), "the hand must skip the last card");
+        assert!(!c.contains("BLUEY"), "the hand must stay in its theme");
         let s = Game::story().instruction(None);
         assert!(s.contains("1. 2. 3."));
         let mid = Game::Story { log: vec![("RUN".into(), "b".into())], choices: vec![], pending: None };

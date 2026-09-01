@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1000">
+  <!-- The little green one, wide ears, big dark eyes, robe with a broad collar.
+       Tones: outline #1a1a1a, robe #6a6a6a, collar #cfcfcf, skin #b8b8b8, inner-ear #9a9a9a -->
+  <g stroke="#1a1a1a" stroke-width="9" stroke-linejoin="round" stroke-linecap="round">
+
+    <!-- ==== robe body ==== -->
+    <path d="M395 640 Q 380 560 460 545 L 740 545 Q 820 560 805 640 L 830 930 Q 832 960 800 960 L 400 960 Q 368 960 370 930 Z" fill="#6a6a6a"/>
+    <!-- collar folds -->
+    <path d="M430 560 Q 600 640 770 560 L 790 680 Q 600 760 410 680 Z" fill="#cfcfcf"/>
+    <path d="M470 590 L 460 700" fill="none" stroke-width="7"/>
+    <path d="M600 625 L 600 745" fill="none" stroke-width="7"/>
+    <path d="M730 590 L 740 700" fill="none" stroke-width="7"/>
+    <!-- sleeve hems -->
+    <path d="M370 900 Q 420 870 470 900 L 470 960 L 370 960 Z" fill="#8e8e8e"/>
+    <path d="M830 900 Q 780 870 730 900 L 730 960 L 830 960 Z" fill="#8e8e8e"/>
+
+    <!-- tiny hands -->
+    <ellipse cx="475" cy="880" rx="42" ry="34" fill="#b8b8b8"/>
+    <ellipse cx="725" cy="880" rx="42" ry="34" fill="#b8b8b8"/>
+
+    <!-- ==== ears, wide and level ==== -->
+    <path d="M395 380 Q 220 330 60 395 Q 45 400 55 415 Q 160 500 390 470 Z" fill="#b8b8b8"/>
+    <path d="M370 400 Q 240 370 110 405 Q 200 460 375 445 Z" fill="#9a9a9a" stroke="none"/>
+    <path d="M805 380 Q 980 330 1140 395 Q 1155 400 1145 415 Q 1040 500 810 470 Z" fill="#b8b8b8"/>
+    <path d="M830 400 Q 960 370 1090 405 Q 1000 460 825 445 Z" fill="#9a9a9a" stroke="none"/>
+
+    <!-- ==== head ==== -->
+    <path d="M380 430 Q 360 250 470 190 Q 600 120 730 190 Q 840 250 820 430 Q 810 545 600 560 Q 390 545 380 430 Z" fill="#b8b8b8"/>
+    <!-- brow wrinkles -->
+    <path d="M470 235 Q 600 195 730 235" fill="none" stroke-width="7"/>
+    <path d="M485 275 Q 600 240 715 275" fill="none" stroke-width="7"/>
+
+    <!-- eyes: huge, dark, glossy -->
+    <ellipse cx="490" cy="390" rx="88" ry="96" fill="#1a1a1a"/>
+    <circle cx="462" cy="356" r="24" fill="#f4f4f4" stroke="none"/>
+    <circle cx="515" cy="428" r="11" fill="#8e8e8e" stroke="none"/>
+    <ellipse cx="710" cy="390" rx="88" ry="96" fill="#1a1a1a"/>
+    <circle cx="682" cy="356" r="24" fill="#f4f4f4" stroke="none"/>
+    <circle cx="735" cy="428" r="11" fill="#8e8e8e" stroke="none"/>
+
+    <!-- little nose and calm mouth -->
+    <path d="M588 460 Q 600 452 612 460 Q 606 472 600 472 Q 594 472 588 460 Z" fill="#464646"/>
+    <path d="M540 505 Q 600 530 660 505" fill="none" stroke-width="8"/>
+
+    <!-- wisps of hair -->
+    <path d="M560 150 Q 565 120 580 105" fill="none" stroke-width="6"/>
+    <path d="M600 145 Q 605 110 600 90" fill="none" stroke-width="6"/>
+    <path d="M640 150 Q 640 120 628 102" fill="none" stroke-width="6"/>
+  </g>
+</svg>

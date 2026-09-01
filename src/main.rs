@@ -329,7 +329,14 @@ fn learn_sheets(dir: &str) -> i32 {
     // The play pages: each game's opening sheet, plus a story mid-beat.
     let mut session = learn::Session::start_at(1, 99);
     let pages: [(&str, learn::Page); 4] = [
-        ("critter", learn::Page::Play(learn::games::Game::Critter { round: 0 })),
+        (
+            "critter",
+            learn::Page::Play(learn::games::Game::Critter {
+                round: 0,
+                theme: learn::games::Theme::StarWars,
+                last: None,
+            }),
+        ),
         ("guess", learn::Page::Play(learn::games::Game::Guess)),
         ("story-start", learn::Page::Play(learn::games::Game::story())),
         (
@@ -352,37 +359,42 @@ fn learn_sheets(dir: &str) -> i32 {
         println!("{path}");
     }
     // One critter mid-game, so the pad's turns can be judged: a child-ish
-    // blob wearing three of the pad's decorations.
-    session.page = learn::Page::Play(learn::games::Game::Critter { round: 3 });
-    session.draw(&mut surf, &ui_font);
-    let (cx, cy, r0) = (SCREEN_W as i32 / 2, SCREEN_H as i32 * 2 / 5, 220.0f32);
-    let mut prev: Option<(i32, i32)> = None;
-    for i in 0..=72 {
-        let a = i as f32 * std::f32::consts::TAU / 72.0;
-        let r = r0 + (a * 5.0).sin() * 26.0; // a wobbly hand-drawn circle
-        let (x, y) = (cx + (r * a.cos()) as i32, cy + (r * a.sin()) as i32);
-        if let Some((px, py)) = prev {
-            surf.brush_line(px, py, x, y, 4, BLACK);
-        }
-        prev = Some((x, y));
-    }
-    let mut blob = BBox::empty();
-    blob.add(cx - 250, cy - 250, 0);
-    blob.add(cx + 250, cy + 250, 0);
-    for deco in [
-        learn::games::Deco::Eyes,
-        learn::games::Deco::Hat,
-        learn::games::Deco::Legs,
-        learn::games::Deco::Bubble("MOO".into()),
+    // wobbly circle with a card played next to it, one from each theme.
+    for (name, theme) in [
+        ("critter-demo", learn::games::Theme::StarWars),
+        ("critter-demo-heelers", learn::games::Theme::Heelers),
     ] {
-        learn::games::draw_deco(&mut surf, &blob, &deco, &ui_font);
+        session.page = learn::Page::Play(learn::games::Game::Critter {
+            round: 1,
+            theme,
+            last: None,
+        });
+        session.draw(&mut surf, &ui_font);
+        let (cx, cy, r0) = (SCREEN_W as i32 / 3, SCREEN_H as i32 * 2 / 5, 220.0f32);
+        let mut prev: Option<(i32, i32)> = None;
+        let mut blob = BBox::empty();
+        for i in 0..=72 {
+            let a = i as f32 * std::f32::consts::TAU / 72.0;
+            let r = r0 + (a * 5.0).sin() * 26.0; // a wobbly hand-drawn circle
+            let (x, y) = (cx + (r * a.cos()) as i32, cy + (r * a.sin()) as i32);
+            if let Some((px, py)) = prev {
+                surf.brush_line(px, py, x, y, 4, BLACK);
+            }
+            blob.add(x, y, 4);
+            prev = Some((x, y));
+        }
+        let card = learn::games::resolve_card(theme, None, Some(theme.deck()[0].key));
+        learn::games::play_card(
+            &mut surf, &session.hits.answer, &session.hits.answer, &blob,
+            card, Some((72.0, 45.0)), Some(42.0),
+        );
+        let path = format!("{dir}/play-{name}.png");
+        if let Err(e) = dump_page(&surf, &path) {
+            eprintln!("g-pad: write {path}: {e}");
+            return 1;
+        }
+        println!("{path}");
     }
-    let path = format!("{dir}/play-critter-demo.png");
-    if let Err(e) = dump_page(&surf, &path) {
-        eprintln!("g-pad: write {path}: {e}");
-        return 1;
-    }
-    println!("{path}");
     // The three verdict stamps a child actually sees, on a real sheet.
     let mut session = learn::Session::start_at(2, 7);
     let samples: [(&str, &str, &str, bool); 3] = [
@@ -1814,27 +1826,35 @@ fn run() -> std::io::Result<()> {
                                     stamped = true;
                                 }
                                 LearnFlavor::Critter => {
-                                    // The pad's turn: its own pen strokes on
-                                    // the doodle (menu decoration as the
-                                    // fallback), one line of commentary.
-                                    let turn = learn::games::parse_critter_turn(got.trim());
-                                    let dirty = if !turn.strokes.is_empty() {
-                                        learn::games::draw_strokes(
+                                    // The pad's turn: play one picture card
+                                    // from the doodle's theme. The model
+                                    // picks card, spot, and joke; the pad
+                                    // guarantees a card lands either way.
+                                    let turn = learn::games::parse_card_turn(got.trim());
+                                    let mut played = None;
+                                    if let learn::Page::Play(learn::games::Game::Critter {
+                                        theme, last, ..
+                                    }) = &session.page
+                                    {
+                                        let card = learn::games::resolve_card(
+                                            *theme, *last, turn.key.as_deref(),
+                                        );
+                                        let dirty = learn::games::play_card(
                                             &mut surf, &learn_sent_frame,
-                                            &session.hits.answer, &turn.strokes,
-                                        )
-                                    } else if let Some(d) = turn.deco {
-                                        learn::games::draw_deco(&mut surf, &user_ink.bbox, &d, &ui_font)
-                                    } else {
-                                        BBox::empty()
-                                    };
-                                    if !dirty.is_empty() {
-                                        let (x, y, w, h) = dirty.rect();
-                                        disp.update(x, y, w, h, true);
+                                            &session.hits.answer, &user_ink.bbox,
+                                            card, turn.center, turn.size,
+                                        );
+                                        if !dirty.is_empty() {
+                                            played = Some(card.key);
+                                            // The art is 16-level gray: only the
+                                            // flashing GC16 pass resolves its
+                                            // tone (see the sleep page's mark).
+                                            disp.full_refresh(surf.w, surf.h);
+                                        }
                                     }
-                                    session.critter_turn();
+                                    session.critter_turn(played);
                                     text = if turn.caption.trim().is_empty() {
-                                        "There. Much better.".to_string()
+                                        "Look who came to play!".to_string()
                                     } else {
                                         turn.caption
                                     };

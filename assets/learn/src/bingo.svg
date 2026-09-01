@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1150">
+  <!-- The little sister: rounder, lighter, floppy ears, both arms up in a
+       hooray. Tones: outline #1a1a1a, crown/ears #c2c2c2, patches #8a8a8a,
+       body #d0d0d0, face/belly #f2f2f2, inner-ear #e6e6e6 -->
+  <g stroke="#1a1a1a" stroke-width="9" stroke-linejoin="round" stroke-linecap="round">
+
+    <!-- ==== tail: thick, curled up ==== -->
+    <path d="M730 700 Q 860 690 890 590 Q 898 545 868 525 Q 872 595 805 635 Q 760 660 720 665 Z" fill="#c2c2c2"/>
+    <path d="M870 532 Q 875 590 815 630 L 790 644 Q 823 610 830 555 Q 850 538 870 532 Z" fill="#f2f2f2" stroke-width="7"/>
+
+    <!-- ==== legs: short and stubby ==== -->
+    <path d="M405 870 L 405 1030 Q 405 1065 440 1065 L 475 1065 Q 495 1065 495 1040 L 485 870 Z" fill="#d0d0d0"/>
+    <path d="M615 870 L 615 1030 Q 615 1065 650 1065 L 685 1065 Q 705 1065 705 1040 L 692 870 Z" fill="#d0d0d0"/>
+    <path d="M405 1005 L 405 1030 Q 405 1065 440 1065 L 475 1065 Q 495 1065 495 1040 L 493 1005 Z" fill="#8a8a8a"/>
+    <path d="M615 1005 L 615 1030 Q 615 1065 650 1065 L 685 1065 Q 705 1065 705 1040 L 703 1005 Z" fill="#8a8a8a"/>
+
+    <!-- ==== body: round tummy ==== -->
+    <path d="M390 610 Q 330 740 380 870 Q 388 905 435 905 L 665 905 Q 720 905 728 850 Q 772 730 705 600 Q 630 545 545 550 Q 450 550 390 610 Z" fill="#d0d0d0"/>
+    <!-- belly patch -->
+    <path d="M450 660 Q 415 750 445 865 Q 452 900 500 900 L 630 900 Q 678 900 682 848 Q 700 745 665 660 Q 555 615 450 660 Z" fill="#f2f2f2" stroke-width="7"/>
+    <!-- back spot -->
+    <ellipse cx="710" cy="740" rx="28" ry="38" fill="#8a8a8a" stroke="none"/>
+
+    <!-- ==== both arms up: hooray ==== -->
+    <path d="M405 640 Q 300 590 240 490 Q 218 450 245 428 Q 275 410 298 442 Q 350 530 440 570 Z" fill="#d0d0d0"/>
+    <path d="M262 486 Q 218 450 245 428 Q 275 410 298 442 Q 315 466 305 482 Q 283 498 262 486 Z" fill="#8a8a8a" stroke-width="7"/>
+    <path d="M695 640 Q 800 590 860 490 Q 882 450 855 428 Q 825 410 802 442 Q 750 530 660 570 Z" fill="#d0d0d0"/>
+    <path d="M838 486 Q 882 450 855 428 Q 825 410 802 442 Q 785 466 795 482 Q 817 498 838 486 Z" fill="#8a8a8a" stroke-width="7"/>
+
+    <!-- ==== ears: rounded triangles, tipped a little outward ==== -->
+    <path d="M310 300 Q 250 205 255 115 Q 258 82 292 92 Q 385 125 445 250 Z" fill="#c2c2c2"/>
+    <path d="M330 250 Q 295 185 293 122 Q 355 150 405 225 Q 370 250 330 250 Z" fill="#e6e6e6" stroke-width="7"/>
+    <path d="M690 300 Q 750 205 745 115 Q 742 82 708 92 Q 615 125 555 250 Z" fill="#c2c2c2"/>
+    <path d="M670 250 Q 705 185 707 122 Q 645 150 595 225 Q 630 250 670 250 Z" fill="#e6e6e6" stroke-width="7"/>
+
+    <!-- ==== head: round ==== -->
+    <path d="M290 380 Q 290 235 500 235 Q 710 235 710 380 Q 710 450 685 500 Q 635 575 500 575 Q 365 575 315 500 Q 290 450 290 380 Z" fill="#c2c2c2"/>
+    <!-- eye patch on the crown, opposite side to the big sister's -->
+    <path d="M320 285 Q 395 260 440 300 Q 452 355 420 388 Q 365 385 335 350 Q 315 315 320 285 Z" fill="#8a8a8a" stroke="none"/>
+    <!-- face mask -->
+    <path d="M335 460 Q 335 385 425 370 Q 475 360 500 360 Q 525 360 575 370 Q 665 385 665 460 Q 665 510 635 535 Q 578 570 500 570 Q 422 570 365 535 Q 335 510 335 460 Z" fill="#f2f2f2" stroke-width="7"/>
+    <!-- eyes -->
+    <ellipse cx="432" cy="410" rx="50" ry="56" fill="#fdfdfd"/>
+    <circle cx="445" cy="422" r="16" fill="#1a1a1a" stroke="none"/>
+    <ellipse cx="568" cy="410" rx="50" ry="56" fill="#fdfdfd"/>
+    <circle cx="555" cy="422" r="16" fill="#1a1a1a" stroke="none"/>
+    <!-- brows -->
+    <path d="M398 338 Q 432 325 462 335" fill="none" stroke-width="8"/>
+    <path d="M538 335 Q 568 325 602 338" fill="none" stroke-width="8"/>
+    <!-- nose and open grin -->
+    <path d="M466 492 Q 500 476 534 492 Q 527 522 500 522 Q 473 522 466 492 Z" fill="#1a1a1a"/>
+    <path d="M500 522 L 500 540" fill="none" stroke-width="8"/>
+    <path d="M435 540 Q 500 595 565 540 Q 540 570 500 570 Q 460 570 435 540 Z" fill="#8a8a8a" stroke-width="8"/>
+  </g>
+</svg>

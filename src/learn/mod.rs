@@ -237,10 +237,14 @@ impl Session {
         }
     }
 
-    /// The pad took a decorating turn on the critter.
-    pub fn critter_turn(&mut self) {
-        if let Page::Play(games::Game::Critter { round }) = &mut self.page {
+    /// The pad played a card on the critter: count the turn, remember the
+    /// card so the next hand deals a different one.
+    pub fn critter_turn(&mut self, played: Option<&'static str>) {
+        if let Page::Play(games::Game::Critter { round, last, .. }) = &mut self.page {
             *round = round.saturating_add(1);
+            if played.is_some() {
+                *last = played;
+            }
         }
     }
 
