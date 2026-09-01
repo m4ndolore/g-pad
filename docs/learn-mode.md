@@ -49,7 +49,21 @@ cell), and **comparison boxes** (write <, =, or >).
 
 Difficulty adapts locally: three right in a row steps up, two wrong steps
 down, silently. Activities rotate rather than sample, so a math page is
-always followed by something different.
+always followed by something different. The menu's LEVEL row can re-seat the
+ladder by hand at any time; the automatic walk continues from the new rung.
+
+## Scoring
+
+Math practice keeps a session score — the one piece of gamification beyond
+the streak dots. A correct answer is worth `10 × level`, plus `5` per streak
+dot already showing (capped at four): harder pages and runs both pay more,
+and the award is settled *before* the ladder moves, so a level-up never
+inflates the answer that caused it. ALMOST and NO score nothing; Unknown
+moves nothing at all, same as the ladder. The total shows as a star and
+number in the sheet header's top center (absent until the first point, so a
+fresh page opens calm), and each YES stamps its own `+N` beside the cheer's
+right star. The score lives in the session only and resets every boot — the
+game is today's game. Play pages neither earn nor show points.
 
 ## Worksheet pages
 
@@ -79,15 +93,26 @@ letters genuinely touch the lines the child is told to reach.
 ## The menu
 
 A mark in MENU deals the picker: two labeled sections of tick boxes,
-**PRACTICE** (Counting, Add to 10, Add to 20, Times & Share, Writing,
-Surprise Mix — the math rows also pin the starting level) and **PLAY**
-(Doodle Critter, Guessing Game, Story Time). A mark in a box deals that page
-at once, and the choice is *sticky*: a picked game deals itself again on
-every NEW, a picked topic narrows the practice rotation (math only, or
-tracing only) until the menu says otherwise. Surprise Mix restores the
-default deck. The mapping between box order and meaning lives in one place
-(`sheet::MENU_ITEMS` ↔ `Session::choose_menu`), and the picker page itself
-has no DONE or NEW — a mark in an entry is the only thing it understands.
+**PRACTICE** (Math, Writing, Surprise Mix, Math Skills) and **PLAY** (Doodle
+Critter, Guessing Game, Story Time), then a **LEVEL** row — four numbered
+boxes, the current level filled solid. A mark in an entry deals that page at
+once, and the choice is *sticky*: a picked game deals itself again on every
+NEW, a picked topic narrows the practice rotation (math only, or tracing
+only) until the menu says otherwise. Surprise Mix restores the default deck.
+A mark in a LEVEL box re-seats the adaptive ladder there and keeps the menu
+open, redrawn with the pick filled, so a topic can still be chosen.
+
+**Math Skills** opens a second picker listing every math activity by its own
+name — Count Dots, Number Bonds, Make Ten, Number Sentences, Times Tables,
+Sharing, Bar Models, Number Line, Tens & Ones, Hundred Chart, Bigger or
+Smaller. A mark latches that one skill: every page deals it (at the current
+level, still adapting) until the menu says otherwise — and like any named
+pick, a latched skill is never interrupted by earned play pages.
+
+The mapping between box order and meaning lives in one place per page
+(`sheet::MENU_ITEMS` ↔ `Session::choose_menu`, `problems::MATH_SKILLS` ↔ the
+skills page), and the picker pages themselves have no DONE or NEW — a mark
+in an entry is the only thing they understand.
 
 ## The marking round trip
 

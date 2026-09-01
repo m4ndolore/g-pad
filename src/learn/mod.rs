@@ -37,6 +37,9 @@ pub enum Page {
     /// The picker: every topic and game as a tick box. Dealt by a mark in
     /// the MENU footer box; a mark in a choice box deals the chosen page.
     Menu,
+    /// The skills picker: every math activity as its own tick box, reached
+    /// from the menu's MATH SKILLS entry. A mark latches that one skill.
+    Skills,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,6 +66,11 @@ pub struct Session {
     policy: PlayPolicy,
     focus: Focus,
     earned: u32,
+    /// Session points, math only: correct answers score, streaks score more.
+    /// Resets every boot — the game is today's game.
+    score: u32,
+    /// What the last correct answer was worth, for the "+N" beside the cheer.
+    last_award: u32,
     pub page: Page,
     pub hits: HitMap,
 }
@@ -95,11 +103,28 @@ impl Session {
         };
         let game_rot = usize::from(policy == PlayPolicy::Always);
         let focus = Focus::Practice(problems::Topic::Mix);
-        Self { ladder, rng, rot: 0, game_rot, policy, focus, earned: 0, page, hits: empty_hits() }
+        Self {
+            ladder,
+            rng,
+            rot: 0,
+            game_rot,
+            policy,
+            focus,
+            earned: 0,
+            score: 0,
+            last_award: 0,
+            page,
+            hits: empty_hits(),
+        }
     }
 
     pub fn level(&self) -> u8 {
         self.ladder.level
+    }
+
+    /// What the latest correct answer scored; 0 after anything else.
+    pub fn last_award(&self) -> u32 {
+        self.last_award
     }
 
     /// The graded problem of a practice page: the last on the sheet.
@@ -113,9 +138,12 @@ impl Session {
     /// Draw the current page and remember its hit map.
     pub fn draw(&mut self, surf: &mut Surface, ui_font: &FontRef) {
         self.hits = match &self.page {
-            Page::Practice(set) => sheet::draw(surf, ui_font, set, self.ladder.level, self.ladder.streak()),
+            Page::Practice(set) => {
+                sheet::draw(surf, ui_font, set, self.ladder.level, self.ladder.streak(), self.score)
+            }
             Page::Play(g) => games::draw(surf, ui_font, g),
-            Page::Menu => sheet::draw_menu(surf, ui_font),
+            Page::Menu => sheet::draw_menu(surf, ui_font, self.ladder.level),
+            Page::Skills => sheet::draw_skills(surf, ui_font),
         };
     }
 
@@ -158,25 +186,45 @@ impl Session {
         self.page = Page::Menu;
     }
 
+    /// Is a picker page up? Both the menu and the skills page route their
+    /// choice marks through `choose_menu`.
     pub fn is_menu(&self) -> bool {
-        self.page == Page::Menu
+        matches!(self.page, Page::Menu | Page::Skills)
     }
 
-    /// The child ticked menu box `i`: latch the focus it names and deal its
-    /// first page (call `draw` afterwards). False when no such box exists —
-    /// the indices mirror `sheet::MENU_ITEMS`.
+    /// The child ticked picker box `i`: act on what it names and deal the
+    /// page that follows (call `draw` afterwards). False when no such box
+    /// exists. On the menu the indices mirror `sheet::MENU_ITEMS`, with the
+    /// four LEVEL boxes after them; a level pick re-seats the ladder and
+    /// stays on the menu so a topic can still be chosen. On the skills page
+    /// the indices mirror `problems::MATH_SKILLS`.
     pub fn choose_menu(&mut self, i: usize) -> bool {
-        self.focus = match i {
-            0..=3 => {
-                self.ladder = problems::Ladder::new(i as u8 + 1);
-                Focus::Practice(problems::Topic::Math)
+        self.focus = if self.page == Page::Skills {
+            match problems::MATH_SKILLS.get(i) {
+                Some(&act) => Focus::Practice(problems::Topic::Skill(act)),
+                None => return false,
             }
-            4 => Focus::Practice(problems::Topic::Writing),
-            5 => Focus::Practice(problems::Topic::Mix),
-            6..=8 => Focus::Game(i - 6),
-            _ => return false,
+        } else {
+            match i {
+                0 => Focus::Practice(problems::Topic::Math),
+                1 => Focus::Practice(problems::Topic::Writing),
+                2 => Focus::Practice(problems::Topic::Mix),
+                3 => {
+                    self.page = Page::Skills;
+                    return true;
+                }
+                4..=6 => Focus::Game(i - 4),
+                7..=10 => {
+                    // A LEVEL box: re-seat the adaptive ladder there (it
+                    // still walks up and down from the new rung) and stay
+                    // on the menu, redrawn with the pick filled in.
+                    self.ladder = problems::Ladder::new((i - 6) as u8);
+                    return true;
+                }
+                _ => return false,
+            }
         };
-        // The menu never earns a treat: deal the pick itself, not a play page.
+        // The picker never earns a treat: deal the pick itself, not a play page.
         self.earned = 0;
         match self.focus {
             Focus::Game(g) => self.page = Page::Play(games::Game::nth(g)),
@@ -188,14 +236,23 @@ impl Session {
         true
     }
 
-    /// A marked practice answer came back; move the ladder (and the treat
-    /// counter). Play pages never call this.
+    /// A marked practice answer came back; move the ladder, the treat
+    /// counter, and the score. Play pages never call this.
+    ///
+    /// Scoring: a correct answer is worth `10 × level`, plus `5` per streak
+    /// dot already showing (capped at four) — harder pages and runs both pay
+    /// more, and the award is settled BEFORE the ladder moves so a level-up
+    /// never inflates the answer that caused it.
     pub fn record(&mut self, v: Verdict) {
         if let Some(correct) = v.counts_as_correct() {
-            self.ladder.record(correct);
             if correct {
+                self.last_award = 10 * self.ladder.level as u32 + 5 * self.ladder.streak().min(4);
+                self.score += self.last_award;
                 self.earned += 1;
+            } else {
+                self.last_award = 0;
             }
+            self.ladder.record(correct);
         }
     }
 
@@ -251,9 +308,12 @@ impl Session {
 
     /// Does DONE require ink in the answer region on this page? Everywhere
     /// but the story, where an empty page just means the pad invents a hero.
-    /// (The menu has no DONE box at all.)
+    /// (The picker pages have no DONE box at all.)
     pub fn needs_ink(&self) -> bool {
-        !matches!(self.page, Page::Play(games::Game::Story { .. }) | Page::Menu)
+        !matches!(
+            self.page,
+            Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills
+        )
     }
 
     /// The per-turn instruction for the oracle: tutor on practice pages,
@@ -285,8 +345,8 @@ impl Session {
                 };
                 game.instruction(pending)
             }
-            // The menu has no DONE box; nothing is ever asked from it.
-            Page::Menu => String::new(),
+            // The picker pages have no DONE box; nothing is ever asked from them.
+            Page::Menu | Page::Skills => String::new(),
         }
     }
 }
@@ -371,10 +431,9 @@ mod tests {
         s.open_menu();
         assert!(s.is_menu());
         assert!(!s.needs_ink(), "the menu wants a mark, never ink");
-        // Picking a math level deals math at that level, and it sticks:
-        // no handwriting pages sneak into the rotation.
-        assert!(s.choose_menu(3));
-        assert_eq!(s.level(), 4);
+        // Picking math deals math, and it sticks: no handwriting pages
+        // sneak into the rotation.
+        assert!(s.choose_menu(0));
         for _ in 0..6 {
             let Page::Practice(ref p) = s.page else { panic!("math focus must deal practice") };
             assert!(!p.items.iter().any(|q| matches!(q.kind, problems::Kind::Trace { .. })));
@@ -382,7 +441,7 @@ mod tests {
         }
         // Writing deals tracing, and only tracing.
         s.open_menu();
-        assert!(s.choose_menu(4));
+        assert!(s.choose_menu(1));
         for _ in 0..3 {
             let Page::Practice(ref p) = s.page else { panic!("writing focus must deal practice") };
             assert!(p.items.iter().all(|q| matches!(q.kind, problems::Kind::Trace { .. })));
@@ -390,15 +449,98 @@ mod tests {
         }
         // A game is sticky: NEW deals the same game afresh.
         s.open_menu();
-        assert!(s.choose_menu(8));
+        assert!(s.choose_menu(6));
         assert!(matches!(s.page, Page::Play(games::Game::Story { .. })));
         s.next();
         assert!(matches!(s.page, Page::Play(games::Game::Story { .. })));
         // Surprise mix restores the default deck; nonsense selects nothing.
         s.open_menu();
-        assert!(s.choose_menu(5));
+        assert!(s.choose_menu(2));
         assert!(matches!(s.page, Page::Practice(_)));
         assert!(!s.choose_menu(99));
+    }
+
+    #[test]
+    fn a_level_box_reseats_the_ladder_and_keeps_the_menu_open() {
+        let mut s = Session::start_at(1, 5);
+        s.open_menu();
+        // LEVEL boxes sit after the named entries: 7..=10 are levels 1..=4.
+        assert!(s.choose_menu(9));
+        assert_eq!(s.level(), 3);
+        assert!(s.is_menu(), "a level pick leaves the menu open for a topic pick");
+        assert!(s.choose_menu(0));
+        let Page::Practice(_) = s.page else { panic!("the topic pick still deals") };
+        assert_eq!(s.level(), 3, "the dealt page is at the picked level");
+        // The ladder still walks from the new rung.
+        for _ in 0..3 {
+            s.record(Verdict::Yes);
+        }
+        assert_eq!(s.level(), 4);
+    }
+
+    #[test]
+    fn the_skills_page_latches_one_math_skill_until_the_menu_says_otherwise() {
+        let mut s = Session::start_at(2, 5);
+        s.open_menu();
+        assert!(s.choose_menu(3), "MATH SKILLS opens the skills page");
+        assert_eq!(s.page, Page::Skills);
+        assert!(s.is_menu(), "the skills page routes marks like the menu");
+        assert!(!s.needs_ink());
+        // Pick bar models: every dealt page is bar models, even across treats.
+        let bar = problems::MATH_SKILLS.iter().position(|a| *a == problems::Activity::Bar).unwrap();
+        assert!(s.choose_menu(bar));
+        for _ in 0..6 {
+            s.record(Verdict::Yes);
+            let Page::Practice(ref p) = s.page else { panic!("a skill latch must deal practice") };
+            assert!(
+                p.items.iter().all(|q| matches!(q.kind, problems::Kind::Bar { .. })),
+                "the latched skill drifted: {:?}",
+                p.items[0].kind
+            );
+            s.next();
+        }
+        // A nonsense skill index selects nothing.
+        s.open_menu();
+        assert!(s.choose_menu(3));
+        assert!(!s.choose_menu(problems::MATH_SKILLS.len()));
+    }
+
+    #[test]
+    fn correct_answers_score_and_streaks_score_more() {
+        let mut s = Session::start_at(1, 5);
+        assert_eq!(s.score, 0);
+        s.record(Verdict::Yes); // level 1, no streak yet: 10
+        assert_eq!(s.last_award(), 10);
+        s.record(Verdict::Yes); // one streak dot showing: 10 + 5
+        assert_eq!(s.last_award(), 15);
+        assert_eq!(s.score, 25);
+        // A miss awards nothing and clears the toast, but keeps the score.
+        s.record(Verdict::No);
+        assert_eq!(s.last_award(), 0);
+        assert_eq!(s.score, 25);
+        // Unknown moves nothing at all.
+        s.record(Verdict::Unknown);
+        assert_eq!(s.score, 25);
+        // Higher levels pay more: at level 3 a cold answer is worth 30.
+        let mut s = Session::start_at(3, 5);
+        s.record(Verdict::Yes);
+        assert_eq!(s.last_award(), 30);
+        // ALMOST is a miss for scoring, same as the ladder.
+        s.record(Verdict::Almost);
+        assert_eq!(s.last_award(), 0);
+    }
+
+    #[test]
+    fn the_streak_bonus_is_settled_before_the_ladder_moves() {
+        let mut s = Session::start_at(1, 5);
+        s.record(Verdict::Yes); // 10, streak -> 1
+        s.record(Verdict::Yes); // 15, streak -> 2
+        s.record(Verdict::Yes); // 20, then the level-up resets the streak
+        assert_eq!(s.last_award(), 20, "the level-up must not inflate its own answer");
+        assert_eq!(s.level(), 2);
+        s.record(Verdict::Yes); // level 2, streak reset: 20
+        assert_eq!(s.last_award(), 20);
+        assert_eq!(s.score, 10 + 15 + 20 + 20);
     }
 
     #[test]
@@ -419,7 +561,7 @@ mod tests {
         }
         // The default mix still pays out the treat as before.
         s.open_menu();
-        assert!(s.choose_menu(5));
+        assert!(s.choose_menu(2));
         s.record(Verdict::Yes);
         s.next();
         s.record(Verdict::Yes);
@@ -429,11 +571,23 @@ mod tests {
 
     #[test]
     fn every_menu_box_maps_to_a_selection() {
-        for i in 0..sheet::MENU_ITEMS.len() {
+        // The named entries, then the four LEVEL boxes after them.
+        for i in 0..sheet::MENU_ITEMS.len() + 4 {
             let mut s = Session::start_at(1, 5);
             s.open_menu();
-            assert!(s.choose_menu(i), "menu item {i} must select something");
-            assert!(!s.is_menu(), "a pick must leave the menu");
+            assert!(s.choose_menu(i), "menu box {i} must select something");
+            // MATH SKILLS and the level boxes keep a picker up; every other
+            // pick deals a page and leaves.
+            let stays = i == 3 || i >= sheet::MENU_ITEMS.len();
+            assert_eq!(s.is_menu(), stays, "menu box {i} left the wrong page up");
+        }
+        // And every skills box latches a skill and leaves.
+        for i in 0..problems::MATH_SKILLS.len() {
+            let mut s = Session::start_at(1, 5);
+            s.open_menu();
+            assert!(s.choose_menu(3));
+            assert!(s.choose_menu(i), "skill box {i} must select something");
+            assert!(!s.is_menu(), "a skill pick must deal a page");
         }
     }
 
