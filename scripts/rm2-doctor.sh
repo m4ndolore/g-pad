@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # g-pad rM2 doctor — why AppLoad (or g-pad inside it) is missing.
 #
-#   Usage:  ./scripts/rm2-doctor.sh                      # USB (10.11.99.1)
-#           RM_HOST=192.168.1.42 ./scripts/rm2-doctor.sh # over Wi-Fi
+#   Usage:  ./scripts/rm2-doctor.sh                      # finds the tablet itself
+#           RM_HOST=192.168.1.42 ./scripts/rm2-doctor.sh # or tell it where to look
 #
 # Read-only: it looks, reports, and prints the exact command that fixes each
 # thing it finds. It never changes the tablet.
@@ -17,7 +17,10 @@
 #   4. AppLoad is there and it is the g-pad bundle that is missing
 set -euo pipefail
 
-RM_HOST="${RM_HOST:-10.11.99.1}"
+RM_HOST="${RM_HOST:-}"          # empty = go and find it
+
+USB_HOST=10.11.99.1             # the USB-C link, always this address
+HOTSPOT_NET=172.20.10           # iOS Personal Hotspot is always this /28
 
 # Same rM2 SSH quirks the installer works around: dropbear 2020.81 hangs up
 # when RSA is negotiated, while older firmware offers nothing but ssh-rsa.
@@ -41,17 +44,93 @@ say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
 fix()  { FIXES+=("$*"); }
 VERDICT=(); FIXES=()
 
+# --- finding the tablet ------------------------------------------------------
+# Two addresses need no hunting at all. Over USB the rM2 is always 10.11.99.1.
+# On an iPhone/iPad Personal Hotspot the subnet is always 172.20.10.0/28 — the
+# phone is .1 and clients get .2 through .14 — so "I don't know the IP" is a
+# thirteen-address scan, not a search. Anything else (home Wi-Fi) still needs
+# RM_HOST, and the tablet will tell you: Settings > Wi-Fi, tap the connected
+# network.
+NC="$(command -v nc || true)"
+
+# Is anything listening on 22? nc when we have it (fast, no auth); otherwise ask
+# ssh and read what it says — a refused key still proves an sshd answered.
+port22() {
+    if [ -n "$NC" ]; then
+        "$NC" -z -w 1 "$1" 22 >/dev/null 2>&1
+    else
+        out="$(ssh -n -o BatchMode=yes -o ConnectTimeout=2 \
+                   -o StrictHostKeyChecking=no "root@$1" true 2>&1)" && return 0
+        printf '%s' "$out" | grep -qiE 'denied|publickey|password'
+    fi
+}
+
+# The rM2 runs dropbear, so its SSH banner identifies it before we authenticate.
+banner() { [ -n "$NC" ] || return 0; "$NC" -w 2 "$1" 22 </dev/null 2>/dev/null | head -n 1 || true; }
+
+discover() {
+    say "Looking for the tablet (no RM_HOST given)"
+    printf '  trying USB, then the iOS hotspot range 172.20.10.2-14 '
+    FOUND=()
+    for h in "$USB_HOST" $(seq 2 14 | sed "s|^|$HOTSPOT_NET.|"); do
+        printf '.'
+        port22 "$h" && FOUND+=("$h")
+    done
+    printf '\n'
+
+    for h in "${FOUND[@]:-}"; do
+        [ -n "$h" ] || continue
+        B="$(banner "$h")"
+        case "$B" in
+            *[Dd]ropbear*) ok "$h answers on 22 — dropbear, which is what the rM2 runs" ;;
+            "")            ok "$h answers on 22" ;;
+            *)             warn "$h answers on 22 but its banner reads '$B' — probably not the tablet" ;;
+        esac
+    done
+
+    case "${#FOUND[@]}" in
+        0) cat >&2 <<EOF
+
+  Found nothing to talk to.
+
+  Three things to check, in this order:
+    1. This computer must be on the same hotspot as the tablet. An iPad
+       sharing its connection only routes between its own clients — join
+       this machine to that hotspot too, or plug the tablet into USB, which
+       needs no IP at all and is the easier path for fixing AppLoad.
+    2. reMarkable turns Wi-Fi off when the sleep cover closes. Wake the
+       tablet and leave it awake while this runs.
+    3. If it is on some other network, read the address off the tablet:
+       Settings > Wi-Fi, tap the connected network. Then:
+         RM_HOST=<that-ip> $0
+
+  The root password lives at Settings > General > Help > Copyrights and
+  licenses, at the bottom under GPLv3 Compliance.
+EOF
+           exit 1 ;;
+        1) RM_HOST="${FOUND[0]}"
+           say "Using root@$RM_HOST" ;;
+        *) printf '\n  More than one host answered. Pick the tablet and re-run:\n' >&2
+           for h in "${FOUND[@]}"; do printf '    RM_HOST=%s %s\n' "$h" "$0" >&2; done
+           exit 1 ;;
+    esac
+}
+
+[ -n "$RM_HOST" ] || discover
+
 say "Reaching root@$RM_HOST"
 if ! rm_ssh true 2>/dev/null; then
     cat >&2 <<EOF
-  cannot reach root@$RM_HOST over SSH.
+  something is listening at $RM_HOST, but SSH as root did not go through.
 
-  Over Wi-Fi the address is not 10.11.99.1 (that is the USB link). Read the
-  tablet's Wi-Fi IP under Settings > General > Help > Copyrights and licenses
-  (GPLv3 Compliance, bottom of the page) — the root password is there too —
-  and re-run:  RM_HOST=<that-ip> $0
+  If it asked for a password, this machine's key is not installed yet — the
+  installer does that for you, and the password is on the tablet under
+  Settings > General > Help > Copyrights and licenses (GPLv3 Compliance):
 
-  If it refuses the key: ssh-keygen -R "$RM_HOST", then try again.
+    RM_HOST=$RM_HOST ./scripts/install-rm2.sh
+
+  If it hung up on you, clear a stale host key and retry:
+    ssh-keygen -R $RM_HOST
 EOF
     exit 1
 fi

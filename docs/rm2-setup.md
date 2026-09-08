@@ -147,22 +147,33 @@ If you prefer to run each step yourself:
   because xovi was never installed at all. Ask the tablet which one it is:
 
   ```sh
-  RM_HOST=<tablet-ip> ./scripts/rm2-doctor.sh
+  ./scripts/rm2-doctor.sh
   ```
 
-  It is read-only — it reports what is installed, what is loaded into the
-  running xochitl, and prints the one command that fixes what it found. The two
-  answers it usually lands on:
+  It is read-only — it finds the tablet, reports what is installed, what is
+  loaded into the running xochitl, and prints the one command that fixes what
+  it found. The two answers it usually lands on:
 
   ```sh
   ssh root@<tablet-ip> '/home/root/xovi/start'                       # loader not running
   ssh root@<tablet-ip> '/home/root/xovi/rebuild_hashtable && /home/root/xovi/start'   # after an OS update
   ```
 
-  Over Wi-Fi the address is *not* `10.11.99.1` — that is the USB link only. Take
-  the Wi-Fi IP from Settings → General → Help → Copyrights and licenses (GPLv3
-  Compliance), the same page as the root password, and pass it as `RM_HOST` to
-  the doctor and to `install-rm2.sh`.
+- **You don't know the tablet's IP** — over Wi-Fi it is *not* `10.11.99.1`;
+  that address is the USB link only. Two cases need no hunting, and
+  `rm2-doctor.sh` scans both before it asks you for anything: USB, and an
+  iPhone/iPad Personal Hotspot, which always uses `172.20.10.0/28` — the phone
+  is `.1` and clients get `.2` through `.14`, so it is thirteen addresses, not a
+  search. On any other network the tablet will tell you: Settings → Wi-Fi, tap
+  the connected network. Pass it as `RM_HOST` to the doctor and to
+  `install-rm2.sh`.
+
+  Whatever the network, *this computer has to be on it too* — a hotspot only
+  routes between its own clients, so sharing from a phone the laptop hasn't
+  joined reaches nothing. USB sidesteps the whole question and is the easier
+  path for fixing AppLoad; the tablet only needs real Wi-Fi for the oracle,
+  since USB gives it no internet. The root password is at Settings → General →
+  Help → Copyrights and licenses, under GPLv3 Compliance.
 
 - **Ink lands in the wrong place / mirrored** — the raw digitizer transform is
   off for your unit. The qtfb pen fallback (used automatically when the raw
