@@ -175,6 +175,33 @@ If you prefer to run each step yourself:
   since USB gives it no internet. The root password is at Settings → General →
   Help → Copyrights and licenses, under GPLv3 Compliance.
 
+- **No computer to hand (iPad or phone only)** — you can still diagnose and fix
+  a missing AppLoad. Only *building* g-pad needs a computer; xovi and AppLoad
+  install from the tablet itself.
+
+  If the tablet is on a phone/iPad Personal Hotspot, the device sharing that
+  hotspot is the gateway and can reach its own clients, so SSH from it works.
+  Don't rely on the USB cable here — the rM2 reaches `10.11.99.1` by presenting
+  a USB ethernet gadget, and iPadOS will not reliably bring that up as a network
+  interface. Install an SSH client (Termius, Blink, a-Shell), then
+  `ssh root@172.20.10.2` — password at Settings → General → Help → Copyrights
+  and licenses, under GPLv3 Compliance. Paste these on the tablet:
+
+  ```sh
+  cat /sys/devices/soc0/machine
+  [ -x /home/root/xovi/start ] && echo XOVI-INSTALLED || echo XOVI-MISSING
+  grep -q xovi /proc/$(pidof xochitl)/maps && echo XOVI-LOADED || echo XOVI-NOT-LOADED
+  [ -f /home/root/xovi/extensions.d/appload.so ] && echo APPLOAD-PRESENT || echo APPLOAD-MISSING
+  ls /home/root/xovi/exthome/appload/
+  ```
+
+  The same four states `rm2-doctor.sh` reports, and the same fixes:
+  `XOVI-INSTALLED` + `XOVI-NOT-LOADED` → `/home/root/xovi/start`. Loaded but no
+  launcher on screen → `/home/root/xovi/rebuild_hashtable && /home/root/xovi/start`.
+  `XOVI-MISSING` or `APPLOAD-MISSING` → the manual path above installs both with
+  nothing but `wget` on the tablet, which has internet through the hotspot. Only
+  the g-pad bundle itself has to be cross-compiled elsewhere.
+
 - **Ink lands in the wrong place / mirrored** — the raw digitizer transform is
   off for your unit. The qtfb pen fallback (used automatically when the raw
   device can't be opened) is always correctly mapped — compare against it and
