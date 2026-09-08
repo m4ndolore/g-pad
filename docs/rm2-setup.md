@@ -139,12 +139,38 @@ If you prefer to run each step yourself:
 
 ## Troubleshooting
 
+- **AppLoad is missing from the tablet** — AppLoad is not a stock app. It exists
+  only while xovi is loaded into a *running* xochitl, so the entry disappears
+  whenever the loader is not in the process: after a reboot without
+  xovi-tripletap, after a reMarkable OS update (which restarts xochitl and can
+  invalidate the per-version qt hashtable AppLoad's entry is drawn through), or
+  because xovi was never installed at all. Ask the tablet which one it is:
+
+  ```sh
+  RM_HOST=<tablet-ip> ./scripts/rm2-doctor.sh
+  ```
+
+  It is read-only — it reports what is installed, what is loaded into the
+  running xochitl, and prints the one command that fixes what it found. The two
+  answers it usually lands on:
+
+  ```sh
+  ssh root@<tablet-ip> '/home/root/xovi/start'                       # loader not running
+  ssh root@<tablet-ip> '/home/root/xovi/rebuild_hashtable && /home/root/xovi/start'   # after an OS update
+  ```
+
+  Over Wi-Fi the address is *not* `10.11.99.1` — that is the USB link only. Take
+  the Wi-Fi IP from Settings → General → Help → Copyrights and licenses (GPLv3
+  Compliance), the same page as the root password, and pass it as `RM_HOST` to
+  the doctor and to `install-rm2.sh`.
+
 - **Ink lands in the wrong place / mirrored** — the raw digitizer transform is
   off for your unit. The qtfb pen fallback (used automatically when the raw
   device can't be opened) is always correctly mapped — compare against it and
   open an issue with what you see.
-- **"qtfb server rejected init"** — AppLoad missing or old; re-run the
-  installer, then Reload in AppLoad.
+- **"qtfb server rejected init"** — AppLoad missing or old, or its `shims/`
+  never landed under `exthome/appload/`; run `scripts/rm2-doctor.sh` to see
+  which, re-run the installer, then Reload in AppLoad.
 - **No reply, ink blot pulses forever** — oracle problem: re-run
   `--oracle-test`; check Wi-Fi, key, and that the model supports images.
 - **Tablet acting up** — `ssh rm2 'systemctl restart xochitl'` restores the
