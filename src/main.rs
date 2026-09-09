@@ -649,6 +649,16 @@ fn run() -> std::io::Result<()> {
     };
     // Takeover mode: touch is ours too; 5-finger tap = quit.
     let mut touch_dev = if takeover { touch::TouchDevice::open().ok() } else { None };
+    // How long touch stays rejected after the marker was last near the glass.
+    // Proximity is reported while the marker hovers, but a writing hand rests
+    // on the sheet through the gaps — as the pen lifts between words, and for
+    // a beat after it leaves proximity entirely. Suppressing only on the
+    // frames that carried a proximity sample let every one of those gaps
+    // through. Tunable from oracle.env because the right value is a property
+    // of a hand, not of the code: too short lets the palm back in, too long
+    // eats the deliberate finger swipe that follows a written page.
+    let palm_holdoff = env_ms("RIDDLE_PALM_MS", 500);
+    let mut pen_near_until: Option<Instant> = None;
     // Takeover mode: the power button is ours too (sleep page + suspend).
     let mut power_dev = if takeover {
         power::PowerButton::open().map_err(|e| eprintln!("g-pad: no power button ({e})")).ok()
@@ -849,7 +859,19 @@ fn run() -> std::io::Result<()> {
             break;
         }
         let mut gestures = std::mem::take(&mut queued_gestures);
-        if let Some(t) = touch_dev.as_mut() { gestures.extend(t.drain()); }
+        // Palm rejection happens here, at the door, not where the pen is read:
+        // touch is drained at the top of the loop and the pen further down, so
+        // suppressing from inside the pen loop always arrived an iteration
+        // late — by which time the palm's tap had already been acted on. While
+        // an overlay is up, touch is the primary input and the marker may hover
+        // over it, so those states keep their touch.
+        let pen_near = pen_near_until.is_some_and(|t| Instant::now() < t)
+            && !matches!(state,
+                State::Settings { .. } | State::Drawer { .. }
+                | State::ExpandedConversation { .. });
+        if let Some(t) = touch_dev.as_mut() {
+            if pen_near { t.suppress(); } else { gestures.extend(t.drain()); }
+        }
         if gestures.contains(&touch::Gesture::Quit) {
             eprintln!("g-pad: 5-finger quit");
             break;
@@ -1211,6 +1233,9 @@ fn run() -> std::io::Result<()> {
                 // quit); the pen is the authoritative input device here.
                 // The turn page is a pen surface like the canvas: while the
                 // pen is near, the palm must not tap the page closed.
+                if s.proximity {
+                    pen_near_until = Some(Instant::now() + palm_holdoff);
+                }
                 if s.proximity && !matches!(state,
                     State::Settings { .. } | State::Drawer { .. }
                     | State::ExpandedConversation { .. })
@@ -1428,7 +1453,9 @@ fn run() -> std::io::Result<()> {
                 }
                 qtfb::INPUT_TOUCH_RELEASE => {
                     if let Some((start, last)) = fallback_touch.take() {
-                        queued_gestures.push(touch::gesture_from_points(start, last));
+                        // None where the travel means nothing; queue only real
+                        // gestures rather than a reflex page flip.
+                        queued_gestures.extend(touch::gesture_from_points(start, last));
                     }
                 }
                 _ => {}

@@ -139,12 +139,76 @@ If you prefer to run each step yourself:
 
 ## Troubleshooting
 
+- **AppLoad is missing from the tablet** — AppLoad is not a stock app. It exists
+  only while xovi is loaded into a *running* xochitl, so the entry disappears
+  whenever the loader is not in the process: after a reboot without
+  xovi-tripletap, after a reMarkable OS update (which restarts xochitl and can
+  invalidate the per-version qt hashtable AppLoad's entry is drawn through), or
+  because xovi was never installed at all. Ask the tablet which one it is:
+
+  ```sh
+  ./scripts/rm2-doctor.sh
+  ```
+
+  It is read-only — it finds the tablet, reports what is installed, what is
+  loaded into the running xochitl, and prints the one command that fixes what
+  it found. The two answers it usually lands on:
+
+  ```sh
+  ssh root@<tablet-ip> '/home/root/xovi/start'                       # loader not running
+  ssh root@<tablet-ip> '/home/root/xovi/rebuild_hashtable && /home/root/xovi/start'   # after an OS update
+  ```
+
+- **You don't know the tablet's IP** — over Wi-Fi it is *not* `10.11.99.1`;
+  that address is the USB link only. Two cases need no hunting, and
+  `rm2-doctor.sh` scans both before it asks you for anything: USB, and an
+  iPhone/iPad Personal Hotspot, which always uses `172.20.10.0/28` — the phone
+  is `.1` and clients get `.2` through `.14`, so it is thirteen addresses, not a
+  search. On any other network the tablet will tell you: Settings → Wi-Fi, tap
+  the connected network. Pass it as `RM_HOST` to the doctor and to
+  `install-rm2.sh`.
+
+  Whatever the network, *this computer has to be on it too* — a hotspot only
+  routes between its own clients, so sharing from a phone the laptop hasn't
+  joined reaches nothing. USB sidesteps the whole question and is the easier
+  path for fixing AppLoad; the tablet only needs real Wi-Fi for the oracle,
+  since USB gives it no internet. The root password is at Settings → General →
+  Help → Copyrights and licenses, under GPLv3 Compliance.
+
+- **No computer to hand (iPad or phone only)** — you can still diagnose and fix
+  a missing AppLoad. Only *building* g-pad needs a computer; xovi and AppLoad
+  install from the tablet itself.
+
+  If the tablet is on a phone/iPad Personal Hotspot, the device sharing that
+  hotspot is the gateway and can reach its own clients, so SSH from it works.
+  Don't rely on the USB cable here — the rM2 reaches `10.11.99.1` by presenting
+  a USB ethernet gadget, and iPadOS will not reliably bring that up as a network
+  interface. Install an SSH client (Termius, Blink, a-Shell), then
+  `ssh root@172.20.10.2` — password at Settings → General → Help → Copyrights
+  and licenses, under GPLv3 Compliance. Paste these on the tablet:
+
+  ```sh
+  cat /sys/devices/soc0/machine
+  [ -x /home/root/xovi/start ] && echo XOVI-INSTALLED || echo XOVI-MISSING
+  grep -q xovi /proc/$(pidof xochitl)/maps && echo XOVI-LOADED || echo XOVI-NOT-LOADED
+  [ -f /home/root/xovi/extensions.d/appload.so ] && echo APPLOAD-PRESENT || echo APPLOAD-MISSING
+  ls /home/root/xovi/exthome/appload/
+  ```
+
+  The same four states `rm2-doctor.sh` reports, and the same fixes:
+  `XOVI-INSTALLED` + `XOVI-NOT-LOADED` → `/home/root/xovi/start`. Loaded but no
+  launcher on screen → `/home/root/xovi/rebuild_hashtable && /home/root/xovi/start`.
+  `XOVI-MISSING` or `APPLOAD-MISSING` → the manual path above installs both with
+  nothing but `wget` on the tablet, which has internet through the hotspot. Only
+  the g-pad bundle itself has to be cross-compiled elsewhere.
+
 - **Ink lands in the wrong place / mirrored** — the raw digitizer transform is
   off for your unit. The qtfb pen fallback (used automatically when the raw
   device can't be opened) is always correctly mapped — compare against it and
   open an issue with what you see.
-- **"qtfb server rejected init"** — AppLoad missing or old; re-run the
-  installer, then Reload in AppLoad.
+- **"qtfb server rejected init"** — AppLoad missing or old, or its `shims/`
+  never landed under `exthome/appload/`; run `scripts/rm2-doctor.sh` to see
+  which, re-run the installer, then Reload in AppLoad.
 - **No reply, ink blot pulses forever** — oracle problem: re-run
   `--oracle-test`; check Wi-Fi, key, and that the model supports images.
 - **Tablet acting up** — `ssh rm2 'systemctl restart xochitl'` restores the

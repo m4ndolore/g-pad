@@ -18,6 +18,11 @@ const MAX_SLOTS: usize = 16;
 const TAP_SLOP: i32 = 45;
 const EDGE_PX: i32 = 72;
 const SWIPE_PX: i32 = 120;
+// A page flip is as deliberate as any other swipe. Without a floor here the
+// catch-all below turned every one-finger contact whose jitter cleared
+// TAP_SLOP into a page turn — a palm resting on the sheet flipped the
+// notebook out from under the writer.
+const PAGE_PX: i32 = SWIPE_PX;
 // Paper Pro reports a larger raw range than the panel. rM2 pt_mt is already
 // panel-sized (1404×1872) with Y growing toward the physical top.
 #[cfg(not(feature = "rm2"))]
@@ -219,25 +224,50 @@ impl TouchDevice {
                     }
                     _ => {}
                 }
-            } else if self.max_fingers == 1 {
-                // Released slots retain their coordinates.
-                if let Some(slot) = self
-                    .slots
-                    .iter()
-                    .filter(|slot| slot.start_y != i32::MIN && slot.start_x != i32::MIN)
-                    .max_by_key(|slot| (slot.start_y - slot.y).abs() + (slot.start_x - slot.x).abs())
-                {
-                    let (x0, y0) = map_touch(slot.start_x, slot.start_y);
-                    let (x1, y1) = map_touch(slot.x, slot.y);
-                    out.push(classify_swipe(x0, y0, x1, y1));
-                }
+            } else if let Some(swipe) = self.lone_swipe() {
+                out.push(swipe);
             }
             self.max_fingers = 0;
             self.frame_x = None;
             self.frame_y = None;
             self.total_motion = 0;
             self.five_finger_hold_frames = 0;
+            // A released slot keeps its coordinates, which is what the release
+            // frame above reads. Past that point they are stale, and a stale
+            // start would be measured as travel in somebody else's gesture.
+            self.slots = [Slot::default(); MAX_SLOTS];
         }
+    }
+
+    /// The swipe of the one contact that travelled, ignoring contacts that
+    /// stayed put.
+    ///
+    /// A finger swiping while the writing hand rests on the sheet raises the
+    /// frame's finger count to two, and the gesture used to be dropped on that
+    /// alone — the reason page turns felt unreliable in the hand rather than on
+    /// the bench. What distinguishes a palm is that it does not travel, so ask
+    /// that instead of counting contacts. Two travellers are a real two-finger
+    /// drag and belong to Scroll; a contact that smeared somewhere between
+    /// resting and swiping makes the whole gesture ambiguous, and ambiguous
+    /// input does nothing.
+    fn lone_swipe(&self) -> Option<Gesture> {
+        let mut traveller = None;
+        for slot in
+            self.slots.iter().filter(|s| s.start_x != i32::MIN && s.start_y != i32::MIN)
+        {
+            let (x0, y0) = map_touch(slot.start_x, slot.start_y);
+            let (x1, y1) = map_touch(slot.x, slot.y);
+            let travel = (x1 - x0).abs() + (y1 - y0).abs();
+            if travel >= SWIPE_PX {
+                if traveller.is_some() {
+                    return None;
+                }
+                traveller = Some((x0, y0, x1, y1));
+            } else if travel >= TAP_SLOP {
+                return None;
+            }
+        }
+        traveller.and_then(|(x0, y0, x1, y1)| classify_swipe(x0, y0, x1, y1))
     }
 }
 
@@ -257,25 +287,30 @@ fn map_touch(raw_x: i32, raw_y: i32) -> (i32, i32) {
     (x, y)
 }
 
-fn classify_swipe(x0: i32, y0: i32, x1: i32, y1: i32) -> Gesture {
+/// `None` when the movement is real but means nothing — short of a page's
+/// worth of travel, or more sideways than vertical. The old catch-all made
+/// every such contact a page flip, which is how noise reached the notebook.
+fn classify_swipe(x0: i32, y0: i32, x1: i32, y1: i32) -> Option<Gesture> {
     let (dx, dy) = (x1 - x0, y1 - y0);
     if x0 <= EDGE_PX && dx >= SWIPE_PX && dx.abs() > dy.abs() {
-        Gesture::OpenDrawer
+        Some(Gesture::OpenDrawer)
     } else if dx <= -SWIPE_PX && dx.abs() > dy.abs() {
-        Gesture::CloseDrawer
+        Some(Gesture::CloseDrawer)
     } else if y0 <= EDGE_PX && dy >= SWIPE_PX && dy.abs() > dx.abs() {
-        Gesture::OpenControls
+        Some(Gesture::OpenControls)
     } else if y0 >= fb::SCREEN_H as i32 - EDGE_PX && dy <= -SWIPE_PX && dy.abs() > dx.abs() {
-        Gesture::OpenControls
+        Some(Gesture::OpenControls)
+    } else if dy.abs() >= PAGE_PX && dy.abs() > dx.abs() {
+        Some(Gesture::Page((-dy).signum()))
     } else {
-        Gesture::Page((-dy).signum())
+        None
     }
 }
 
 /// Classify screen-space points supplied by window-system touch fallback.
-pub fn gesture_from_points(start: (i32, i32), end: (i32, i32)) -> Gesture {
+pub fn gesture_from_points(start: (i32, i32), end: (i32, i32)) -> Option<Gesture> {
     if (end.0 - start.0).abs() + (end.1 - start.1).abs() < TAP_SLOP {
-        Gesture::Tap(end.0, end.1)
+        Some(Gesture::Tap(end.0, end.1))
     } else {
         classify_swipe(start.0, start.1, end.0, end.1)
     }
@@ -359,14 +394,93 @@ mod tests {
 
     #[test]
     fn edge_swipe_is_reserved_for_drawer_not_page_navigation() {
-        assert_eq!(classify_swipe(20, 500, 240, 510), Gesture::OpenDrawer);
-        assert_eq!(classify_swipe(200, 500, 210, 250), Gesture::Page(1));
-        assert_eq!(classify_swipe(300, 500, 100, 510), Gesture::CloseDrawer);
-        assert_eq!(classify_swipe(200, 10, 210, 200), Gesture::OpenControls);
+        assert_eq!(classify_swipe(20, 500, 240, 510), Some(Gesture::OpenDrawer));
+        assert_eq!(classify_swipe(200, 500, 210, 250), Some(Gesture::Page(1)));
+        assert_eq!(classify_swipe(300, 500, 100, 510), Some(Gesture::CloseDrawer));
+        assert_eq!(classify_swipe(200, 10, 210, 200), Some(Gesture::OpenControls));
         assert_eq!(
             classify_swipe(200, fb::SCREEN_H as i32 - 10, 210, fb::SCREEN_H as i32 - 200),
-            Gesture::OpenControls
+            Some(Gesture::OpenControls)
         );
+    }
+
+    // The catch-all that used to end classify_swipe made every one-finger
+    // contact a page flip the moment its jitter cleared TAP_SLOP. A hand
+    // resting on the sheet turned the notebook by itself.
+    #[test]
+    fn short_or_sideways_travel_is_not_a_page_flip() {
+        assert_eq!(classify_swipe(700, 900, 706, 830), None, "jitter is not a flip");
+        assert_eq!(classify_swipe(700, 900, 900, 905), None, "sideways is not a flip");
+        assert_eq!(
+            classify_swipe(700, 900, 760, 900 - PAGE_PX + 1),
+            None,
+            "just short of a page's travel is not a flip"
+        );
+        assert_eq!(
+            classify_swipe(700, 900, 706, 900 - PAGE_PX),
+            Some(Gesture::Page(1)),
+            "a deliberate upward swipe still flips forward"
+        );
+    }
+
+    // The writing hand rests on the sheet while a finger swipes. That is two
+    // contacts, and the gesture used to be dropped for it.
+    #[test]
+    fn a_finger_swipe_survives_a_resting_palm() {
+        let mut dev = test_device();
+        let mut out = Vec::new();
+        land(&mut dev, 0, 300, 400, &mut out);          // the palm, and it stays
+        land(&mut dev, 1, 900, 1400, &mut out);         // the finger, about to travel
+        for step in 1..=10 {
+            dev.slots[1].y = 1400 - step * 60;
+            dev.finish_frame(&mut out);
+        }
+        dev.slots[0].active = false;
+        dev.slots[1].active = false;
+        dev.finish_frame(&mut out);
+        assert!(
+            out.iter().any(|g| matches!(g, Gesture::Page(_))),
+            "gestures were {out:?}"
+        );
+    }
+
+    // Two contacts that both travel are a two-finger drag; Scroll already
+    // reported it frame by frame and a page flip on top would double-count.
+    #[test]
+    fn a_two_finger_drag_is_not_also_a_page_flip() {
+        let mut dev = test_device();
+        let mut out = Vec::new();
+        land(&mut dev, 0, 600, 1400, &mut out);
+        land(&mut dev, 1, 900, 1400, &mut out);
+        for step in 1..=10 {
+            dev.slots[0].y = 1400 - step * 60;
+            dev.slots[1].y = 1400 - step * 60;
+            dev.finish_frame(&mut out);
+        }
+        dev.slots[0].active = false;
+        dev.slots[1].active = false;
+        dev.finish_frame(&mut out);
+        assert!(!out.iter().any(|g| matches!(g, Gesture::Page(_))), "gestures were {out:?}");
+    }
+
+    // Slot coordinates outlive the gesture that set them. Without a wipe, the
+    // next contact is measured against a stranger's starting point.
+    #[test]
+    fn a_finished_gesture_leaves_no_coordinates_behind() {
+        let mut dev = test_device();
+        let mut out = Vec::new();
+        land(&mut dev, 0, 900, 1400, &mut out);
+        for step in 1..=10 {
+            dev.slots[0].y = 1400 - step * 60;
+            dev.finish_frame(&mut out);
+        }
+        dev.slots[0].active = false;
+        dev.finish_frame(&mut out);
+        assert!(
+            dev.slots.iter().all(|s| s.start_x == i32::MIN || !s.active),
+            "a released slot kept its start"
+        );
+        assert_eq!(dev.lone_swipe(), None, "a spent gesture still reads as a swipe");
     }
 
     #[cfg(feature = "rm2")]

@@ -46,7 +46,10 @@ SSH_OPTS=(-o HostKeyAlgorithms=ssh-ed25519,ssh-rsa -o PubkeyAcceptedAlgorithms=+
 rm_ssh() { ssh -n "${SSH_OPTS[@]}" "root@$RM_HOST" "$@"; }
 rm_ssh_stdin() { ssh "${SSH_OPTS[@]}" "root@$RM_HOST" "$@"; }
 rm_scp() { scp -O "${SSH_OPTS[@]}" "$@"; }
-cleanup() { ssh "${SSH_OPTS[@]}" -O exit "root@$RM_HOST" 2>/dev/null; rm -rf "$WORK"; }
+# `set -e` applies inside the trap too: without the `|| true`, an `ssh -O exit`
+# that finds no control master aborts cleanup before `rm -rf` and replaces the
+# exit status `die` chose with ssh's.
+cleanup() { ssh "${SSH_OPTS[@]}" -O exit "root@$RM_HOST" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 # --- 0. g-pad bundle must exist locally -------------------------------------
@@ -93,10 +96,13 @@ rm_ssh 'cd /tmp && rm -rf appload-unz && mkdir appload-unz && \
         if [ -d appload-unz/exthome ]; then cp -rf appload-unz/exthome/. /home/root/xovi/exthome/; fi && \
         rm -rf appload-unz appload.zip'
 
-# qt-resource-rebuilder wants a per-OS-version hashtable; AppLoad itself does
-# not need it, so best-effort only.
+# qt-resource-rebuilder wants a per-OS-version hashtable, and AppLoad's entry in
+# the stock UI is drawn through that rebuilder — so a skipped rebuild is the
+# usual reason the launcher never appears. g-pad itself still runs once you can
+# reach it, hence best-effort rather than fatal, but say so plainly.
 rm_ssh 'test -x /home/root/xovi/rebuild_hashtable && /home/root/xovi/rebuild_hashtable </dev/null' \
-    || echo "   (hashtable rebuild skipped — fine for g-pad)"
+    || echo "   hashtable rebuild skipped — if AppLoad does not appear on the tablet, run:
+     ssh root@$RM_HOST '/home/root/xovi/rebuild_hashtable && /home/root/xovi/start'"
 
 # --- 4. persistence (triple-press the power button to toggle xovi) -----------
 say "Installing xovi-tripletap persistence"
