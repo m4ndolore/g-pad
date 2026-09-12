@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- Keeps the Anthink hub running across laptop reboots. anthink-hub-start
+     sources ~/.config/anthink/hub.env (HUB_TOKEN) and execs ~/.local/bin/anthink-hub;
+     the hub's own log is ~/Library/Logs/anthink-hub.log. -->
+<dict>
+  <key>Label</key>
+  <string>com.paulgarcia.anthink-hub</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/paulgarcia/.local/bin/anthink-hub-start</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardErrorPath</key>
+  <string>/tmp/anthink-hub-launchd.log</string>
+</dict>
+</plist>
