@@ -6,7 +6,6 @@ use ab_glyph::FontRef;
 use crate::fb::{BBox, SCREEN_H, SCREEN_W};
 use crate::memory::MemoryStore;
 use crate::oracle::ContextSnapshot;
-use crate::preferences::{Mode, Preferences};
 use crate::script;
 use crate::surface::{Surface, BLACK, WHITE};
 
@@ -69,10 +68,6 @@ pub enum Action {
     Sleep,
     Settings,
     Dismiss,
-    SetMode(Mode),
-    ToggleIdle,
-    ToggleLearn,
-    Quit,
 }
 
 impl Drawer {
@@ -943,55 +938,6 @@ pub fn restore_page_banner(surf: &mut Surface, saved: &[u8]) {
     surf.paste_rect(x, y, BANNER_W, BANNER_H, saved);
 }
 
-pub fn draw_settings(surf: &mut Surface, font: &FontRef, prefs: Preferences) -> Vec<u8> {
-    let saved = surf.copy_rect(0, 0, PANEL_W, SCREEN_H);
-    surf.fill_rect(0, 0, PANEL_W, SCREEN_H, WHITE);
-    surf.fill_rect(PANEL_W - 2, 0, 2, SCREEN_H, BLACK);
-    text(surf, font, "×", LABEL_PX, PAD, 36, BLACK);
-    text(surf, font, "SETTINGS", TITLE_PX, PAD, 145, BLACK);
-    rule(surf, PAD, 245, PANEL_W - 2 * PAD, 2);
-    text(surf, font, "STEALTH", LABEL_PX, PAD, 310, if prefs.mode == Mode::Stealth { BLUE } else { BLACK });
-    text(surf, font, "GUIDED", LABEL_PX, PAD, 390, if prefs.mode == Mode::Guided { BLUE } else { BLACK });
-    text(surf, font, "OPTIONAL IDLE-SEND", LABEL_PX, PAD, 510, BLACK);
-    text(surf, font, if prefs.idle_send_ms == 0 { "OFF" } else { "ON" }, LABEL_PX, PAD, 570,
-        if prefs.idle_send_ms == 0 { BLACK } else { BLUE });
-
-    // The kids' tutor: the same pen, a different page. See docs/learn-mode.md.
-    rule(surf, PAD, 650, PANEL_W - 2 * PAD, 2);
-    text(surf, font, "KIDS LEARN MODE", LABEL_PX, PAD, 700, BLACK);
-    text(surf, font, if prefs.page == crate::preferences::Page::Learn { "ON" } else { "OFF" },
-        LABEL_PX, PAD, 760, if prefs.page == crate::preferences::Page::Learn { BLUE } else { BLACK });
-
-    // Leaving is a five-finger hold, which is not discoverable — nothing on
-    // the page says so. Give it a tapped row too, and say what the gesture is
-    // so the pad teaches it rather than hiding it.
-    rule(surf, PAD, 850, PANEL_W - 2 * PAD, 2);
-    text(surf, font, "LEAVE G-PAD", LABEL_PX, PAD, 905, BLACK);
-    text(surf, font, "OR HOLD FIVE FINGERS", LABEL_PX, PAD, 955, BLACK);
-
-    // Signature, at the foot of the one panel that is already a settled
-    // surface rather than the writing page.
-    text(surf, font, "G-PAD", LABEL_PX, PAD, SCREEN_H - 120, BLACK);
-    text(surf, font, "BY MERGE COMBINATOR", LABEL_PX, PAD, SCREEN_H - 70, BLACK);
-    saved
-}
-
-pub fn settings_action(x: i32, y: i32) -> Action {
-    if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
-    if y < HEADER_H { return Action::Close; }
-    // Labels sit at 310 / 390 / 570 / 755; give each a full row so a slightly
-    // off tap still hits the control it is over. Leaving stops short of the
-    // signature at the foot so a tap down there cannot quit the pad.
-    match y {
-        250..=355 => Action::SetMode(Mode::Stealth),
-        356..=470 => Action::SetMode(Mode::Guided),
-        480..=640 => Action::ToggleIdle,
-        660..=830 => Action::ToggleLearn,
-        860..=1010 => Action::Quit,
-        _ => Action::None,
-    }
-}
-
 fn panel_region() -> BBox {
     let mut b = BBox::empty(); b.add(0, 0, 0); b.add(PANEL_W as i32 - 1, SCREEN_H as i32 - 1, 0); b
 }
@@ -1069,18 +1015,6 @@ mod tests {
         assert_eq!(control_action(10, 20, false), Action::Send);
         assert_eq!(control_action((SCREEN_W * 3 / 7 + 2) as i32, 20, false), Action::History);
         assert_eq!(control_action(10, 100, false), Action::None);
-    }
-
-    #[test]
-    fn settings_labels_are_inside_their_hit_rows() {
-        assert_eq!(settings_action(40, 310), Action::SetMode(Mode::Stealth));
-        assert_eq!(settings_action(40, 390), Action::SetMode(Mode::Guided));
-        assert_eq!(settings_action(40, 570), Action::ToggleIdle);
-        assert_eq!(settings_action(40, 700), Action::ToggleLearn);
-        assert_eq!(settings_action(40, 760), Action::ToggleLearn);
-        assert_eq!(settings_action(40, 905), Action::Quit);
-        assert_eq!(settings_action(40, 36), Action::Close);
-        assert_eq!(settings_action(PANEL_W as i32 + 8, 310), Action::Close);
     }
 
     #[test]

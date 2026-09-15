@@ -2,9 +2,6 @@
 //! pad. Model only; drawing is `draw`, Wi-Fi shelling is `wifi`, device
 //! reads are `device`. See docs/plans/2026-09-15-system-page-design.md.
 
-// Nothing opens the page yet; main.rs is the consumer once it is wired in.
-#![allow(dead_code)]
-
 pub mod device;
 pub mod draw;
 pub mod wifi;
@@ -102,10 +99,12 @@ impl Hits {
             .map(|(a, _)| *a)
     }
 
+    #[cfg(test)]
     pub fn region(&self, act: Act) -> Option<BBox> {
         self.regions.iter().find(|(a, _)| *a == act).map(|(_, b)| *b)
     }
 
+    #[cfg(test)]
     pub fn regions(&self) -> impl Iterator<Item = &(Act, BBox)> {
         self.regions.iter()
     }

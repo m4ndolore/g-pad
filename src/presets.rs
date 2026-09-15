@@ -6,8 +6,6 @@
 
 use crate::brief::{json_field, split_objects};
 
-// Nothing reads a preset yet; the SYSTEM page is the consumer.
-#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Preset {
     pub name: String,
@@ -17,8 +15,6 @@ pub struct Preset {
     pub reasoning: String,
 }
 
-// The SYSTEM page is the caller.
-#[allow(dead_code)]
 pub fn load() -> Vec<Preset> {
     let from_env = std::env::var("RIDDLE_PRESETS_FILE").ok().map(std::path::PathBuf::from);
     let beside = std::env::current_exe()
@@ -30,6 +26,7 @@ pub fn load() -> Vec<Preset> {
             if !p.is_empty() {
                 return p;
             }
+            eprintln!("g-pad: no presets in {}; using built-in", path.display());
         }
     }
     parse(include_str!("../settings.schema.json"))
@@ -52,8 +49,6 @@ pub fn parse(json: &str) -> Vec<Preset> {
 }
 
 /// Which preset the environment's base URL belongs to, trailing slash ignored.
-// The SYSTEM page is the caller.
-#[allow(dead_code)]
 pub fn active(presets: &[Preset], base: Option<&str>) -> Option<usize> {
     let base = base?.trim_end_matches('/');
     presets.iter().position(|p| p.base.trim_end_matches('/') == base)

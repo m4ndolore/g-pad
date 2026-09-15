@@ -95,11 +95,34 @@ oracle.env.example for every RIDDLE_* variable.
 
 type OracleRx = mpsc::Receiver<Result<Event, String>>;
 
+/// A number from the environment, with a default.
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
 /// Millisecond duration from the environment, with a default.
 fn env_ms(name: &str, default: u64) -> Duration {
-    Duration::from_millis(
-        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default),
-    )
+    Duration::from_millis(env_u64(name, default))
+}
+
+/// Learn mode: a YES verdict deals the next page by itself once the
+/// feedback has been written and read — no second tap. The dwell leaves
+/// time to enjoy the check; pen-down cancels (the child kept writing).
+/// RIDDLE_LEARN_NEXT_MS tunes it; 0 turns auto-dealing off.
+fn learn_dwell_from_env() -> Option<Duration> {
+    match env_u64("RIDDLE_LEARN_NEXT_MS", 5000) {
+        0 => None,
+        ms => Some(Duration::from_millis(ms)),
+    }
+}
+
+/// Learn asks must never go to a capture sink (the pad's default model may
+/// be one, archiving pages instead of marking them): prefer the dedicated
+/// learn model, else the ask model, else whatever the pad uses.
+fn learn_model_from_env() -> Option<String> {
+    std::env::var("RIDDLE_LEARN_MODEL")
+        .ok()
+        .or_else(|| std::env::var("RIDDLE_OPENAI_ASK_MODEL").ok())
 }
 
 enum State {
@@ -128,7 +151,9 @@ enum State {
     Drawer { panel: Option<ui::Drawer>, return_to: Box<State> },
     #[allow(dead_code)]
     ExpandedConversation { panel: Option<ui::Drawer>, return_to: Box<State> },
-    Settings { saved: Option<Vec<u8>>, return_to: Box<State> },
+    /// The SYSTEM page, full-screen. `saved` is the canvas underneath;
+    /// `None` after Close, waiting for pen-up like the drawer.
+    System { page: Box<system::Page>, saved: Option<Vec<u8>>, return_to: Box<State> },
     /// One agent session read full-page (the turn page). `saved` is the whole
     /// canvas underneath. Touch acts only on named targets: ← AGENTS returns
     /// to the board, × (or the leftward swipe) closes to the canvas, the
@@ -552,9 +577,7 @@ fn learn_test(answer: Option<&str>) -> i32 {
     let ctx = oracle::TurnContext { instruction: Some(session.instruction()), ..Default::default() };
     let (tx, rx) = mpsc::channel();
     // Same model choice as the live tutor: never the pad's capture sink.
-    let learn_model: Option<String> = std::env::var("RIDDLE_LEARN_MODEL")
-        .ok()
-        .or_else(|| std::env::var("RIDDLE_OPENAI_ASK_MODEL").ok());
+    let learn_model = learn_model_from_env();
     o.ask_with_model(png, &ctx, tx, learn_model.as_deref());
     let mut got = String::new();
     loop {
@@ -608,9 +631,8 @@ fn build_ctx(store: &Option<memory::MemoryStore>) -> oracle::TurnContext {
 }
 
 fn run() -> std::io::Result<()> {
-    // In-app overrides beat oracle.env from here on; everything below reads env.
-    // The binding is consumed by the SYSTEM page.
-    #[allow(unused_variables, unused_mut)]
+    // In-app overrides beat oracle.env from here on; everything below reads
+    // env. The SYSTEM page writes them.
     let mut overrides = overrides::Overrides::load();
 
     // The reply hand: RIDDLE_FONT_FILE (any TTF/OTF next to the binary or an
@@ -668,7 +690,7 @@ fn run() -> std::io::Result<()> {
     // through. Tunable from oracle.env because the right value is a property
     // of a hand, not of the code: too short lets the palm back in, too long
     // eats the deliberate finger swipe that follows a written page.
-    let palm_holdoff = env_ms("RIDDLE_PALM_MS", 500);
+    let mut palm_holdoff = env_ms("RIDDLE_PALM_MS", 500);
     let mut pen_near_until: Option<Instant> = None;
     // Takeover mode: the power button is ours too (sleep page + suspend).
     let mut power_dev = if takeover {
@@ -712,7 +734,7 @@ fn run() -> std::io::Result<()> {
 
     // Warm the oracle now: pi loads Node + extensions + codex auth ONCE here,
     // while you're still picking up the pen, so replies pay only model latency.
-    let oracle = match oracle::Oracle::spawn(store.is_some()) {
+    let mut oracle = match oracle::Oracle::spawn(store.is_some()) {
         Ok(o) => {
             eprintln!("g-pad: oracle ready");
             Some(o)
@@ -760,18 +782,7 @@ fn run() -> std::io::Result<()> {
     let mut send_mode: Option<CommitMode> = None;
     // Learn mode: latched when a stroke lands in a decision box.
     let mut learn_tick: Option<LearnTick> = None;
-    // Learn mode: a YES verdict deals the next page by itself once the
-    // feedback has been written and read — no second tap. The dwell leaves
-    // time to enjoy the check; pen-down cancels (the child kept writing).
-    // RIDDLE_LEARN_NEXT_MS tunes it; 0 turns auto-dealing off.
-    let learn_next_dwell: Option<Duration> = match std::env::var("RIDDLE_LEARN_NEXT_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(5000)
-    {
-        0 => None,
-        ms => Some(Duration::from_millis(ms)),
-    };
+    let mut learn_next_dwell = learn_dwell_from_env();
     let mut learn_advance_pending = false;
     let mut learn_auto_at: Option<Instant> = None;
     // While the praise is on show, a deliberate pen tap deals the next page at
@@ -785,12 +796,11 @@ fn run() -> std::io::Result<()> {
     // the child may keep inking while the reply streams, so it cannot be
     // recomputed later.
     let mut learn_sent_frame = BBox::empty();
-    // Learn asks must never go to a capture sink (the pad's default model may
-    // be one, archiving pages instead of marking them): prefer the dedicated
-    // learn model, else the ask model, else whatever the pad uses.
-    let learn_model: Option<String> = std::env::var("RIDDLE_LEARN_MODEL")
-        .ok()
-        .or_else(|| std::env::var("RIDDLE_OPENAI_ASK_MODEL").ok());
+    let mut learn_model = learn_model_from_env();
+    // The SYSTEM page: presets for its ORACLE pickers, a channel its Wi-Fi
+    // worker reports on. Both outlive any one opening of the page.
+    let presets = presets::load();
+    let (wifi_tx, wifi_rx) = mpsc::channel::<system::wifi::Event>();
     let mut drawer_selection: Option<usize> = None;
     let mut drawer_scroll = 0i32;
     let mut controls_saved: Option<Vec<u8>> = None;
@@ -878,7 +888,7 @@ fn run() -> std::io::Result<()> {
         // over it, so those states keep their touch.
         let pen_near = pen_near_until.is_some_and(|t| Instant::now() < t)
             && !matches!(state,
-                State::Settings { .. } | State::Drawer { .. }
+                State::System { .. } | State::Drawer { .. }
                 | State::ExpandedConversation { .. });
         if let Some(t) = touch_dev.as_mut() {
             if pen_near { t.suppress(); } else { gestures.extend(t.drain()); }
@@ -886,6 +896,34 @@ fn run() -> std::io::Result<()> {
         if gestures.contains(&touch::Gesture::Quit) {
             eprintln!("g-pad: 5-finger quit");
             break;
+        }
+
+        // The SYSTEM page's Wi-Fi worker reports here; an armed REBOOT or
+        // POWER OFF row lapses here. Either repaints only the section that
+        // shows it — events landing under another section update the model
+        // and the next draw shows them. A report that lands after the page
+        // closed is dropped, so the next opening starts from what it reads.
+        if !matches!(state, State::System { .. }) {
+            while wifi_rx.try_recv().is_ok() {}
+        }
+        if let State::System { page, .. } = &mut state {
+            let mut changed = false;
+            while let Ok(ev) = wifi_rx.try_recv() {
+                changed = true;
+                match ev {
+                    system::wifi::Event::Status(s) => page.wifi.status = s,
+                    system::wifi::Event::Saved(v) => { page.wifi.saved = v; page.wifi.busy = None; }
+                    system::wifi::Event::Seen(v) => { page.wifi.seen = v; page.wifi.busy = None; }
+                    system::wifi::Event::Failed(e) => { page.wifi.error = Some(e); page.wifi.busy = None; }
+                }
+            }
+            if page.arm.disarm_if_lapsed(Instant::now()) {
+                changed = true;
+            }
+            if changed && matches!(page.section, system::Section::Wifi | system::Section::Power) {
+                system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides), prefs);
+                disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+            }
         }
 
         // Touch belongs to overlays while they are visible. Edge gestures are
@@ -912,10 +950,7 @@ fn run() -> std::io::Result<()> {
                             }
                             controls_until = Some(Instant::now() + Duration::from_secs(12));
                         } else {
-                            let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
-                            let saved = ui::draw_settings(&mut surf, &ui_font, prefs);
-                            disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
-                            state = State::Settings { saved: Some(saved), return_to: Box::new(old) };
+                            open_system(&mut state, &mut surf, &disp, &ui_font, prefs, &presets, &overrides);
                         }
                     }
                 }
@@ -1018,60 +1053,27 @@ fn run() -> std::io::Result<()> {
                         disp.update(0, 0, SCREEN_W as i32, 82, false);
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
                             &mut user_ink, &mut notebook, &mut send_mode, &mut sleep_requested,
-                            &mut prefs, &mut idle_commit, drawer_selection, drawer_scroll, &mut learn_session);
+                            prefs, drawer_selection, drawer_scroll, &mut learn_session, &presets, &overrides);
                         // A control action closes the praise moment: a NEW
                         // PAGE from the strip must not be followed by a stale
                         // auto-deal or tap-deal on the fresh page.
                         learn_advance_pending = false;
                         learn_auto_at = None;
                         learn_tap_advance = false;
-                    } else if matches!(state, State::Settings { .. }) {
-                        let action = ui::settings_action(x, y);
-                        match action {
-                            ui::Action::SetMode(mode) => { prefs.mode = mode; let _ = prefs.save(); }
-                            ui::Action::ToggleIdle => {
-                                prefs.idle_send_ms = if prefs.idle_send_ms == 0 { 2800 } else { 0 };
-                                idle_commit = Duration::from_millis(prefs.idle_send_ms); let _ = prefs.save();
-                            }
-                            ui::Action::ToggleLearn => {
-                                prefs.page = match prefs.page {
-                                    preferences::Page::Learn => preferences::Page::Pad,
-                                    preferences::Page::Pad => preferences::Page::Learn,
-                                };
-                                let _ = prefs.save();
-                                // Land directly on the chosen page, clean.
-                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
-                                user_ink.clear();
-                                learn_advance_pending = false;
-                                learn_auto_at = None;
-                                learn_tap_advance = false;
-                                surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
-                                learn_session = match prefs.page {
-                                    preferences::Page::Learn => {
-                                        let mut s = learn::Session::start();
-                                        s.draw(&mut surf, &ui_font);
-                                        Some(s)
-                                    }
-                                    preferences::Page::Pad => None,
-                                };
-                                disp.full_refresh(surf.w, surf.h);
-                                state = State::Listening { last_pen: None };
-                                continue;
-                            }
-                            ui::Action::Close => {
-                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
-                                continue;
-                            }
-                            ui::Action::Quit => {
-                                // A bare break here only leaves the gesture
-                                // loop — the pad shrugs and keeps running.
-                                eprintln!("g-pad: leave from settings");
-                                break 'pad;
-                            }
-                            _ => {}
+                    } else if matches!(state, State::System { .. }) {
+                        let after = system_tap(x, y, &mut state, &mut surf, &disp, &ui_font, &mut prefs,
+                            &mut idle_commit, &mut overrides, &presets, &mut oracle, &store,
+                            &mut palm_holdoff, &mut learn_next_dwell, &mut learn_model, &wifi_tx,
+                            &mut sleep_requested, &mut learn_session, &mut user_ink,
+                            &mut drawer_selection, &mut drawer_scroll, &mut learn_advance_pending,
+                            &mut learn_auto_at, &mut learn_tap_advance);
+                        match after {
+                            After::Stay => {}
+                            After::Closed => continue,
+                            // A bare break here only leaves the gesture
+                            // loop — the pad shrugs and keeps running.
+                            After::Leave => break 'pad,
                         }
-                        ui::draw_settings(&mut surf, &ui_font, prefs);
-                        disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
                     } else if matches!(state, State::SessionPage { .. }) {
                         // Specific targets, not a whole-page trigger — the
                         // first tap-anywhere-closes build read as breakage
@@ -1248,7 +1250,7 @@ fn run() -> std::io::Result<()> {
                     pen_near_until = Some(Instant::now() + palm_holdoff);
                 }
                 if s.proximity && !matches!(state,
-                    State::Settings { .. } | State::Drawer { .. }
+                    State::System { .. } | State::Drawer { .. }
                     | State::ExpandedConversation { .. })
                 {
                     if let Some(ref mut td) = touch_dev {
@@ -1311,7 +1313,7 @@ fn run() -> std::io::Result<()> {
                     }
                     continue;
                 }
-                if matches!(state, State::Settings { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
+                if matches!(state, State::System { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
                         control_pen_latched = true;
@@ -1415,7 +1417,7 @@ fn run() -> std::io::Result<()> {
                             queued_gestures.push(touch::Gesture::Page(1));
                             control_pen_latched = true;
                         }
-                    } else if matches!(state, State::Settings { .. } | State::Drawer { .. }
+                    } else if matches!(state, State::System { .. } | State::Drawer { .. }
                         | State::ExpandedConversation { .. } | State::SessionPage { .. }
                         | State::NotePage { .. }) {
                         if !control_pen_latched {
@@ -2138,9 +2140,9 @@ fn run() -> std::io::Result<()> {
                 None if stylus_on => State::ExpandedConversation { panel: None, return_to },
                 None => *return_to,
             },
-            State::Settings { saved, return_to } => match saved {
-                Some(s) => State::Settings { saved: Some(s), return_to },
-                None if stylus_on => State::Settings { saved: None, return_to },
+            State::System { page, saved, return_to } => match saved {
+                Some(s) => State::System { page, saved: Some(s), return_to },
+                None if stylus_on => State::System { page, saved: None, return_to },
                 None => *return_to,
             },
             // The turn page rests until the reader closes it — except the
@@ -2245,6 +2247,231 @@ fn open_drawer(state: &mut State, surf: &mut Surface, disp: &display::Display,
     *state = State::Drawer { panel: Some(panel), return_to: Box::new(old) };
 }
 
+/// Open the SYSTEM page over whatever is on the canvas; the canvas comes
+/// back on close.
+fn open_system(state: &mut State, surf: &mut Surface, disp: &display::Display, ui_font: &FontRef,
+    prefs: preferences::Preferences, presets: &[presets::Preset], overrides: &overrides::Overrides) {
+    let old = std::mem::replace(state, State::Listening { last_pen: None });
+    let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
+    let mut page = Box::new(system::Page::default());
+    system::draw::draw(surf, ui_font, &mut page, &system_view(presets, overrides), prefs);
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+    *state = State::System { page, saved: Some(saved), return_to: Box::new(old) };
+}
+
+/// What the SYSTEM page shows, gathered fresh from the environment, the
+/// presets and the device for one draw.
+fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides) -> system::draw::View {
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    system::draw::View {
+        presets: presets.to_vec(),
+        active_preset: presets::active(presets, std::env::var("RIDDLE_OPENAI_BASE").ok().as_deref()),
+        base: env("RIDDLE_OPENAI_BASE"),
+        model: env("RIDDLE_OPENAI_MODEL"),
+        ask_model: env("RIDDLE_OPENAI_ASK_MODEL"),
+        reasoning: env("RIDDLE_OPENAI_REASONING"),
+        max_tokens: env_u64("RIDDLE_OPENAI_MAX_TOKENS", 2000) as u32,
+        key_set: std::env::var("RIDDLE_OPENAI_KEY").is_ok(),
+        overrides_count: overrides.len(),
+        palm_ms: env_u64("RIDDLE_PALM_MS", 500),
+        tutor_model: env("RIDDLE_LEARN_MODEL"),
+        dwell_ms: env_u64("RIDDLE_LEARN_NEXT_MS", 5000),
+        facts: system::device::gather(),
+    }
+}
+
+/// Step a model name through the active preset's `models` list, clamping at
+/// the ends; a name not in the list starts from the first entry. A CUSTOM
+/// base has no list, so the value is left alone.
+fn step_in_preset(key: &str, dir: i8, presets: &[presets::Preset], overrides: &mut overrides::Overrides) {
+    let base = std::env::var("RIDDLE_OPENAI_BASE").ok();
+    let Some(preset) = presets::active(presets, base.as_deref()).and_then(|i| presets.get(i)) else {
+        return;
+    };
+    let Some(first) = preset.models.first() else { return };
+    let current = std::env::var(key).unwrap_or_default();
+    let next = match preset.models.iter().position(|m| *m == current) {
+        Some(i) => {
+            let j = if dir > 0 { (i + 1).min(preset.models.len() - 1) } else { i.saturating_sub(1) };
+            &preset.models[j]
+        }
+        None => first,
+    };
+    overrides.set(key, next);
+}
+
+/// What the pad loop does after a tap on the SYSTEM page.
+enum After {
+    Stay,
+    Closed,
+    Leave,
+}
+
+/// One tap on the SYSTEM page: read the hit map, act, redraw the page.
+/// ORACLE changes re-spawn the oracle; INPUT and LEARN changes re-read the
+/// values the loop captured at boot. See docs/plans/2026-09-15-system-page-design.md.
+#[allow(clippy::too_many_arguments)]
+fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &display::Display,
+    ui_font: &FontRef, prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
+    overrides: &mut overrides::Overrides, presets: &[presets::Preset],
+    oracle: &mut Option<oracle::Oracle>, store: &Option<memory::MemoryStore>,
+    palm_holdoff: &mut Duration, learn_next_dwell: &mut Option<Duration>, learn_model: &mut Option<String>,
+    wifi_tx: &mpsc::Sender<system::wifi::Event>, sleep_requested: &mut bool,
+    learn_session: &mut Option<learn::Session>, user_ink: &mut ink::Ink,
+    drawer_selection: &mut Option<usize>, drawer_scroll: &mut i32,
+    learn_advance_pending: &mut bool, learn_auto_at: &mut Option<Instant>, learn_tap_advance: &mut bool) -> After {
+    use system::wifi::Cmd;
+    use system::{step, Act, Outcome, Section, DWELL_MS, IDLE_MS, MAX_TOKENS, PALM_MS, REASONING};
+
+    let State::System { page, .. } = state else { return After::Stay };
+    let Some(act) = page.hits.at(x, y) else { return After::Stay };
+    let now = Instant::now();
+    if page.arm.armed().is_some() && !act.is_destructive() {
+        page.arm.clear();
+    }
+    let mut reopen_oracle = false;
+    let mut reread = false;
+    page.notice = None;
+    match act {
+        Act::Tab(s) => {
+            page.section = s;
+            if s == Section::Wifi && page.wifi.begin("READING") {
+                system::wifi::spawn(Cmd::Refresh, wifi_tx.clone());
+            }
+        }
+        Act::Close => {
+            close_overlay(state, surf, disp, drawer_selection, drawer_scroll);
+            return After::Closed;
+        }
+        Act::SetMode(mode) => { prefs.mode = mode; let _ = prefs.save(); }
+        Act::ToggleIdle => {
+            prefs.idle_send_ms = if prefs.idle_send_ms == 0 { 2800 } else { 0 };
+            *idle_commit = Duration::from_millis(prefs.idle_send_ms); let _ = prefs.save();
+        }
+        Act::StepIdle(d) => {
+            prefs.idle_send_ms = step(&IDLE_MS, prefs.idle_send_ms, d);
+            *idle_commit = Duration::from_millis(prefs.idle_send_ms); let _ = prefs.save();
+        }
+        Act::StepPalm(d) => {
+            let next = step(&PALM_MS, env_u64("RIDDLE_PALM_MS", 500), d);
+            overrides.set("RIDDLE_PALM_MS", &next.to_string());
+            reread = true;
+        }
+        Act::Preset(i) => {
+            if let Some(p) = presets.get(i) {
+                overrides.set("RIDDLE_OPENAI_BASE", &p.base);
+                overrides.set("RIDDLE_OPENAI_MODEL", &p.model);
+                overrides.set("RIDDLE_OPENAI_REASONING", &p.reasoning);
+                reopen_oracle = true;
+            }
+        }
+        Act::StepModel(d) => {
+            step_in_preset("RIDDLE_OPENAI_MODEL", d, presets, overrides);
+            reopen_oracle = true;
+        }
+        Act::StepAskModel(d) => step_in_preset("RIDDLE_OPENAI_ASK_MODEL", d, presets, overrides),
+        Act::StepReasoning(d) => {
+            let current = std::env::var("RIDDLE_OPENAI_REASONING").unwrap_or_default();
+            overrides.set("RIDDLE_OPENAI_REASONING", step(&REASONING, current.as_str(), d));
+            reopen_oracle = true;
+        }
+        Act::StepMaxTokens(d) => {
+            let next = step(&MAX_TOKENS, env_u64("RIDDLE_OPENAI_MAX_TOKENS", 2000) as u32, d);
+            overrides.set("RIDDLE_OPENAI_MAX_TOKENS", &next.to_string());
+            reopen_oracle = true;
+        }
+        Act::ResetOverrides => {
+            if overrides.is_empty() {
+                page.notice = Some("NO OVERRIDES".into());
+            } else {
+                overrides.reset();
+                reopen_oracle = true;
+                reread = true;
+            }
+        }
+        Act::ToggleLearn => {
+            prefs.page = match prefs.page {
+                preferences::Page::Learn => preferences::Page::Pad,
+                preferences::Page::Pad => preferences::Page::Learn,
+            };
+            let _ = prefs.save();
+            // Land directly on the chosen page, clean.
+            close_overlay(state, surf, disp, drawer_selection, drawer_scroll);
+            user_ink.clear();
+            *learn_advance_pending = false;
+            *learn_auto_at = None;
+            *learn_tap_advance = false;
+            surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+            *learn_session = match prefs.page {
+                preferences::Page::Learn => {
+                    let mut s = learn::Session::start();
+                    s.draw(surf, ui_font);
+                    Some(s)
+                }
+                preferences::Page::Pad => None,
+            };
+            disp.full_refresh(surf.w, surf.h);
+            *state = State::Listening { last_pen: None };
+            return After::Closed;
+        }
+        Act::StepTutorModel(d) => {
+            step_in_preset("RIDDLE_LEARN_MODEL", d, presets, overrides);
+            reread = true;
+        }
+        Act::StepDwell(d) => {
+            let next = step(&DWELL_MS, env_u64("RIDDLE_LEARN_NEXT_MS", 5000), d);
+            overrides.set("RIDDLE_LEARN_NEXT_MS", &next.to_string());
+            reread = true;
+        }
+        Act::WifiSelect(id) => {
+            if page.wifi.begin("JOINING") {
+                system::wifi::spawn(Cmd::Select(id), wifi_tx.clone());
+            }
+        }
+        Act::WifiRescan => {
+            if page.wifi.begin("SCANNING") {
+                system::wifi::spawn(Cmd::Scan, wifi_tx.clone());
+            }
+        }
+        Act::Sleep => {
+            *sleep_requested = true;
+            close_overlay(state, surf, disp, drawer_selection, drawer_scroll);
+            return After::Closed;
+        }
+        Act::Leave => {
+            eprintln!("g-pad: leave from system");
+            return After::Leave;
+        }
+        Act::Reboot | Act::PowerOff => match page.arm.tap(act, now) {
+            Outcome::Armed(_) => {}
+            Outcome::Confirmed(confirmed) => {
+                let verb = if confirmed == Act::Reboot { "reboot" } else { "poweroff" };
+                eprintln!("g-pad: {verb} from system");
+                if let Err(e) = std::process::Command::new("systemctl").arg(verb).status() {
+                    page.notice = Some(format!("{verb} failed: {e}").to_uppercase());
+                }
+            }
+        },
+    }
+    if reopen_oracle {
+        match oracle::Oracle::spawn(store.is_some()) {
+            Ok(o) => {
+                *oracle = Some(o);
+                page.notice = Some("ORACLE READY".into());
+            }
+            Err(e) => page.notice = Some(format!("ORACLE UNCHANGED: {e}").to_uppercase()),
+        }
+    }
+    if reread {
+        *palm_holdoff = env_ms("RIDDLE_PALM_MS", 500);
+        *learn_next_dwell = learn_dwell_from_env();
+        *learn_model = learn_model_from_env();
+    }
+    system::draw::draw(surf, ui_font, page, &system_view(presets, overrides), *prefs);
+    disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+    After::Stay
+}
+
 fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
     selection: &mut Option<usize>, scroll: &mut i32) {
     let old = std::mem::replace(state, State::Listening { last_pen: None });
@@ -2254,9 +2481,9 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             let region = p.close(surf); let (x, y, w, h) = region.rect(); disp.update(x, y, w, h, false);
             *state = *return_to;
         }
-        State::Settings { saved: Some(bytes), return_to } => {
-            surf.paste_rect(0, 0, ui::PANEL_W, SCREEN_H, &bytes);
-            disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false); *state = *return_to;
+        State::System { saved: Some(bytes), return_to, .. } => {
+            surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &bytes);
+            disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
         State::SessionPage { saved, return_to, .. } | State::NotePage { saved, return_to, .. } => {
             surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
@@ -2701,8 +2928,8 @@ fn classify_mark(stroke: &[(i32, i32, i32)], sb: &BBox, b: &ui::DecisionBox) -> 
 fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp: &display::Display,
     ui_font: &FontRef, store: &Option<memory::MemoryStore>, user_ink: &mut ink::Ink,
     notebook: &mut notebook::Notebook, send_mode: &mut Option<CommitMode>, sleep_requested: &mut bool,
-    prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
-    selection: Option<usize>, scroll: i32, learn: &mut Option<learn::Session>) {
+    prefs: preferences::Preferences, selection: Option<usize>, scroll: i32,
+    learn: &mut Option<learn::Session>, presets: &[presets::Preset], overrides: &overrides::Overrides) {
     // Learn mode repurposes the strip: committing is the DONE box, so SEND and
     // DISMISS do nothing; ERASE re-deals the same sheet clean; NEW PAGE deals
     // a fresh problem. Everything else behaves as on the pad.
@@ -2765,18 +2992,10 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
         }
         ui::Action::Settings => {
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
-                let old = std::mem::replace(state, State::Listening { last_pen: None });
-                let saved = ui::draw_settings(surf, ui_font, *prefs);
-                disp.update(0, 0, ui::PANEL_W as i32, SCREEN_H as i32, false);
-                *state = State::Settings { saved: Some(saved), return_to: Box::new(old) };
+                open_system(state, surf, disp, ui_font, prefs, presets, overrides);
             }
         }
         ui::Action::Sleep => *sleep_requested = true,
-        ui::Action::SetMode(mode) => { prefs.mode = mode; let _ = prefs.save(); }
-        ui::Action::ToggleIdle => {
-            prefs.idle_send_ms = if prefs.idle_send_ms == 0 { 2800 } else { 0 };
-            *idle_commit = Duration::from_millis(prefs.idle_send_ms); let _ = prefs.save();
-        }
         _ => {}
     }
 }

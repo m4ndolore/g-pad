@@ -82,6 +82,12 @@ environment stays the config bus:
    any SYSTEM change instead of being captured once at boot.
 4. RESET OVERRIDES deletes the file and re-spawns from `oracle.env` alone.
 
+`set_var` at runtime is accepted as is: a review found no background thread
+calling `env::var` after spawn (bridge, oracle and vault read the environment
+on the calling thread at spawn), and the residual libc `getenv` race — the
+glibc resolver on the vault poll thread during a `setenv` that grows
+`environ` — is taken on for now rather than restructuring how config is passed.
+
 Presets come from `settings.schema.json`, already shipped in the bundle and
 consumed by nothing on-device. It gains a **Vellum** preset matching the
 tablet's current `oracle.env`, and each preset gains a short `models` list

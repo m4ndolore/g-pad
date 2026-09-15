@@ -14,8 +14,6 @@ pub struct Overrides {
     original: HashMap<String, Option<String>>,
 }
 
-// Only `load` runs today; the SYSTEM page is the caller for the rest.
-#[allow(dead_code)]
 impl Overrides {
     /// Read the file and apply it to the environment.
     pub fn load() -> Self {
@@ -27,6 +25,8 @@ impl Overrides {
         o
     }
 
+    // Exercised by tests; the page uses set/reset.
+    #[allow(dead_code)]
     pub fn get(&self, key: &str) -> Option<&str> {
         self.pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
@@ -47,6 +47,8 @@ impl Overrides {
     }
 
     /// Drop one override and restore what the environment had.
+    // Exercised by tests; the page uses set/reset.
+    #[allow(dead_code)]
     pub fn unset(&mut self, key: &str) {
         self.pairs.retain(|(k, _)| k != key);
         self.restore(key);
