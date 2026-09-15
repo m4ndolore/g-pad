@@ -1,4 +1,17 @@
 fn main() {
+    // The running build's identity, shown on the SYSTEM page. `git` is absent
+    // on some build hosts and inside vendored snapshots, so "dev" is a value,
+    // not an error.
+    let hash = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "dev".to_string());
+    println!("cargo:rustc-env=GPAD_BUILD={hash}");
+
     if std::env::var("CARGO_FEATURE_TAKEOVER").is_ok() {
         println!("cargo:rerun-if-env-changed=QUILL_BUILD_DIR");
         println!("cargo:rerun-if-env-changed=QUILL_VENDOR_DIR");

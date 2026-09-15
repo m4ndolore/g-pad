@@ -40,6 +40,9 @@ mod touch;
 mod ui;
 mod vault;
 
+/// Short git hash of this build, or "dev" when git was unavailable.
+pub const BUILD: &str = env!("GPAD_BUILD");
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -3459,5 +3462,11 @@ mod ux_tests {
         assert!(plan.next_y <= SCREEN_H as i32);
         let again = plan_reply(&font, &plan.leftover, Some(TOP_WRITING_LINE));
         assert!(!again.strokes.is_empty(), "leftover must be writable on a fresh page");
+    }
+
+    #[test]
+    fn the_build_hash_is_short_and_never_empty() {
+        assert!(!crate::BUILD.is_empty());
+        assert!(crate::BUILD.len() <= 12, "{}", crate::BUILD);
     }
 }
