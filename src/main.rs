@@ -28,6 +28,7 @@ mod memory;
 mod notebook;
 mod page;
 mod oracle;
+mod overrides;
 mod pen;
 mod power;
 mod preferences;
@@ -682,6 +683,10 @@ fn run() -> std::io::Result<()> {
 
     // The diary's memory (None = RIDDLE_MEMORY=off or the dir is unusable).
     let mut store = memory::MemoryStore::open();
+    // In-app overrides beat oracle.env from here on; everything below reads env.
+    // The binding is consumed by the SYSTEM page.
+    #[allow(unused_variables, unused_mut)]
+    let mut overrides = overrides::Overrides::load();
     let mut prefs = preferences::Preferences::load();
     // The turn page's canned nudges, read once: edits to the preferences
     // file take effect on the next start.
