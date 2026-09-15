@@ -135,7 +135,10 @@ WI-FI section: whether `wpa_cli` or `connmanctl` is the right tool on OS
 Still open after the build (the tablet stayed asleep; everything below is
 checked on the host only):
 
-- `wpa_cli` vs `connmanctl` on OS 3.27.3.
+- `wpa_cli` vs `connmanctl` on OS 3.27.3. **Answered 2026-09-15, on 3.28:
+  neither.** 3.28 runs NetworkManager 1.52 and wpa_supplicant D-Bus-only (no
+  control socket), so the section and `power::wifi_heal` were ported to
+  `nmcli`; `g-pad --wifi-test` exercises that path over ssh.
 - The battery sysfs path (`device::battery_from` takes the first
   `/sys/class/power_supply/*` whose `type` reads `Battery`; a battery with no
   readable `capacity` shows `?`).

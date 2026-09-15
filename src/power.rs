@@ -100,15 +100,15 @@ pub const SUSPEND_WAIT: std::time::Duration = std::time::Duration::from_secs(90)
 #[allow(dead_code)]
 pub const TEARDOWN_HEADROOM: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// After resume, Wi-Fi is often stranded: wpa_supplicant fails a few attempts
-/// while the radio settles and marks the network TEMP-DISABLED, and with
-/// xochitl stopped nobody clears it. Nudge it back, detached, best-effort.
+/// After resume, Wi-Fi is often stranded: the supplicant fails a few attempts
+/// while the radio settles, and with xochitl stopped nobody asks
+/// NetworkManager to try again. Nudge it back, detached, best-effort:
+/// `dev connect` activates the best saved connection for the interface.
 pub fn wifi_heal() {
     let script = "for i in 1 2 3 4 5 6 7 8 9 10; do \
-        state=$(wpa_cli -i wlan0 status 2>/dev/null | grep ^wpa_state | cut -d= -f2); \
-        [ \"$state\" = COMPLETED ] && exit 0; \
-        wpa_cli -i wlan0 enable_network all >/dev/null 2>&1; \
-        wpa_cli -i wlan0 reassociate >/dev/null 2>&1; \
+        state=$(nmcli -t -f GENERAL.STATE dev show wlan0 2>/dev/null | cut -d: -f2); \
+        case \"$state\" in 100*) exit 0;; esac; \
+        nmcli dev connect wlan0 >/dev/null 2>&1; \
         sleep 3; \
         done";
     let _ = std::process::Command::new("sh")

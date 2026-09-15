@@ -87,6 +87,9 @@ usage:
   g-pad --learn-test [ANS]    one Learn-mode tutor round trip with a simulated
                               child answer (default: the correct one); prints
                               the verdict; verifies key + endpoint + model
+  g-pad --wifi-test           read the Wi-Fi state and scan through nmcli and
+                              print both; verifies the radio path the SYSTEM
+                              page uses
   g-pad --version             print the version
 
 configuration lives in oracle.env next to the binary — see
@@ -326,6 +329,11 @@ fn main() {
         Some("--learn-test") => {
             let answer = args.get(2).map(String::as_str);
             std::process::exit(learn_test(answer));
+        }
+        // Diagnostic: the SYSTEM page's Wi-Fi worker, once through, printed.
+        // Verifies the nmcli path on the tablet over ssh. No display needed.
+        Some("--wifi-test") => {
+            std::process::exit(system::wifi::diagnostic());
         }
         Some("--version" | "-V") => {
             println!("riddle {}", env!("CARGO_PKG_VERSION"));
@@ -2452,8 +2460,10 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
             reread = true;
         }
         Act::WifiSelect(id) => {
-            if page.wifi.begin("JOINING") {
-                system::wifi::spawn(Cmd::Select(id), page.wifi_tx.clone());
+            if let Some(cmd) = page.wifi.select(id) {
+                if page.wifi.begin("JOINING") {
+                    system::wifi::spawn(cmd, page.wifi_tx.clone());
+                }
             }
         }
         Act::WifiRescan => {

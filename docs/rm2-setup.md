@@ -79,13 +79,13 @@ scp -O root@10.11.99.1:/usr/lib/plugins/scenegraph/libqsgepaper.so \
     quill/vendor/armv7-unknown-linux-gnueabihf/
 ```
 
-Compiling `libquill.so` needs the reMarkable SDK for its Qt headers:
+Compiling `libquill.so` needs Qt headers and the tablet's libraries. With the
+reMarkable SDK installed, `DEVICE=rm2 ./build-takeover.sh` (SDK at
+`~/rm-sdk-rm2`) does everything; without it, `./quill/build-zig.sh` builds
+the adapter with zig alone (see `quill/README.md`), pulling what it needs from
+the tablet over ssh.
 
-```sh
-DEVICE=rm2 ./build-takeover.sh          # SDK at ~/rm-sdk-rm2
-```
-
-Once `libquill.so` exists, later builds do not need the SDK at all —
+Once `libquill.so` exists, the Rust side does not need the SDK at all —
 `cargo-zigbuild` supplies the cross-linker:
 
 ```sh
