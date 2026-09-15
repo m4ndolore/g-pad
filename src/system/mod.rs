@@ -6,6 +6,7 @@ pub mod device;
 pub mod draw;
 pub mod wifi;
 
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use crate::fb::BBox;
@@ -202,14 +203,34 @@ pub const REASONING: [&str; 4] = ["", "low", "medium", "high"];
 
 /// The page's live state. Drawing reads it; taps mutate it. `Page::default()`
 /// opens on ORACLE with nothing armed, nothing hit, nothing to say.
-#[derive(Default)]
 pub struct Page {
     pub section: Section,
     pub hits: Hits,
     pub arm: Arm,
     pub wifi: wifi::View,
+    /// The Wi-Fi worker reports here. One channel per opening: a worker
+    /// still running when the page closed sends to a dropped receiver,
+    /// which `wifi::spawn` ignores, so a stale report never reaches the
+    /// next opening.
+    pub wifi_tx: Sender<wifi::Event>,
+    pub wifi_rx: Receiver<wifi::Event>,
     /// One line of outcome at the foot of the section (an error, "SAVED", …).
     pub notice: Option<String>,
+}
+
+impl Default for Page {
+    fn default() -> Self {
+        let (wifi_tx, wifi_rx) = mpsc::channel();
+        Self {
+            section: Section::default(),
+            hits: Hits::default(),
+            arm: Arm::default(),
+            wifi: wifi::View::default(),
+            wifi_tx,
+            wifi_rx,
+            notice: None,
+        }
+    }
 }
 
 #[cfg(test)]

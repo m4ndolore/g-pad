@@ -100,6 +100,11 @@ fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// Like `env_u64`, for the values that are u32 at the oracle.
+fn env_u32(name: &str, default: u32) -> u32 {
+    u32::try_from(env_u64(name, u64::from(default))).unwrap_or(default)
+}
+
 /// Millisecond duration from the environment, with a default.
 fn env_ms(name: &str, default: u64) -> Duration {
     Duration::from_millis(env_u64(name, default))
@@ -151,9 +156,9 @@ enum State {
     Drawer { panel: Option<ui::Drawer>, return_to: Box<State> },
     #[allow(dead_code)]
     ExpandedConversation { panel: Option<ui::Drawer>, return_to: Box<State> },
-    /// The SYSTEM page, full-screen. `saved` is the canvas underneath;
-    /// `None` after Close, waiting for pen-up like the drawer.
-    System { page: Box<system::Page>, saved: Option<Vec<u8>>, return_to: Box<State> },
+    /// The SYSTEM page, full-screen. `saved` is the whole canvas underneath,
+    /// pasted back on close.
+    System { page: Box<system::Page>, saved: Vec<u8>, return_to: Box<State> },
     /// One agent session read full-page (the turn page). `saved` is the whole
     /// canvas underneath. Touch acts only on named targets: ← AGENTS returns
     /// to the board, × (or the leftward swipe) closes to the canvas, the
@@ -797,10 +802,8 @@ fn run() -> std::io::Result<()> {
     // recomputed later.
     let mut learn_sent_frame = BBox::empty();
     let mut learn_model = learn_model_from_env();
-    // The SYSTEM page: presets for its ORACLE pickers, a channel its Wi-Fi
-    // worker reports on. Both outlive any one opening of the page.
+    // The SYSTEM page's presets, for its ORACLE pickers.
     let presets = presets::load();
-    let (wifi_tx, wifi_rx) = mpsc::channel::<system::wifi::Event>();
     let mut drawer_selection: Option<usize> = None;
     let mut drawer_scroll = 0i32;
     let mut controls_saved: Option<Vec<u8>> = None;
@@ -901,14 +904,11 @@ fn run() -> std::io::Result<()> {
         // The SYSTEM page's Wi-Fi worker reports here; an armed REBOOT or
         // POWER OFF row lapses here. Either repaints only the section that
         // shows it — events landing under another section update the model
-        // and the next draw shows them. A report that lands after the page
-        // closed is dropped, so the next opening starts from what it reads.
-        if !matches!(state, State::System { .. }) {
-            while wifi_rx.try_recv().is_ok() {}
-        }
+        // and the next draw shows them. The channel belongs to the page, so
+        // closing it drops the receiver and a late report goes nowhere.
         if let State::System { page, .. } = &mut state {
             let mut changed = false;
-            while let Ok(ev) = wifi_rx.try_recv() {
+            while let Ok(ev) = page.wifi_rx.try_recv() {
                 changed = true;
                 match ev {
                     system::wifi::Event::Status(s) => page.wifi.status = s,
@@ -1063,7 +1063,7 @@ fn run() -> std::io::Result<()> {
                     } else if matches!(state, State::System { .. }) {
                         let after = system_tap(x, y, &mut state, &mut surf, &disp, &ui_font, &mut prefs,
                             &mut idle_commit, &mut overrides, &presets, &mut oracle, &store,
-                            &mut palm_holdoff, &mut learn_next_dwell, &mut learn_model, &wifi_tx,
+                            &mut palm_holdoff, &mut learn_next_dwell, &mut learn_model,
                             &mut sleep_requested, &mut learn_session, &mut user_ink,
                             &mut drawer_selection, &mut drawer_scroll, &mut learn_advance_pending,
                             &mut learn_auto_at, &mut learn_tap_advance);
@@ -2140,11 +2140,7 @@ fn run() -> std::io::Result<()> {
                 None if stylus_on => State::ExpandedConversation { panel: None, return_to },
                 None => *return_to,
             },
-            State::System { page, saved, return_to } => match saved {
-                Some(s) => State::System { page, saved: Some(s), return_to },
-                None if stylus_on => State::System { page, saved: None, return_to },
-                None => *return_to,
-            },
+            s @ State::System { .. } => s,
             // The turn page rests until the reader closes it — except the
             // scribe: a transcription under way is collected here, offered
             // when whole, and expired when it goes stale.
@@ -2256,7 +2252,7 @@ fn open_system(state: &mut State, surf: &mut Surface, disp: &display::Display, u
     let mut page = Box::new(system::Page::default());
     system::draw::draw(surf, ui_font, &mut page, &system_view(presets, overrides), prefs);
     disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
-    *state = State::System { page, saved: Some(saved), return_to: Box::new(old) };
+    *state = State::System { page, saved, return_to: Box::new(old) };
 }
 
 /// What the SYSTEM page shows, gathered fresh from the environment, the
@@ -2270,7 +2266,7 @@ fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides) ->
         model: env("RIDDLE_OPENAI_MODEL"),
         ask_model: env("RIDDLE_OPENAI_ASK_MODEL"),
         reasoning: env("RIDDLE_OPENAI_REASONING"),
-        max_tokens: env_u64("RIDDLE_OPENAI_MAX_TOKENS", 2000) as u32,
+        max_tokens: env_u32("RIDDLE_OPENAI_MAX_TOKENS", 2000),
         key_set: std::env::var("RIDDLE_OPENAI_KEY").is_ok(),
         overrides_count: overrides.len(),
         palm_ms: env_u64("RIDDLE_PALM_MS", 500),
@@ -2316,7 +2312,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
     overrides: &mut overrides::Overrides, presets: &[presets::Preset],
     oracle: &mut Option<oracle::Oracle>, store: &Option<memory::MemoryStore>,
     palm_holdoff: &mut Duration, learn_next_dwell: &mut Option<Duration>, learn_model: &mut Option<String>,
-    wifi_tx: &mpsc::Sender<system::wifi::Event>, sleep_requested: &mut bool,
+    sleep_requested: &mut bool,
     learn_session: &mut Option<learn::Session>, user_ink: &mut ink::Ink,
     drawer_selection: &mut Option<usize>, drawer_scroll: &mut i32,
     learn_advance_pending: &mut bool, learn_auto_at: &mut Option<Instant>, learn_tap_advance: &mut bool) -> After {
@@ -2336,7 +2332,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
         Act::Tab(s) => {
             page.section = s;
             if s == Section::Wifi && page.wifi.begin("READING") {
-                system::wifi::spawn(Cmd::Refresh, wifi_tx.clone());
+                system::wifi::spawn(Cmd::Refresh, page.wifi_tx.clone());
             }
         }
         Act::Close => {
@@ -2376,7 +2372,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
             reopen_oracle = true;
         }
         Act::StepMaxTokens(d) => {
-            let next = step(&MAX_TOKENS, env_u64("RIDDLE_OPENAI_MAX_TOKENS", 2000) as u32, d);
+            let next = step(&MAX_TOKENS, env_u32("RIDDLE_OPENAI_MAX_TOKENS", 2000), d);
             overrides.set("RIDDLE_OPENAI_MAX_TOKENS", &next.to_string());
             reopen_oracle = true;
         }
@@ -2425,12 +2421,12 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
         }
         Act::WifiSelect(id) => {
             if page.wifi.begin("JOINING") {
-                system::wifi::spawn(Cmd::Select(id), wifi_tx.clone());
+                system::wifi::spawn(Cmd::Select(id), page.wifi_tx.clone());
             }
         }
         Act::WifiRescan => {
             if page.wifi.begin("SCANNING") {
-                system::wifi::spawn(Cmd::Scan, wifi_tx.clone());
+                system::wifi::spawn(Cmd::Scan, page.wifi_tx.clone());
             }
         }
         Act::Sleep => {
@@ -2447,8 +2443,10 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
             Outcome::Confirmed(confirmed) => {
                 let verb = if confirmed == Act::Reboot { "reboot" } else { "poweroff" };
                 eprintln!("g-pad: {verb} from system");
-                if let Err(e) = std::process::Command::new("systemctl").arg(verb).status() {
-                    page.notice = Some(format!("{verb} failed: {e}").to_uppercase());
+                match std::process::Command::new("systemctl").arg(verb).status() {
+                    Ok(s) if s.success() => {}
+                    Ok(s) => page.notice = Some(format!("{verb} failed: {s}").to_uppercase()),
+                    Err(e) => page.notice = Some(format!("{verb} failed: {e}").to_uppercase()),
                 }
             }
         },
@@ -2481,11 +2479,8 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             let region = p.close(surf); let (x, y, w, h) = region.rect(); disp.update(x, y, w, h, false);
             *state = *return_to;
         }
-        State::System { saved: Some(bytes), return_to, .. } => {
-            surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &bytes);
-            disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
-        }
-        State::SessionPage { saved, return_to, .. } | State::NotePage { saved, return_to, .. } => {
+        State::System { saved, return_to, .. } | State::SessionPage { saved, return_to, .. }
+        | State::NotePage { saved, return_to, .. } => {
             surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
             disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
