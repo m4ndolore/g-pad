@@ -137,6 +137,38 @@ If you prefer to run each step yourself:
    then create `oracle.env` in that folder (see above).
 5. **Start** — `/home/root/xovi/start` on the tablet (or triple-press power).
 
+## After a reMarkable OS update
+
+An update installs the new OS on the other root partition and boots it. Your
+files under `/home/root` survive; everything that lived in the old root does
+not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
+
+- **The SSH host key changes** (dropbear regenerates it on the fresh root).
+  Your client refuses to connect with "REMOTE HOST IDENTIFICATION HAS
+  CHANGED", and so does anything scripted on top of ssh, such as the hub
+  tunnel. Fix: `ssh-keygen -R 10.11.99.1` (and the Wi-Fi address), then
+  connect once to accept the new key.
+- **The takeover unit is gone** (`/etc/systemd/system/g-pad-takeover.service`),
+  so the pad no longer owns the panel at boot. Re-run
+  `./scripts/install-boot-rm2.sh`. The bundle under AppLoad is untouched.
+- **The qt-resource-rebuilder hashtable is stale.** It names the OS it was
+  built for, qmldiff skips it on any other version, and AppLoad's hooks then
+  abort xochitl; on 3.28 the OS answers two aborts with a reboot. Rebuild it
+  before starting xovi: `ssh root@10.11.99.1 '/home/root/xovi/rebuild_hashtable </dev/null'`
+  (`rm2-doctor.sh` reports the mismatch).
+- **AppLoad itself may lag the OS.** 3.28 changed the QML the launcher hooks;
+  the fix is merged upstream but, as of 2026-09-15, not in an AppLoad release,
+  and AppLoad v0.5.3 aborts xochitl on 3.28 even with a fresh hashtable. Until
+  a release ships, do not run `/home/root/xovi/start` on 3.28. The takeover
+  does not need AppLoad: the boot unit starts g-pad directly.
+- **3.28 dropped `timeout` and `pkill` from busybox.** Scripts that relied on
+  them stop working silently; `g-pad-boot.sh`'s escape window now uses a
+  background `dd` instead.
+- **The e-ink engine ABI changed.** `libqsgepaper.so` on 3.28 exports a
+  different `EPFramebuffer::swapBuffers` signature, so a `libquill.so` built
+  for 3.27 initializes but never updates the screen. Rebuild it with
+  `./quill/build-zig.sh` (no SDK needed) and ship it with the bundle.
+
 ## Troubleshooting
 
 - **AppLoad is missing from the tablet** — AppLoad is not a stock app. It exists

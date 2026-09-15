@@ -192,18 +192,38 @@ int initialize(FramebufferView *view) {
     return 0;
 }
 
+// reMarkable OS 3.28 dropped the EPContentType argument from
+// EPFramebuffer::swapBuffers(QRect, ...); releases up to 3.27 still take it.
+// Resolve whichever the device exports and adapt the call.
+using SwapTyped = unsigned long (*)(void *, QRect, int, int, int);
+using SwapPlain = unsigned long (*)(void *, QRect, int, int);
+struct SwapEntry {
+    SwapTyped typed;
+    SwapPlain plain;
+};
+
+SwapEntry resolve_swap() {
+    SwapEntry entry{nullptr, nullptr};
+    entry.typed = reinterpret_cast<SwapTyped>(dlsym(
+        RTLD_DEFAULT,
+        "_ZN13EPFramebuffer11swapBuffersE5QRect13EPContentType12EPScreenMode6QFlagsINS_10UpdateFlagEE"));
+    if (entry.typed) return entry;
+    entry.plain = reinterpret_cast<SwapPlain>(dlsym(
+        RTLD_DEFAULT,
+        "_ZN13EPFramebuffer11swapBuffersE5QRect12EPScreenMode6QFlagsINS_10UpdateFlagEE"));
+    if (!entry.plain)
+        std::fputs("quill: EPFramebuffer::swapBuffers unavailable\n", stderr);
+    return entry;
+}
+
 unsigned long swap(const QRect &rect, int content_type, int mode, bool complete) {
-    using Swap = unsigned long (*)(void *, QRect, int, int, int);
-    static Swap function = [] {
-        auto resolved = reinterpret_cast<Swap>(dlsym(
-            RTLD_DEFAULT,
-            "_ZN13EPFramebuffer11swapBuffersE5QRect13EPContentType12EPScreenMode6QFlagsINS_10UpdateFlagEE"));
-        if (!resolved)
-            std::fputs("quill: EPFramebuffer::swapBuffers unavailable\n", stderr);
-        return resolved;
-    }();
-    if (!function || !vendor_instance) return 0;
-    return function(vendor_instance, rect, content_type, mode, complete ? 1 : 0);
+    static const SwapEntry function = resolve_swap();
+    if (!vendor_instance) return 0;
+    if (function.typed)
+        return function.typed(vendor_instance, rect, content_type, mode, complete ? 1 : 0);
+    if (function.plain)
+        return function.plain(vendor_instance, rect, mode, complete ? 1 : 0);
+    return 0;
 }
 
 } // namespace quill_vendor

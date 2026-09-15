@@ -23,8 +23,18 @@ systemctl stop xochitl
 # The e-ink panel still shows the stock UI's last frame — that frozen
 # frame IS the escape window. One input event on the power button
 # (16-byte struct) within 3s means: stay stock this boot.
-pressed=$(timeout 3 dd if=/dev/input/event0 bs=16 count=1 2>/dev/null | wc -c)
-if [ "${pressed:-0}" -gt 0 ]; then
+# OS 3.28 dropped `timeout` from busybox, so the deadline is a background
+# dd that gets killed after three one-second ticks.
+press=/tmp/g-pad-boot-press
+rm -f "$press"
+dd if=/dev/input/event0 bs=16 count=1 of="$press" 2>/dev/null &
+dd_pid=$!
+for _ in 1 2 3; do
+    sleep 1
+    kill -0 "$dd_pid" 2>/dev/null || break
+done
+kill "$dd_pid" 2>/dev/null
+if [ -s "$press" ]; then
     echo "g-pad-boot: power press in the escape window — stock UI this boot"
     systemctl start xochitl
     exit 0
