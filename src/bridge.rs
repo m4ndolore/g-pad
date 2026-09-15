@@ -232,10 +232,22 @@ pub fn held() -> Bridge {
     HELD.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
 }
 
+/// When the hub last answered a poll. A failed poll leaves this alone, so
+/// the age keeps growing while the page reads as stale.
+static LAST_OK: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+
+/// How long ago the hub last answered a poll; `None` before it ever has.
+pub fn last_ok_age() -> Option<std::time::Duration> {
+    LAST_OK.lock().ok().and_then(|g| g.map(|t| t.elapsed()))
+}
+
 /// Take a fresh poll. Nothing else in the tree writes this.
 pub fn replace(bridge: Bridge) {
     if let Ok(mut g) = HELD.lock() {
         *g = Some(bridge);
+    }
+    if let Ok(mut g) = LAST_OK.lock() {
+        *g = Some(std::time::Instant::now());
     }
 }
 
@@ -615,9 +627,14 @@ mod tests {
         assert_eq!(nudge_url("http://h:9707", "s1"), "http://h:9707/sessions/s1/nudge");
     }
 
+    /// Tests that write the process-wide `HELD` take this so they cannot
+    /// interleave; cargo runs tests in parallel.
+    static HELD_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn a_failed_first_poll_still_reads_as_stale() {
-        // Serialized with the shared HELD state: reset, fail, inspect.
+        let _serial = HELD_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        // Reset, fail, inspect.
         if let Ok(mut g) = HELD.lock() {
             *g = None;
         }
@@ -680,5 +697,15 @@ mod tests {
         let mut s = session(vec![turn("you", "hi")]);
         s.updated = String::new();
         assert_eq!(layout_session(&f, &s).meta, "running");
+    }
+
+    #[test]
+    fn a_fresh_poll_stamps_the_hub_as_reachable() {
+        let _serial = HELD_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        replace(Bridge { sessions: vec![], stale: false });
+        assert!(last_ok_age().is_some_and(|d| d.as_secs() < 5));
+        mark_stale();
+        // Staleness keeps the timestamp: the age keeps growing, it is not lost.
+        assert!(last_ok_age().is_some());
     }
 }
