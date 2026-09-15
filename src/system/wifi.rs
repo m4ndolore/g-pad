@@ -51,6 +51,11 @@ pub struct Heard {
 }
 
 /// What the page shows. `busy` names the command in flight, if any.
+///
+/// The saved and in-range rows are one list that rarely fits the page.
+/// `offset` is the first entry drawn; drawing sets `next_offset` to where a
+/// MORE tap should move it (or 0 from the last page), None when the whole
+/// list is on screen. A fresh list starts at the top again.
 #[derive(Clone, Debug, Default)]
 pub struct View {
     pub status: Status,
@@ -58,6 +63,8 @@ pub struct View {
     pub seen: Vec<Seen>,
     pub busy: Option<&'static str>,
     pub error: Option<String>,
+    pub offset: usize,
+    pub next_offset: Option<usize>,
 }
 
 impl View {

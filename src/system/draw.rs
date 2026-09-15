@@ -42,6 +42,11 @@ const UNDERLINE_Y: usize = 244;
 const RULE_Y: usize = 262;
 /// Where LABEL_PX text sits inside a ROW_H row so it reads centred.
 const TEXT_DY: i32 = 39;
+/// Rows under a group head hang this far in from its label, so a head and
+/// its members read as one block; the minor rule sits this far above the
+/// head row's foot.
+const GROUP_INDENT: i32 = 48;
+const GROUP_RULE_DY: i32 = 18;
 const FOOTER_Y: usize = SCREEN_H - 70;
 /// Liberation Sans has no U+25AE (▮); a bar of signal is a pipe.
 const SIGNAL_BAR: &str = "|";
@@ -98,12 +103,12 @@ pub fn draw(surf: &mut Surface, font: &FontRef, page: &mut Page, view: &View, pr
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
     let mut hits = Hits::default();
     header(surf, font, page.section, &mut hits);
-    let mut rows = Rows { y: ROWS_Y, hits: &mut hits, armed: page.arm.armed() };
+    let mut rows = Rows { y: ROWS_Y, hits: &mut hits, armed: page.arm.armed(), indent: 0 };
     match page.section {
         Section::Oracle => oracle(surf, font, &mut rows, view),
         Section::Input => input(surf, font, &mut rows, view, prefs),
         Section::Learn => learn(surf, font, &mut rows, view, prefs),
-        Section::Wifi => wifi_section(surf, font, &mut rows, &page.wifi),
+        Section::Wifi => wifi_section(surf, font, &mut rows, &mut page.wifi),
         Section::Device => device_section(surf, font, &mut rows, &view.facts),
         Section::Power => power(surf, font, &mut rows),
     }
@@ -141,6 +146,8 @@ struct Rows<'a> {
     y: i32,
     hits: &'a mut Hits,
     armed: Option<Act>,
+    /// Extra inset for the label column while inside a group.
+    indent: i32,
 }
 
 impl Rows<'_> {
@@ -148,8 +155,35 @@ impl Rows<'_> {
         self.y + ROW_H <= NOTICE_Y
     }
 
+    /// How many more rows fit above the notice line.
+    fn remaining(&self) -> usize {
+        ((NOTICE_Y - self.y).max(0) / ROW_H) as usize
+    }
+
+    fn label_x(&self) -> i32 {
+        PAD as i32 + self.indent
+    }
+
     fn text(&self, surf: &mut Surface, font: &FontRef, s: &str, x: i32, color: u16, limit_x: i32) {
         render_text(surf, font, s, LABEL_PX, x as usize, (self.y + TEXT_DY) as usize, color, limit_x as usize);
+    }
+
+    /// A group head: the label with a minor rule under it, and every row
+    /// until `ungroup` inset beneath it, so the head and its members read
+    /// as one block instead of a run of look-alike lines.
+    fn group(&mut self, surf: &mut Surface, font: &FontRef, label: &str) {
+        self.indent = 0;
+        if !self.room() {
+            return;
+        }
+        self.text(surf, font, label, PAD as i32, BLACK, SCREEN_W as i32);
+        surf.fill_rect(PAD, (self.y + ROW_H - GROUP_RULE_DY) as usize, SCREEN_W - 2 * PAD, 1, BLACK);
+        self.y += ROW_H;
+        self.indent = GROUP_INDENT;
+    }
+
+    fn ungroup(&mut self) {
+        self.indent = 0;
     }
 
     /// Information only: one line at the label column, no act.
@@ -157,7 +191,7 @@ impl Rows<'_> {
         if !self.room() {
             return;
         }
-        self.text(surf, font, s, PAD as i32, BLACK, SCREEN_W as i32);
+        self.text(surf, font, s, self.label_x(), BLACK, SCREEN_W as i32);
         self.y += ROW_H;
     }
 
@@ -167,7 +201,7 @@ impl Rows<'_> {
         if !self.room() {
             return;
         }
-        self.text(surf, font, label, PAD as i32, BLACK, VALUE_X - PAD as i32);
+        self.text(surf, font, label, self.label_x(), BLACK, VALUE_X - PAD as i32);
         self.text(surf, font, value, VALUE_X, if active { BLUE } else { BLACK }, SCREEN_W as i32);
         if let Some(act) = act {
             self.hits.push(act, 0, self.y, SCREEN_W as i32, ROW_H);
@@ -180,7 +214,7 @@ impl Rows<'_> {
         if !self.room() {
             return;
         }
-        self.text(surf, font, label, PAD as i32, BLACK, VALUE_X - PAD as i32);
+        self.text(surf, font, label, self.label_x(), BLACK, VALUE_X - PAD as i32);
         self.text(surf, font, value, VALUE_X, BLACK, STEP_X - PAD as i32);
         for (dx, dir, glyph) in [(0, -1, "−"), (STEP_GAP, 1, "+")] {
             let x = STEP_X + dx;
@@ -202,7 +236,7 @@ impl Rows<'_> {
             surf.fill_rect(0, self.y as usize, SCREEN_W, ROW_H as usize, VERMILION);
             self.text(surf, font, &format!("{label} — TAP AGAIN"), PAD as i32, WHITE, SCREEN_W as i32);
         } else {
-            self.text(surf, font, label, PAD as i32, BLACK, SCREEN_W as i32);
+            self.text(surf, font, label, self.label_x(), BLACK, SCREEN_W as i32);
         }
         self.hits.push(act, 0, self.y, SCREEN_W as i32, ROW_H);
         self.y += ROW_H;
@@ -235,7 +269,7 @@ fn word_or(value: &str, when_empty: &str) -> String {
 }
 
 fn oracle(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View) {
-    rows.line(surf, font, "PRESET");
+    rows.group(surf, font, "PRESET");
     for (i, preset) in view.presets.iter().enumerate() {
         let on = view.active_preset == Some(i);
         rows.row(surf, font, &preset.name.to_uppercase(), dot(on), on, Some(Act::Preset(i)));
@@ -243,6 +277,7 @@ fn oracle(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View) {
     if view.active_preset.is_none() {
         rows.row(surf, font, "CUSTOM", &view.base, true, None);
     }
+    rows.ungroup();
     rows.stepper(surf, font, "MODEL", &view.model, Act::StepModel);
     rows.stepper(surf, font, "ASK MODEL", &view.ask_model, Act::StepAskModel);
     rows.stepper(surf, font, "REASONING", &word_or(&view.reasoning, "OFF"), Act::StepReasoning);
@@ -252,10 +287,12 @@ fn oracle(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View) {
 }
 
 fn input(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View, prefs: Preferences) {
+    rows.group(surf, font, "MODE");
     for (mode, label) in [(Mode::Stealth, "STEALTH"), (Mode::Guided, "GUIDED")] {
         let on = prefs.mode == mode;
         rows.row(surf, font, label, dot(on), on, Some(Act::SetMode(mode)));
     }
+    rows.ungroup();
     let idle = prefs.idle_send_ms != 0;
     rows.row(surf, font, "IDLE-SEND", on_off(idle), idle, Some(Act::ToggleIdle));
     if idle {
@@ -273,7 +310,15 @@ fn learn(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View, prefs
     rows.line(surf, font, "LEVEL AND SKILLS LIVE ON THE LEARN MENU");
 }
 
-fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &wifi::View) {
+/// One entry of the Wi-Fi list below RESCAN.
+enum WifiItem<'a> {
+    Group(String),
+    Saved(&'a wifi::Saved),
+    Seen(&'a wifi::Seen),
+    Note(&'static str),
+}
+
+fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &mut wifi::View) {
     rows.line(surf, font, &wifi_head(&w.status));
     if let Some(busy) = w.busy {
         rows.line(surf, font, &format!("{busy}…"));
@@ -281,22 +326,57 @@ fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &wifi::V
     if let Some(error) = &w.error {
         rows.line(surf, font, &error.to_uppercase());
     }
-    // RESCAN sits above the list so a long list of saved networks, which is
-    // cut at the notice line, can never push it off the page.
+    // RESCAN sits above the list so no amount of networks can push it off
+    // the page.
     rows.row(surf, font, "RESCAN", "", false, Some(Act::WifiRescan));
-    rows.line(surf, font, "SAVED");
-    for s in &w.saved {
-        let value = if s.current { "●" } else if s.disabled { "DISABLED" } else { "" };
-        rows.row(surf, font, &s.ssid.to_uppercase(), value, s.current, Some(Act::WifiSelect(s.id)));
+
+    // Saved and in-range rows are one list, paged from `offset`. When the
+    // rest does not fit, the last row that does becomes MORE; the last page
+    // ends in BACK TO TOP instead. The head of a group that starts a page
+    // is repeated so its members are never orphaned.
+    let mut items = vec![WifiItem::Group("SAVED".into())];
+    items.extend(w.saved.iter().map(WifiItem::Saved));
+    if !w.seen.is_empty() {
+        items.push(WifiItem::Group(format!("IN RANGE · {}", w.seen.len())));
+        items.extend(w.seen.iter().map(WifiItem::Seen));
+        items.push(WifiItem::Note("NEW NETWORKS ARE ADDED OVER SSH"));
     }
-    if w.seen.is_empty() {
-        return;
+    let offset = w.offset.min(items.len() - 1);
+    if offset > 0 && !matches!(items[offset], WifiItem::Group(_)) {
+        if let Some(head) = items[..offset].iter().rev().find_map(|i| match i {
+            WifiItem::Group(g) => Some(g.clone()),
+            _ => None,
+        }) {
+            rows.group(surf, font, &head);
+        }
     }
-    rows.line(surf, font, "IN RANGE");
-    for s in &w.seen {
-        rows.row(surf, font, &s.ssid.to_uppercase(), &signal(s.rssi), false, s.saved_id.map(Act::WifiSelect));
+    let rest = items.len() - offset;
+    let room = rows.remaining();
+    let fits = rest <= room;
+    let shown = if fits { rest } else { room.saturating_sub(1) };
+    for item in &items[offset..offset + shown] {
+        match item {
+            WifiItem::Group(g) => rows.group(surf, font, g),
+            WifiItem::Saved(s) => {
+                let value = if s.current { "●" } else if s.disabled { "DISABLED" } else { "" };
+                rows.row(surf, font, &s.ssid.to_uppercase(), value, s.current, Some(Act::WifiSelect(s.id)));
+            }
+            WifiItem::Seen(s) => {
+                rows.row(surf, font, &s.ssid.to_uppercase(), &signal(s.rssi), false, s.saved_id.map(Act::WifiSelect));
+            }
+            WifiItem::Note(n) => rows.line(surf, font, n),
+        }
     }
-    rows.line(surf, font, "NEW NETWORKS ARE ADDED OVER SSH");
+    rows.ungroup();
+    w.next_offset = if !fits {
+        rows.row(surf, font, "MORE", &format!("{} LEFT", rest - shown), false, Some(Act::WifiMore));
+        Some(offset + shown)
+    } else if offset > 0 {
+        rows.row(surf, font, "BACK TO TOP", "", false, Some(Act::WifiMore));
+        Some(0)
+    } else {
+        None
+    };
 }
 
 fn wifi_head(status: &wifi::Status) -> String {
@@ -377,7 +457,7 @@ mod tests {
             }
             for (act, b) in page.hits.regions() {
                 assert!(!b.is_empty(), "{s:?}: {act:?} painted off-screen");
-                assert!(b.y1 < NOTICE_Y as i32, "{s:?}: {act:?} crosses the notice line");
+                assert!(b.y1 < NOTICE_Y, "{s:?}: {act:?} crosses the notice line");
                 assert!(b.x1 < SCREEN_W as i32, "{s:?}: {act:?} runs off the right edge");
             }
         }
@@ -437,13 +517,53 @@ mod tests {
         };
         draw(&mut surf, &font, &mut page, &view, Preferences::default());
         for (act, b) in page.hits.regions() {
-            assert!(b.y1 < NOTICE_Y as i32, "{act:?} reaches the notice line");
+            assert!(b.y1 < NOTICE_Y, "{act:?} reaches the notice line");
         }
-        // Thirty saved rows do not fit; the list is cut where the notice
-        // line begins. RESCAN sits above the list, so it is always painted.
+        // Thirty saved rows do not fit; the page ends in MORE instead of
+        // running into the notice line. RESCAN sits above the list, so it
+        // is always painted.
         assert!(page.hits.region(Act::WifiRescan).is_some(), "RESCAN is reachable above a long list");
         assert!(page.hits.region(Act::WifiSelect(0)).is_some());
         assert!(page.hits.region(Act::WifiSelect(29)).is_none());
+        assert!(page.hits.region(Act::WifiMore).is_some(), "the rest is reachable through MORE");
+        assert!(page.wifi.next_offset.is_some_and(|n| n > 0));
+    }
+
+    #[test]
+    fn more_pages_through_the_in_range_list_and_the_last_page_returns_to_the_top() {
+        let mut bytes = canvas();
+        let mut surf = surface(&mut bytes);
+        let font = font();
+        let view = View::sample();
+        let mut page = page(Section::Wifi);
+        page.wifi = wifi::View {
+            saved: vec![wifi::Saved { id: 0, ssid: "home".into(), current: true, disabled: false }],
+            seen: (0..30)
+                .map(|i| wifi::Seen { ssid: format!("ap{i}"), rssi: -50 - i, saved_id: (i == 29).then_some(0) })
+                .collect(),
+            ..wifi::View::default()
+        };
+        draw(&mut surf, &font, &mut page, &view, Preferences::default());
+        assert!(page.hits.region(Act::WifiMore).is_some());
+        let mut pages = 1;
+        // Follow MORE to the end; every page stays above the notice line
+        // and the last one shows the final in-range row, the only one with
+        // a saved id, then offers BACK TO TOP.
+        while let Some(next) = page.wifi.next_offset.filter(|n| *n > page.wifi.offset) {
+            page.wifi.offset = next;
+            draw(&mut surf, &font, &mut page, &view, Preferences::default());
+            pages += 1;
+            for (act, b) in page.hits.regions() {
+                assert!(b.y1 < NOTICE_Y, "page {pages}: {act:?} reaches the notice line");
+            }
+            assert!(pages < 10, "thirty rows should page in a handful of screens");
+        }
+        assert!(pages > 1, "a long list needs more than one page");
+        assert!(page.hits.region(Act::WifiSelect(0)).is_some(), "the last row is on the last page");
+        assert_eq!(page.wifi.next_offset, Some(0), "the last page offers BACK TO TOP");
+        page.wifi.offset = 0;
+        draw(&mut surf, &font, &mut page, &view, Preferences::default());
+        assert!(page.wifi.next_offset.is_some_and(|n| n > 0), "back at the top, MORE leads on again");
     }
 
     #[test]

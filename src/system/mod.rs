@@ -67,6 +67,8 @@ pub enum Act {
     StepDwell(i8),
     WifiSelect(u32),
     WifiRescan,
+    /// The next page of the Wi-Fi list, or back to its top from the last.
+    WifiMore,
     Sleep,
     Leave,
     Reboot,

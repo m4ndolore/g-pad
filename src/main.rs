@@ -924,8 +924,8 @@ fn run() -> std::io::Result<()> {
                 changed = true;
                 match ev {
                     system::wifi::Event::Status(s) => page.wifi.status = s,
-                    system::wifi::Event::Saved(v) => { page.wifi.saved = v; page.wifi.busy = None; }
-                    system::wifi::Event::Seen(v) => { page.wifi.seen = v; page.wifi.busy = None; }
+                    system::wifi::Event::Saved(v) => { page.wifi.saved = v; page.wifi.offset = 0; page.wifi.busy = None; }
+                    system::wifi::Event::Seen(v) => { page.wifi.seen = v; page.wifi.offset = 0; page.wifi.busy = None; }
                     system::wifi::Event::Failed(e) => { page.wifi.error = Some(e); page.wifi.busy = None; }
                 }
             }
@@ -2469,6 +2469,11 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
         Act::WifiRescan => {
             if page.wifi.begin("SCANNING") {
                 system::wifi::spawn(Cmd::Scan, page.wifi_tx.clone());
+            }
+        }
+        Act::WifiMore => {
+            if let Some(next) = page.wifi.next_offset {
+                page.wifi.offset = next;
             }
         }
         Act::Sleep => {
