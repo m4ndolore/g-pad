@@ -132,6 +132,13 @@ in Stealth, SETTINGS on the control strip in Guided) handles:
 - battery, storage, clock, OS version, running build, hub reachability
   (read-only facts)
 
+After REBOOT or POWER OFF (and the next power-on) the pad comes back by
+itself: the boot-persistent `g-pad-takeover.service` from
+`scripts/install-boot-rm2.sh` starts it in place of the stock UI. What does
+not come back is AppLoad — xovi is not loaded at boot. That only matters if
+you LEAVE TO STOCK UI and want the AppLoad entries; then
+`ssh rm2 /home/root/xovi/start`.
+
 Still over ssh:
 
 - a new API key: `RIDDLE_OPENAI_KEY` in `oracle.env`. The page shows SET or

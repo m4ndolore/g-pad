@@ -349,6 +349,8 @@ fn main() {
 }
 
 fn oracle_test(png: &str) -> i32 {
+    // Replay the pad's overrides so the check matches the running config.
+    let _ = overrides::Overrides::load();
     let store = memory::MemoryStore::open();
     let o = match oracle::Oracle::spawn(store.is_some()) {
         Ok(o) => o,
@@ -534,6 +536,8 @@ fn learn_sheets(dir: &str) -> i32 {
 /// `answer` (default: the correct one) into the blank in the reply hand, send
 /// the answer region with the tutor instruction, print verdict + feedback.
 fn learn_test(answer: Option<&str>) -> i32 {
+    // Replay the pad's overrides so the check matches the running config.
+    let _ = overrides::Overrides::load();
     let Ok(ui_font) = FontRef::try_from_slice(ui::UI_FONT_TTF) else {
         eprintln!("g-pad: bundled UI font unreadable");
         return 1;
@@ -950,7 +954,8 @@ fn run() -> std::io::Result<()> {
                             }
                             controls_until = Some(Instant::now() + Duration::from_secs(12));
                         } else {
-                            open_system(&mut state, &mut surf, &disp, &ui_font, prefs, &presets, &overrides);
+                            open_system(&mut state, &mut surf, &disp, &ui_font, prefs,
+                                &system_view(&presets, &overrides), &mut learn_auto_at);
                         }
                     }
                 }
@@ -1053,7 +1058,8 @@ fn run() -> std::io::Result<()> {
                         disp.update(0, 0, SCREEN_W as i32, 82, false);
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
                             &mut user_ink, &mut notebook, &mut send_mode, &mut sleep_requested,
-                            prefs, drawer_selection, drawer_scroll, &mut learn_session, &presets, &overrides);
+                            prefs, drawer_selection, drawer_scroll, &mut learn_session, &presets, &overrides,
+                            &mut learn_auto_at);
                         // A control action closes the praise moment: a NEW
                         // PAGE from the strip must not be followed by a stale
                         // auto-deal or tap-deal on the fresh page.
@@ -1234,6 +1240,15 @@ fn run() -> std::io::Result<()> {
                 }
                 p.drain_pressed();
                 power_grace = Instant::now() + Duration::from_secs(3);
+                // The radio was healed above; a WI-FI section left open
+                // through the sleep shows the connection as it is now.
+                if let State::System { page, .. } = &mut state {
+                    if page.section == system::Section::Wifi && page.wifi.begin("READING") {
+                        system::wifi::spawn(system::wifi::Cmd::Refresh, page.wifi_tx.clone());
+                        system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides), prefs);
+                        disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+                    }
+                }
             }
         }
 
@@ -2244,13 +2259,15 @@ fn open_drawer(state: &mut State, surf: &mut Surface, disp: &display::Display,
 }
 
 /// Open the SYSTEM page over whatever is on the canvas; the canvas comes
-/// back on close.
+/// back on close. A Learn auto-deal pending under it is cancelled, as the
+/// control strip does: the page must not be torn away by a timer.
 fn open_system(state: &mut State, surf: &mut Surface, disp: &display::Display, ui_font: &FontRef,
-    prefs: preferences::Preferences, presets: &[presets::Preset], overrides: &overrides::Overrides) {
+    prefs: preferences::Preferences, view: &system::draw::View, learn_auto_at: &mut Option<Instant>) {
+    *learn_auto_at = None;
     let old = std::mem::replace(state, State::Listening { last_pen: None });
     let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
     let mut page = Box::new(system::Page::default());
-    system::draw::draw(surf, ui_font, &mut page, &system_view(presets, overrides), prefs);
+    system::draw::draw(surf, ui_font, &mut page, view, prefs);
     disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
     *state = State::System { page, saved, return_to: Box::new(old) };
 }
@@ -2267,7 +2284,7 @@ fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides) ->
         ask_model: env("RIDDLE_OPENAI_ASK_MODEL"),
         reasoning: env("RIDDLE_OPENAI_REASONING"),
         max_tokens: env_u32("RIDDLE_OPENAI_MAX_TOKENS", 2000),
-        key_set: std::env::var("RIDDLE_OPENAI_KEY").is_ok(),
+        key_set: std::env::var("RIDDLE_OPENAI_KEY").is_ok_and(|k| !k.is_empty()),
         overrides_count: overrides.len(),
         palm_ms: env_u64("RIDDLE_PALM_MS", 500),
         tutor_model: env("RIDDLE_LEARN_MODEL"),
@@ -2278,13 +2295,14 @@ fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides) ->
 
 /// Step a model name through the active preset's `models` list, clamping at
 /// the ends; a name not in the list starts from the first entry. A CUSTOM
-/// base has no list, so the value is left alone.
-fn step_in_preset(key: &str, dir: i8, presets: &[presets::Preset], overrides: &mut overrides::Overrides) {
+/// base has no list, so the value is left alone and the notice says so.
+fn step_in_preset(key: &str, dir: i8, presets: &[presets::Preset], overrides: &mut overrides::Overrides)
+    -> Result<(), &'static str> {
     let base = std::env::var("RIDDLE_OPENAI_BASE").ok();
     let Some(preset) = presets::active(presets, base.as_deref()).and_then(|i| presets.get(i)) else {
-        return;
+        return Err("CUSTOM BASE: NO MODEL LIST");
     };
-    let Some(first) = preset.models.first() else { return };
+    let Some(first) = preset.models.first() else { return Err("PRESET HAS NO MODEL LIST") };
     let current = std::env::var(key).unwrap_or_default();
     let next = match preset.models.iter().position(|m| *m == current) {
         Some(i) => {
@@ -2294,6 +2312,7 @@ fn step_in_preset(key: &str, dir: i8, presets: &[presets::Preset], overrides: &m
         None => first,
     };
     overrides.set(key, next);
+    Ok(())
 }
 
 /// What the pad loop does after a tap on the SYSTEM page.
@@ -2320,11 +2339,20 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
     use system::{step, Act, Outcome, Section, DWELL_MS, IDLE_MS, MAX_TOKENS, PALM_MS, REASONING};
 
     let State::System { page, .. } = state else { return After::Stay };
-    let Some(act) = page.hits.at(x, y) else { return After::Stay };
+    let act = page.hits.at(x, y);
     let now = Instant::now();
-    if page.arm.armed().is_some() && !act.is_destructive() {
+    // Any tap that is not on a destructive row disarms — blank space too.
+    let disarmed = page.arm.armed().is_some() && !act.is_some_and(Act::is_destructive);
+    if disarmed {
         page.arm.clear();
     }
+    let Some(act) = act else {
+        if disarmed {
+            system::draw::draw(surf, ui_font, page, &system_view(presets, overrides), *prefs);
+            disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+        }
+        return After::Stay;
+    };
     let mut reopen_oracle = false;
     let mut reread = false;
     page.notice = None;
@@ -2361,11 +2389,15 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
                 reopen_oracle = true;
             }
         }
-        Act::StepModel(d) => {
-            step_in_preset("RIDDLE_OPENAI_MODEL", d, presets, overrides);
-            reopen_oracle = true;
+        Act::StepModel(d) => match step_in_preset("RIDDLE_OPENAI_MODEL", d, presets, overrides) {
+            Ok(()) => reopen_oracle = true,
+            Err(why) => page.notice = Some(why.into()),
+        },
+        Act::StepAskModel(d) => {
+            if let Err(why) = step_in_preset("RIDDLE_OPENAI_ASK_MODEL", d, presets, overrides) {
+                page.notice = Some(why.into());
+            }
         }
-        Act::StepAskModel(d) => step_in_preset("RIDDLE_OPENAI_ASK_MODEL", d, presets, overrides),
         Act::StepReasoning(d) => {
             let current = std::env::var("RIDDLE_OPENAI_REASONING").unwrap_or_default();
             overrides.set("RIDDLE_OPENAI_REASONING", step(&REASONING, current.as_str(), d));
@@ -2410,10 +2442,10 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
             *state = State::Listening { last_pen: None };
             return After::Closed;
         }
-        Act::StepTutorModel(d) => {
-            step_in_preset("RIDDLE_LEARN_MODEL", d, presets, overrides);
-            reread = true;
-        }
+        Act::StepTutorModel(d) => match step_in_preset("RIDDLE_LEARN_MODEL", d, presets, overrides) {
+            Ok(()) => reread = true,
+            Err(why) => page.notice = Some(why.into()),
+        },
         Act::StepDwell(d) => {
             let next = step(&DWELL_MS, env_u64("RIDDLE_LEARN_NEXT_MS", 5000), d);
             overrides.set("RIDDLE_LEARN_NEXT_MS", &next.to_string());
@@ -2924,7 +2956,8 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
     ui_font: &FontRef, store: &Option<memory::MemoryStore>, user_ink: &mut ink::Ink,
     notebook: &mut notebook::Notebook, send_mode: &mut Option<CommitMode>, sleep_requested: &mut bool,
     prefs: preferences::Preferences, selection: Option<usize>, scroll: i32,
-    learn: &mut Option<learn::Session>, presets: &[presets::Preset], overrides: &overrides::Overrides) {
+    learn: &mut Option<learn::Session>, presets: &[presets::Preset], overrides: &overrides::Overrides,
+    learn_auto_at: &mut Option<Instant>) {
     // Learn mode repurposes the strip: committing is the DONE box, so SEND and
     // DISMISS do nothing; ERASE re-deals the same sheet clean; NEW PAGE deals
     // a fresh problem. Everything else behaves as on the pad.
@@ -2987,7 +3020,7 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
         }
         ui::Action::Settings => {
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
-                open_system(state, surf, disp, ui_font, prefs, presets, overrides);
+                open_system(state, surf, disp, ui_font, prefs, &system_view(presets, overrides), learn_auto_at);
             }
         }
         ui::Action::Sleep => *sleep_requested = true,

@@ -25,8 +25,7 @@ impl Overrides {
         o
     }
 
-    // Exercised by tests; the page uses set/reset.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn get(&self, key: &str) -> Option<&str> {
         self.pairs.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
@@ -47,8 +46,7 @@ impl Overrides {
     }
 
     /// Drop one override and restore what the environment had.
-    // Exercised by tests; the page uses set/reset.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn unset(&mut self, key: &str) {
         self.pairs.retain(|(k, _)| k != key);
         self.restore(key);

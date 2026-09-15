@@ -51,8 +51,7 @@ LEVEL and the skills picker stay on the Learn menu; that page is the
 configuration surface for Learn (`2026-08-31-learn-config-scoring-design.md`).
 One owner per setting.
 
-Close: corner ×, leftward swipe, or the page's DONE box. Five-finger hold
-still exits everywhere.
+Close: corner × or leftward swipe. Five-finger hold still exits everywhere.
 
 **Hit map is a returned value of drawing.** Each `draw_system_*` returns the
 regions it painted (the `learn::sheet::HitMap` pattern), so tap targets
@@ -108,14 +107,16 @@ for the MODEL stepper. `RIDDLE_OPENAI_KEY` is never written by the page.
   `build-takeover-zig.sh`).
 - HUB reads the bridge poller's last-success instant; no new network call.
 - REBOOT / POWER OFF shell to `systemctl reboot` / `systemctl poweroff`.
+- A wake from sleep with WI-FI showing re-reads the status after the
+  resume's `wifi_heal`, so the row shows the connection as it is now.
 
 ## Error handling
 
 The page never goes blank. Unparsable override lines are skipped and logged.
-If the oracle fails to re-spawn, the old client stays and ORACLE's status line
-shows the error until the next successful change. A wpa_cli failure prints
-its first line in the WI-FI status row. A failed systemctl disarms the row
-and shows the error.
+If the oracle fails to re-spawn, the old client stays and the notice line
+shows the error until the next tap. A wpa_cli failure prints its first line
+in the WI-FI status row. A failed systemctl disarms the row and shows the
+error.
 
 ## Tests
 
@@ -148,6 +149,8 @@ checked on the host only):
   on the next tap or draw.
 - Whether stepper taps feel laggy with the full-page non-flashing partial
   update.
+- Reboot and power off from under the takeover: the pad must come back on
+  its own through `g-pad-takeover.service`, with the stock UI never shown.
 
 ## Known limitations
 
@@ -164,3 +167,7 @@ checked on the host only):
 - The control strip's SLEEP row and the page's SLEEP row do nothing on the
   qtfb (non-takeover) build: `sleep_requested` is only read where the power
   device exists.
+- After REBOOT or POWER OFF the pad returns by itself through the
+  boot-persistent `g-pad-takeover.service` (`scripts/install-boot-rm2.sh`),
+  but AppLoad does not: xovi is not loaded at boot. Only LEAVE TO STOCK UI
+  followed by wanting the AppLoad entries needs `ssh … /home/root/xovi/start`.
