@@ -1201,8 +1201,9 @@ If the font lacks `●`, `▮`, `−`, substitute `*`, `|`, `-` — check by ren
 
 [This task's text was amended in place during Task 6. As built: the Wi-Fi
 channel lives on `Page` (`wifi_tx`/`wifi_rx`), not in `main`; `State::System`
-holds `saved: Vec<u8>`, not `Option<Vec<u8>>`; `env_u32` already existed in
-`main.rs`; the page is `Page::default()`.]
+holds `saved: Vec<u8>`, not `Option<Vec<u8>>`; `env_u32` was added beside
+`env_u64` in f8d07ed, the review follow-up to this task; the page is
+`Page::default()`.]
 
 **Files:**
 - Modify: `src/main.rs` — the sites below

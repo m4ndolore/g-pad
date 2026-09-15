@@ -135,16 +135,17 @@ Still open after the build (the tablet stayed asleep; everything below is
 checked on the host only):
 
 - `wpa_cli` vs `connmanctl` on OS 3.27.3.
-- The battery sysfs path (`device::battery` takes the first
-  `/sys/class/power_supply/*` with a `capacity`).
+- The battery sysfs path (`device::battery_from` takes the first
+  `/sys/class/power_supply/*` whose `type` reads `Battery`; a battery with no
+  readable `capacity` shows `?`).
 - Scan latency against the 4 s settle, and whether a join reaches COMPLETED
   inside the 10 s bound.
 - Selecting a weaker saved network while a stronger one is joined: does the
   supplicant stay put after `enable_network all`.
 - Close the page mid-scan, then reopen: the new page owns a fresh channel and
   the old worker's result must be dropped, not painted.
-- Arm REBOOT and let it lapse (more than 5 s): the row must un-invert on the
-  next tap or draw.
+- Arm REBOOT and let it lapse (more than 5 s): the row must return to plain
+  on the next tap or draw.
 - Whether stepper taps feel laggy with the full-page non-flashing partial
   update.
 

@@ -14,6 +14,8 @@
 #            rustup target add armv7-unknown-linux-gnueabihf
 #            quill/build/<target>/libquill.so       (prebuilt)
 #            quill/vendor/<target>/libqsgepaper.so  (pulled from your device)
+#   Type-check the takeover features without linking:
+#            cargo-zigbuild check --target armv7-unknown-linux-gnueabihf --features takeover,rm2
 set -euo pipefail
 cd "$(dirname "$0")"
 
