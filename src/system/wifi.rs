@@ -260,16 +260,18 @@ mod tests {
     #[test]
     fn same_ssid_on_two_bands_keeps_the_strongest() {
         // A dual-band router answers once per BSSID; the list shows it once.
-        // The bands interleave so a consecutive-only dedup would keep both.
+        // Sorted by signal the rows read S -49, C -55, S -58, C -70: the
+        // duplicates are not neighbours, so a consecutive-only dedup would
+        // keep all four. Only a seen-set filter passes this.
         let text = "bssid / frequency / signal level / flags / ssid\n\
             aa:aa:aa:aa:aa:aa\t2437\t-58\t[WPA2-PSK-CCMP][ESS]\tspaceship-321\n\
-            dd:dd:dd:dd:dd:dd\t2462\t-66\t[WPA2-PSK-CCMP][ESS]\tcafe\n\
+            dd:dd:dd:dd:dd:dd\t2462\t-55\t[WPA2-PSK-CCMP][ESS]\tcafe\n\
             bb:bb:bb:bb:bb:bb\t5180\t-49\t[WPA2-PSK-CCMP][ESS]\tspaceship-321\n\
             ee:ee:ee:ee:ee:ee\t5240\t-70\t[WPA2-PSK-CCMP][ESS]\tcafe\n";
         let seen = parse_scan_results(text, &[]);
         assert_eq!(seen, vec![
             Seen { ssid: "spaceship-321".into(), rssi: -49, saved_id: None },
-            Seen { ssid: "cafe".into(), rssi: -66, saved_id: None },
+            Seen { ssid: "cafe".into(), rssi: -55, saved_id: None },
         ]);
     }
 
