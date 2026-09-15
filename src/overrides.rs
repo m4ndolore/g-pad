@@ -69,19 +69,27 @@ impl Overrides {
         self.pairs.push((key.to_string(), value.to_string()));
     }
 
+    /// A key that was never overridden has nothing to restore: leave the
+    /// live value alone rather than strip it from the process.
     fn restore(&mut self, key: &str) {
-        match self.original.remove(key).flatten() {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
+        if let Some(orig) = self.original.remove(key) {
+            match orig {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
         }
     }
 
+    /// Written to a sibling `.tmp` and renamed into place, so power loss
+    /// mid-write leaves the previous file intact instead of a torn one.
     fn save(&self) {
         let p = path();
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Err(e) = std::fs::write(&p, serialize(&self.pairs)) {
+        let tmp = p.with_extension("tmp");
+        let written = std::fs::write(&tmp, serialize(&self.pairs)).and_then(|_| std::fs::rename(&tmp, &p));
+        if let Err(e) = written {
             eprintln!("g-pad: overrides not saved: {e}");
         }
     }
@@ -150,6 +158,7 @@ mod tests {
         assert_eq!(std::env::var("RIDDLE_TEST_KEY").unwrap(), "from-page");
         assert_eq!(parse(&std::fs::read_to_string(dir.join("overrides")).unwrap()),
             vec![("RIDDLE_TEST_KEY".to_string(), "from-page".to_string())]);
+        assert!(!dir.join("overrides.tmp").exists());
         o.reset();
         assert_eq!(std::env::var("RIDDLE_TEST_KEY").unwrap(), "from-env");
         assert!(!dir.join("overrides").exists());
@@ -169,6 +178,38 @@ mod tests {
         assert!(std::env::var("RIDDLE_UNSET_KEY").is_err());
         assert!(o.get("RIDDLE_UNSET_KEY").is_none());
         let _ = std::fs::remove_dir_all(dir);
+        std::env::remove_var("RIDDLE_DATA_DIR");
+    }
+
+    #[test]
+    fn load_replays_the_file_over_the_environment_and_unset_puts_it_back() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("gpad-ovr-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("overrides"), "RIDDLE_TEST_LOAD=from-file\n").unwrap();
+        std::env::set_var("RIDDLE_DATA_DIR", &dir);
+        std::env::set_var("RIDDLE_TEST_LOAD", "from-env");
+        let mut o = Overrides::load();
+        assert_eq!(std::env::var("RIDDLE_TEST_LOAD").unwrap(), "from-file");
+        assert_eq!(o.get("RIDDLE_TEST_LOAD"), Some("from-file"));
+        o.unset("RIDDLE_TEST_LOAD");
+        assert_eq!(std::env::var("RIDDLE_TEST_LOAD").unwrap(), "from-env");
+        let _ = std::fs::remove_dir_all(dir);
+        std::env::remove_var("RIDDLE_TEST_LOAD");
+        std::env::remove_var("RIDDLE_DATA_DIR");
+    }
+
+    #[test]
+    fn unset_of_a_key_never_overridden_leaves_the_environment_alone() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("gpad-ovr-never-{}", std::process::id()));
+        std::env::set_var("RIDDLE_DATA_DIR", &dir);
+        std::env::set_var("RIDDLE_NEVER_SET_KEY", "from-env");
+        let mut o = Overrides::load();
+        o.unset("RIDDLE_NEVER_SET_KEY");
+        assert_eq!(std::env::var("RIDDLE_NEVER_SET_KEY").unwrap(), "from-env");
+        let _ = std::fs::remove_dir_all(dir);
+        std::env::remove_var("RIDDLE_NEVER_SET_KEY");
         std::env::remove_var("RIDDLE_DATA_DIR");
     }
 }
