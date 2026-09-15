@@ -38,6 +38,7 @@ mod qtfb;
 mod rm2fb;
 mod script;
 mod surface;
+mod system;
 mod touch;
 mod ui;
 mod vault;
