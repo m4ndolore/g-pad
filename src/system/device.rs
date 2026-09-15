@@ -20,7 +20,7 @@ pub fn gather() -> Facts {
     Facts {
         battery: battery(),
         storage: storage(),
-        clock: clock_hhmm(unix_now(), tz_offset()),
+        clock: clock_hhmm(unix_now(), tz_offset_secs()),
         os: os_line(&std::fs::read_to_string("/etc/os-release").unwrap_or_default()),
         build: crate::BUILD.to_string(),
         hub: hub_line(crate::bridge::last_ok_age()),
@@ -62,8 +62,8 @@ pub fn battery_from(entries: &[(&str, &str, &str)]) -> String {
 }
 
 /// Free and total space on /home, where notes and the vault live. The
-/// statvfs fields are u32 on the armv7 target and u64 on the host; the
-/// casts widen on one and are no-ops on the other.
+/// statvfs fields differ in width by target; the casts widen them where
+/// they are narrower.
 fn storage() -> String {
     let Ok(path) = std::ffi::CString::new("/home") else {
         return "STORAGE: UNKNOWN".into();
@@ -102,21 +102,24 @@ pub fn os_line(os_release: &str) -> String {
         .map_or_else(|| "OS: UNKNOWN".into(), |v| format!("OS: {v}"))
 }
 
+/// time_t is i32 on the tablet's 32-bit glibc; widen it either way.
 fn unix_now() -> i64 {
-    unsafe { libc::time(std::ptr::null_mut()) }
+    unsafe { libc::time(std::ptr::null_mut()) as i64 }
 }
 
-/// RIDDLE_TZ_OFFSET in hours from UTC, the same knob the diary uses.
-fn tz_offset() -> i64 {
+/// RIDDLE_TZ_OFFSET in hours from UTC, carried as seconds so a half-hour
+/// zone keeps its half — the same reading the diary makes of the knob.
+fn tz_offset_secs() -> i64 {
     std::env::var("RIDDLE_TZ_OFFSET")
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
-        .map_or(0, |h| h as i64)
+        .map_or(0, |h| (h * 3600.0) as i64)
 }
 
-/// Wall-clock HH:MM for a unix time shifted by whole hours; wraps at midnight.
-pub fn clock_hhmm(unix: i64, offset_h: i64) -> String {
-    let local = (unix + offset_h * 3600).rem_euclid(86_400);
+/// Wall-clock HH:MM for a unix time shifted by an offset in seconds; wraps
+/// at midnight in both directions.
+pub fn clock_hhmm(unix: i64, offset_s: i64) -> String {
+    let local = (unix + offset_s).rem_euclid(86_400);
     format!("{:02}:{:02}", local / 3600, (local % 3600) / 60)
 }
 
@@ -139,14 +142,17 @@ mod tests {
     #[test]
     fn the_clock_applies_the_offset_and_wraps() {
         assert_eq!(clock_hhmm(0, 0), "00:00");
-        assert_eq!(clock_hhmm(3600 * 23 + 60 * 5, -4), "19:05");
-        assert_eq!(clock_hhmm(60 * 30, -1), "23:30");
+        assert_eq!(clock_hhmm(3600 * 23 + 60 * 5, -4 * 3600), "19:05");
+        assert_eq!(clock_hhmm(60 * 30, -3600), "23:30");
+        assert_eq!(clock_hhmm(0, 19_800), "05:30"); // a half-hour zone keeps its half
     }
 
     #[test]
     fn bytes_read_in_the_nearest_unit() {
         assert_eq!(human(900), "900 B");
+        assert_eq!(human(1_000_000), "1.0 MB");
         assert_eq!(human(1_500_000), "1.5 MB");
+        assert_eq!(human(1_000_000_000), "1.0 GB");
         assert_eq!(human(2_147_483_648), "2.1 GB");
     }
 
