@@ -119,6 +119,49 @@ ssh rm2 'cd /home/root/xovi/exthome/appload/g-pad && \
   set -a && . ./oracle.env && set +a && ./g-pad --oracle-test icon.png'
 ```
 
+## In-app SYSTEM page
+
+Routine changes no longer need ssh. The SYSTEM page (top or bottom edge swipe
+in Stealth, SETTINGS on the control strip in Guided) handles:
+
+- oracle preset, model, ask model, reasoning effort, max tokens
+- palm holdoff; idle-send and its delay
+- tutor model and next-page dwell for Learn
+- Wi-Fi status, rescan, and joining a saved network
+- sleep, reboot, power off, leave to stock UI
+- battery, storage, clock, OS version, running build, hub reachability
+  (read-only facts)
+
+After REBOOT or POWER OFF (and the next power-on) the pad comes back by
+itself: the boot-persistent `g-pad-takeover.service` from
+`scripts/install-boot-rm2.sh` starts it in place of the stock UI. What does
+not come back is AppLoad — xovi is not loaded at boot. That only matters if
+you LEAVE TO STOCK UI and want the AppLoad entries; then
+`ssh rm2 /home/root/xovi/start`.
+
+Still over ssh:
+
+- a new API key: `RIDDLE_OPENAI_KEY` in `oracle.env`. The page shows SET or
+  MISSING and never writes the key.
+- a new Wi-Fi network and its password. The page selects among networks the
+  tablet already knows; an unsaved network in the scan list is inert.
+- new presets: edit `settings.schema.json` beside the binary. It is read at
+  start, so a new preset appears after the next stop → settle → start; no
+  rebuild.
+
+Page changes are written to `/home/root/g-pad-data/overrides` and beat
+`oracle.env` until removed. The file lives under `g-pad-data`, not the app
+folder, so a rebuild or redeploy keeps it. RESET OVERRIDES on the page removes
+every override and re-spawns the oracle from `oracle.env` at once; the ssh
+equivalent is
+
+```sh
+ssh rm2 rm -f /home/root/g-pad-data/overrides
+```
+
+which takes effect at the next start, since a running pad already holds the
+overridden values in its environment.
+
 ## Manual path (what the installer does, step by step)
 
 If you prefer to run each step yourself:

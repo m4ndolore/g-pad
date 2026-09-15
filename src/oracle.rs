@@ -502,7 +502,9 @@ impl HttpOracle {
         // Sent as "reasoning_effort" only when set: reasoning models accept it
         // ("low" ≈ faster first ink), but some providers reject the field on
         // non-reasoning models, so it must stay out of the default request.
-        let reasoning = std::env::var("RIDDLE_OPENAI_REASONING").ok();
+        // Empty means OFF — the SYSTEM page's stepper and the Vellum preset
+        // both write "" — and some providers reject `"reasoning_effort": ""`.
+        let reasoning = std::env::var("RIDDLE_OPENAI_REASONING").ok().filter(|s| !s.is_empty());
         eprintln!(
             "g-pad: http oracle base={base} model={model} max_tokens={max_tokens} reasoning={}",
             reasoning.as_deref().unwrap_or("-")
@@ -1012,5 +1014,20 @@ mod tests {
         let q = json_quote("a\tb\r\nc\u{0007}d");
         assert_eq!(q, "\"a\\tb\\r\\nc\\u0007d\"");
         assert!(!q.chars().any(|c| (c as u32) < 0x20));
+    }
+
+    #[test]
+    fn an_empty_reasoning_setting_is_off_not_an_empty_field() {
+        // The SYSTEM page's OFF stepper value and the Vellum preset both
+        // write ""; no other test reads these keys, so no lock is needed.
+        std::env::set_var("RIDDLE_OPENAI_KEY", "test-key");
+        std::env::set_var("RIDDLE_OPENAI_REASONING", "");
+        let off = HttpOracle::new(false).unwrap();
+        std::env::set_var("RIDDLE_OPENAI_REASONING", "low");
+        let low = HttpOracle::new(false).unwrap();
+        std::env::remove_var("RIDDLE_OPENAI_REASONING");
+        std::env::remove_var("RIDDLE_OPENAI_KEY");
+        assert_eq!(off.reasoning, None);
+        assert_eq!(low.reasoning.as_deref(), Some("low"));
     }
 }
