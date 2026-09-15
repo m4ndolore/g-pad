@@ -167,7 +167,7 @@ impl Rows<'_> {
         if !self.room() {
             return;
         }
-        self.text(surf, font, label, PAD as i32, BLACK, VALUE_X);
+        self.text(surf, font, label, PAD as i32, BLACK, VALUE_X - PAD as i32);
         self.text(surf, font, value, VALUE_X, if active { BLUE } else { BLACK }, SCREEN_W as i32);
         if let Some(act) = act {
             self.hits.push(act, 0, self.y, SCREEN_W as i32, ROW_H);
@@ -180,7 +180,7 @@ impl Rows<'_> {
         if !self.room() {
             return;
         }
-        self.text(surf, font, label, PAD as i32, BLACK, VALUE_X);
+        self.text(surf, font, label, PAD as i32, BLACK, VALUE_X - PAD as i32);
         self.text(surf, font, value, VALUE_X, BLACK, STEP_X - PAD as i32);
         for (dx, dir, glyph) in [(0, -1, "−"), (STEP_GAP, 1, "+")] {
             let x = STEP_X + dx;
@@ -381,6 +381,20 @@ mod tests {
                 assert!(b.x1 < SCREEN_W as i32, "{s:?}: {act:?} runs off the right edge");
             }
         }
+    }
+
+    #[test]
+    fn a_custom_base_still_leaves_room_for_the_last_oracle_rows() {
+        let mut bytes = canvas();
+        let mut surf = surface(&mut bytes);
+        let font = font();
+        let view = View { active_preset: None, ..View::sample() };
+        let mut page = page(Section::Oracle);
+        draw(&mut surf, &font, &mut page, &view, Preferences::default());
+        // The CUSTOM row adds one to the four presets; the twelve-row budget
+        // still holds the steppers and RESET OVERRIDES at the foot.
+        assert!(page.hits.region(Act::StepMaxTokens(1)).is_some());
+        assert!(page.hits.region(Act::ResetOverrides).is_some());
     }
 
     #[test]
