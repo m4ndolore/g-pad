@@ -49,6 +49,11 @@ println!("cargo:rerun-if-changed=.git/HEAD");
 println!("cargo:rerun-if-changed=.git/refs/heads");
 ```
 
+[As built: the two literal `.git/…` rerun lines were replaced by
+`git rev-parse --git-path` resolution of HEAD, refs/heads and packed-refs,
+watching only paths that exist. In a worktree `.git` is a file, so the
+literal paths never matched.]
+
 In `src/main.rs` after the `mod` declarations (line ~42):
 
 ```rust
@@ -283,6 +288,8 @@ let mut overrides = overrides::Overrides::load();
 **Files:**
 - Modify: `settings.schema.json` (add Vellum preset first; add `"models": [...]` to every preset)
 - Modify: `src/bridge.rs` (`split_objects` and `json_field` become `pub(crate)`)
+  [As built: the helpers live in `src/brief.rs` and were already `pub(crate)`;
+  `bridge.rs` was untouched by this task.]
 - Create: `src/presets.rs`
 - Modify: `src/main.rs:41` (`mod presets;`)
 
@@ -421,6 +428,9 @@ If `split_objects`'s signature differs from `(json: &str, key: &str) -> Vec<Stri
 ---
 
 ### Task 5: SYSTEM page model — sections, actions, steppers, arm-then-confirm, hit map
+
+[As built: the page is constructed with `Page::default()`, not `Page::new()`;
+the same applies where Tasks 8 and 9 write `Page::new()`.]
 
 **Files:**
 - Create: `src/system/mod.rs`
@@ -618,6 +628,10 @@ Create empty stubs so it compiles: `src/system/device.rs` (empty file with a `//
 
 ### Task 6: Wi-Fi — wpa_cli parsers and the worker
 
+[As built: `View::begin` (the page claims the worker once until it reports)
+lives in this file, and Step 4 expects 8 tests, not 4. Task 9's text below
+was amended in place during this task to match.]
+
 **Files:**
 - Modify: `src/system/wifi.rs`
 
@@ -800,7 +814,7 @@ pub fn bars(rssi: i32) -> u8 {
 }
 ```
 
-**Step 4: Run** `cargo test --quiet wifi` — Expected: 4 PASS.
+**Step 4: Run** `cargo test --quiet wifi` — Expected: 8 PASS.
 
 **Step 5: Commit** — `git add src/system/wifi.rs && git commit -m "feat: the pad reads and drives wpa_cli off the draw loop"`
 
@@ -889,6 +903,8 @@ fn storage() -> String {
 
 pub fn human(bytes: u64) -> String {
     const GB: f64 = 1_073_741_824.0; const MB: f64 = 1_048_576.0;
+    // [As built: units are decimal, GB = 1_000_000_000 and MB = 1_000_000.
+    // The tests above were right; these constants were wrong.]
     let b = bytes as f64;
     if b >= GB { format!("{:.1} GB", b / GB) } else if b >= MB { format!("{:.1} MB", b / MB) } else { format!("{bytes} B") }
 }
@@ -924,6 +940,11 @@ pub fn hub_line(age: Option<Duration>) -> String {
 ---
 
 ### Task 8: Drawing the page
+
+[As built: `Rows::room()` bounds every row to `NOTICE_Y`, so a long list is
+cut at the notice line; RESCAN precedes the saved list for that reason; the
+ORACLE section has a CUSTOM row showing the base when no preset matches; the
+page is `Page::default()`.]
 
 **Files:**
 - Modify: `src/ui.rs:14-19` (`PAD`, `LABEL_PX`, `TITLE_PX`, `BLUE` become `pub(crate)`; `full_text` and `render_text` become `pub(crate) fn`)
@@ -1178,6 +1199,11 @@ If the font lacks `●`, `▮`, `−`, substitute `*`, `|`, `-` — check by ren
 
 ### Task 9: Wire the page into the pad loop (replaces Settings)
 
+[This task's text was amended in place during Task 6. As built: the Wi-Fi
+channel lives on `Page` (`wifi_tx`/`wifi_rx`), not in `main`; `State::System`
+holds `saved: Vec<u8>`, not `Option<Vec<u8>>`; `env_u32` already existed in
+`main.rs`; the page is `Page::default()`.]
+
 **Files:**
 - Modify: `src/main.rs` — the sites below
 - Modify: `src/ui.rs` — delete `draw_settings` (946-977) and `settings_action` (979-993); delete `Action::SetMode/ToggleIdle/ToggleLearn/Quit` only if nothing else uses them after this task (`grep -n` first; `apply_control` at 2764-2767 still matches them — keep the variants, delete the two functions).
@@ -1344,6 +1370,10 @@ This is the one task without a new unit test: the loop is exercised by the exist
 ---
 
 ### Task 11: Cross-build, deploy, verify on hardware
+
+[Build check gates: `cargo zigbuild --target armv7-unknown-linux-gnueabihf`
+and `cargo-zigbuild check --target armv7-unknown-linux-gnueabihf --features
+takeover,rm2`.]
 
 **Files:** none new. Requires the tablet awake on USB (`/usr/bin/ssh rm2 true`).
 

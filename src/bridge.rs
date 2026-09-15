@@ -704,8 +704,9 @@ mod tests {
         let _serial = HELD_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         replace(Bridge { sessions: vec![], stale: false });
         assert!(last_ok_age().is_some_and(|d| d.as_secs() < 5));
+        let before = last_ok_age().unwrap();
         mark_stale();
         // Staleness keeps the timestamp: the age keeps growing, it is not lost.
-        assert!(last_ok_age().is_some());
+        assert!(last_ok_age().unwrap() >= before);
     }
 }

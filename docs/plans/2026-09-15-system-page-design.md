@@ -1,6 +1,7 @@
 # SYSTEM page: in-app config, Wi-Fi, device facts, power — design
 
-Date: 2026-09-15. Status: designed, not yet built.
+Date: 2026-09-15. Status: built on branch worktree-system-page (commits
+ded1436..f8d07ed); hardware verification pending.
 
 ## The ask
 
@@ -129,3 +130,36 @@ the arm-then-confirm state machine with a fake clock.
 The tablet was asleep while this was designed. Confirm before building the
 WI-FI section: whether `wpa_cli` or `connmanctl` is the right tool on OS
 3.27.3; the exact battery sysfs path; scan latency.
+
+Still open after the build (the tablet stayed asleep; everything below is
+checked on the host only):
+
+- `wpa_cli` vs `connmanctl` on OS 3.27.3.
+- The battery sysfs path (`device::battery` takes the first
+  `/sys/class/power_supply/*` with a `capacity`).
+- Scan latency against the 4 s settle, and whether a join reaches COMPLETED
+  inside the 10 s bound.
+- Selecting a weaker saved network while a stronger one is joined: does the
+  supplicant stay put after `enable_network all`.
+- Close the page mid-scan, then reopen: the new page owns a fresh channel and
+  the old worker's result must be dropped, not painted.
+- Arm REBOOT and let it lapse (more than 5 s): the row must un-invert on the
+  next tap or draw.
+- Whether stepper taps feel laggy with the full-page non-flashing partial
+  update.
+
+## Known limitations
+
+- Non-ASCII SSIDs render as wpa_cli's `\xNN` escapes.
+- `enable_network all` after a join re-enables networks that were deliberately
+  disabled.
+- A join that does not reach COMPLETED within 10 s sends no failure notice;
+  the next refresh (reopening WI-FI, or the status read after a select)
+  corrects the line.
+- Runtime `set_var` vs glibc `getenv` on the vault poll thread: accepted, see
+  "Config becomes live without a restart" above.
+- Replacing a pi oracle leaves the old child un-reaped until exit; the HTTP
+  oracle has no child.
+- The control strip's SLEEP row and the page's SLEEP row do nothing on the
+  qtfb (non-takeover) build: `sleep_requested` is only read where the power
+  device exists.
