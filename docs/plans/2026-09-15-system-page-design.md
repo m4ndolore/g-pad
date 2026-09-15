@@ -42,7 +42,7 @@ is drawn at a time:
 | ORACLE | PRESET picker (Vellum / Gemini / OpenAI / OpenRouter) · MODEL stepper (per-preset list) · REASONING stepper · MAX TOKENS stepper · KEY: SET / MISSING (never the value) · RESET OVERRIDES |
 | INPUT | STEALTH / GUIDED · IDLE-SEND on/off + delay stepper · PALM HOLDOFF stepper (0, 250, 500, 750, 1000, 1500 ms) |
 | LEARN | KIDS LEARN MODE on/off · TUTOR MODEL picker · NEXT-PAGE DWELL stepper |
-| WI-FI | status line (SSID · IP · signal, or DISCONNECTED) · saved networks (tap = select + reassociate) · RESCAN → in-range list, saved ones marked, unsaved rows inert with a one-line "add over ssh" note |
+| WI-FI | status line (SSID · IP · signal, or DISCONNECTED) · saved networks (tap = select, wait for the join, re-enable the rest) · RESCAN → in-range list, saved ones marked, unsaved rows inert with a one-line "add over ssh" note |
 | DEVICE | battery % + charging · free space on /home · clock (configured offset) · OS version · running build (short git hash, compile-time) · HUB: last poll age or UNREACHABLE |
 | POWER | SLEEP (existing suspend + sleep card) · LEAVE TO STOCK UI (existing quit) · REBOOT · POWER OFF |
 
@@ -89,10 +89,11 @@ for the MODEL stepper. `RIDDLE_OPENAI_KEY` is never written by the page.
 ## Wi-Fi, device, power mechanics
 
 - Wi-Fi drives `wpa_cli -i wlan0` (`status`, `signal_poll`, `list_networks`,
-  `scan` + `scan_results`, `select_network N` + `reassociate`) — the tool
-  `power::wifi_heal` already uses after resume. Every call runs on a worker
-  thread and reports through the event loop like the oracle stream; a slow
-  scan never blocks the draw loop. Rows repaint in place as results land.
+  `scan` + `scan_results`, `select_network N`, wait for COMPLETED, then
+  `enable_network all`) — the tool `power::wifi_heal` already uses after
+  resume. Every call runs on a worker thread and reports through the event
+  loop like the oracle stream; a slow scan never blocks the draw loop. Rows
+  repaint in place as results land.
 - Battery and charging from `/sys/class/power_supply/*/{capacity,status}`;
   storage from `statvfs("/home")`; OS version from `/etc/os-release`.
 - The running build hash is embedded at compile time (`option_env!` fed by

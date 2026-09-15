@@ -678,6 +678,7 @@ mod tests {
 
 use std::process::Command;
 use std::sync::mpsc::Sender;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Status { pub ssid: Option<String>, pub connected: bool, pub ip: Option<String>, pub rssi: Option<i32> }
@@ -710,15 +711,32 @@ pub fn spawn(cmd: Cmd, tx: Sender<Event>) {
                 }
             }
             Cmd::Select(id) => {
-                let id = id.to_string();
-                for args in [vec!["select_network", id.as_str()], vec!["enable_network", "all"], vec!["reassociate"]] {
-                    if let Err(e) = wpa(&args) { return send(Event::Failed(e)); }
-                }
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                // select_network alone starts the join, but it disables every
+                // other network. Re-enabling them at once would let the
+                // supplicant roam straight back to a stronger one, so wait
+                // for the join first, then restore roaming, best-effort.
+                if let Err(e) = wpa(&["select_network", &id.to_string()]) { return send(Event::Failed(e)); }
+                wait_for_join();
+                let _ = wpa(&["enable_network", "all"]);
                 refresh(&send);
             }
         }
     });
+}
+
+/// How long a join may take before roaming is restored regardless.
+const JOIN_WAIT: Duration = Duration::from_secs(10);
+/// How often the join is checked for COMPLETED.
+const JOIN_POLL: Duration = Duration::from_secs(1);
+
+/// Poll `status` until `wpa_state=COMPLETED` or `JOIN_WAIT` has passed.
+fn wait_for_join() {
+    let deadline = Instant::now() + JOIN_WAIT;
+    loop {
+        std::thread::sleep(JOIN_POLL);
+        let joined = wpa(&["status"]).map(|s| parse_status(&s, None).connected).unwrap_or(false);
+        if joined || Instant::now() >= deadline { return; }
+    }
 }
 
 fn refresh(send: &dyn Fn(Event)) {
@@ -1223,7 +1241,7 @@ This is the one task without a new unit test: the loop is exercised by the exist
    let mut reread = false;
    page.notice = None;
    match act {
-       Act::Tab(s) => { page.section = s; if s == Section::Wifi && page.wifi.busy.is_none() { page.wifi.busy = Some("READING"); system::wifi::spawn(Cmd::Refresh, wifi_tx.clone()); } }
+       Act::Tab(s) => { page.section = s; if s == Section::Wifi && page.wifi.begin("READING") { system::wifi::spawn(Cmd::Refresh, wifi_tx.clone()); } }
        Act::Close => { close_overlay(...); return After::Closed; }
        Act::SetMode(m) => { prefs.mode = m; let _ = prefs.save(); }
        Act::ToggleIdle => { prefs.idle_send_ms = if prefs.idle_send_ms == 0 { 2800 } else { 0 }; *idle_commit = Duration::from_millis(prefs.idle_send_ms); let _ = prefs.save(); }
@@ -1238,8 +1256,8 @@ This is the one task without a new unit test: the loop is exercised by the exist
        Act::ToggleLearn => { /* move the existing ToggleLearn body here verbatim (1025-1049); it closes the overlay and returns After::Closed */ }
        Act::StepTutorModel(d) => { step_in_preset("RIDDLE_LEARN_MODEL", d, …); reread = true; }
        Act::StepDwell(d) => { … DWELL_MS → RIDDLE_LEARN_NEXT_MS …; reread = true; }
-       Act::WifiSelect(id) => { page.wifi.busy = Some("JOINING"); page.wifi.error = None; system::wifi::spawn(Cmd::Select(id), wifi_tx.clone()); }
-       Act::WifiRescan => { page.wifi.busy = Some("SCANNING"); page.wifi.error = None; system::wifi::spawn(Cmd::Scan, wifi_tx.clone()); }
+       Act::WifiSelect(id) => { if page.wifi.begin("JOINING") { system::wifi::spawn(Cmd::Select(id), wifi_tx.clone()); } }
+       Act::WifiRescan => { if page.wifi.begin("SCANNING") { system::wifi::spawn(Cmd::Scan, wifi_tx.clone()); } }
        Act::Sleep => { *sleep_requested = true; close_overlay(...); return After::Closed; }
        Act::Leave => { eprintln!("g-pad: leave from system"); return After::Leave; }
        Act::Reboot | Act::PowerOff => match page.arm.tap(act, now) {

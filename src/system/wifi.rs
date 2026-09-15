@@ -1,11 +1,13 @@
 //! Wi-Fi over `wpa_cli -i wlan0`, the tool `power::wifi_heal` already
 //! trusts after resume. Every call runs on a worker thread and reports over
 //! a channel; the pad loop never waits on the radio.
+//!
+//! wpa_cli escapes non-ASCII SSIDs as `\xNN`; the page shows them as-is for now.
 
 use std::collections::HashSet;
 use std::process::Command;
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The current connection, from `status` plus `signal_poll`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -43,6 +45,19 @@ pub struct View {
     pub error: Option<String>,
 }
 
+impl View {
+    /// Claim the worker for `label`, clearing the last error. False while
+    /// another command is still in flight; the caller then spawns nothing.
+    pub fn begin(&mut self, label: &'static str) -> bool {
+        if self.busy.is_some() {
+            return false;
+        }
+        self.busy = Some(label);
+        self.error = None;
+        true
+    }
+}
+
 /// What the page asks of the worker.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cmd {
@@ -62,8 +77,10 @@ pub enum Event {
 
 /// A scan needs a few seconds before `scan_results` has the answers.
 const SCAN_SETTLE: Duration = Duration::from_secs(4);
-/// Association plus DHCP, before `status` reads the new network.
-const SELECT_SETTLE: Duration = Duration::from_secs(5);
+/// How long a join may take before roaming is restored regardless.
+const JOIN_WAIT: Duration = Duration::from_secs(10);
+/// How often the join is checked for COMPLETED.
+const JOIN_POLL: Duration = Duration::from_secs(1);
 
 /// Run `cmd` on its own thread; the results arrive on `tx`. A dropped
 /// receiver is not an error — the page may have closed meanwhile.
@@ -88,23 +105,33 @@ pub fn spawn(cmd: Cmd, tx: Sender<Event>) {
                 }
             }
             Cmd::Select(id) => {
-                // select_network disables every other network; enable them
-                // again right after so roaming keeps working.
-                let id = id.to_string();
-                for args in [
-                    vec!["select_network", id.as_str()],
-                    vec!["enable_network", "all"],
-                    vec!["reassociate"],
-                ] {
-                    if let Err(e) = wpa(&args) {
-                        return send(Event::Failed(e));
-                    }
+                // select_network alone starts the join, but it disables every
+                // other network. Re-enabling them at once would let the
+                // supplicant roam straight back to a stronger one, so wait
+                // for the join first, then restore roaming, best-effort.
+                if let Err(e) = wpa(&["select_network", &id.to_string()]) {
+                    return send(Event::Failed(e));
                 }
-                std::thread::sleep(SELECT_SETTLE);
+                wait_for_join();
+                let _ = wpa(&["enable_network", "all"]);
                 refresh(&send);
             }
         }
     });
+}
+
+/// Poll `status` until `wpa_state=COMPLETED` or `JOIN_WAIT` has passed.
+fn wait_for_join() {
+    let deadline = Instant::now() + JOIN_WAIT;
+    loop {
+        std::thread::sleep(JOIN_POLL);
+        let joined = wpa(&["status"])
+            .map(|s| parse_status(&s, None).connected)
+            .unwrap_or(false);
+        if joined || Instant::now() >= deadline {
+            return;
+        }
+    }
 }
 
 /// Status then the saved list. `signal_poll` fails while disconnected, so
@@ -132,15 +159,20 @@ fn wpa(args: &[&str]) -> Result<String, String> {
         .map_err(|e| format!("wpa_cli: {e}"))?;
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() || text.trim_start().starts_with("FAIL") {
-        let err = String::from_utf8_lossy(&out.stderr);
-        return Err(err
-            .lines()
-            .chain(text.lines())
-            .next()
-            .unwrap_or("wpa_cli failed")
-            .to_string());
+        return Err(first_line(&String::from_utf8_lossy(&out.stderr), &text));
     }
     Ok(text)
+}
+
+/// The first non-blank line of stderr, else of stdout, else a stand-in:
+/// one line the status row can show.
+fn first_line(stderr: &str, stdout: &str) -> String {
+    stderr
+        .lines()
+        .chain(stdout.lines())
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("wpa_cli failed")
+        .to_string()
 }
 
 /// The value of the first `key=value` line, if any.
@@ -165,6 +197,7 @@ pub fn parse_status(status: &str, signal: Option<&str>) -> Status {
 }
 
 /// `list_networks` output: a header, then `id \t ssid \t bssid \t flags`.
+/// A row whose id does not parse is dropped.
 pub fn parse_list_networks(text: &str) -> Vec<Saved> {
     text.lines()
         .skip(1)
@@ -184,9 +217,9 @@ pub fn parse_list_networks(text: &str) -> Vec<Saved> {
 }
 
 /// `scan_results` output: a header, then
-/// `bssid \t freq \t signal \t flags \t ssid`. Hidden networks are dropped,
-/// the list is strongest first, and an SSID heard on several BSSIDs keeps
-/// only its strongest.
+/// `bssid \t freq \t signal \t flags \t ssid`. Hidden networks and rows
+/// that do not parse are dropped, the list is strongest first, and an SSID
+/// heard on several BSSIDs keeps only its strongest.
 pub fn parse_scan_results(text: &str, saved: &[Saved]) -> Vec<Seen> {
     let mut seen: Vec<Seen> = text
         .lines()
@@ -204,7 +237,7 @@ pub fn parse_scan_results(text: &str, saved: &[Saved]) -> Vec<Seen> {
             })
         })
         .collect();
-    seen.sort_by_key(|s| -s.rssi);
+    seen.sort_by_key(|s| std::cmp::Reverse(s.rssi));
     let mut named = HashSet::new();
     seen.retain(|s| named.insert(s.ssid.clone()));
     seen
@@ -273,6 +306,49 @@ mod tests {
             Seen { ssid: "spaceship-321".into(), rssi: -49, saved_id: None },
             Seen { ssid: "cafe".into(), rssi: -55, saved_id: None },
         ]);
+    }
+
+    #[test]
+    fn malformed_rows_are_dropped_without_panic() {
+        // A truncated row, a non-numeric signal, and a line with no tabs
+        // at all: only the well-formed row survives.
+        let text = "bssid / frequency / signal level / flags / ssid\n\
+            aa:aa:aa:aa:aa:aa\t2437\t-71\t[ESS]\n\
+            bb:bb:bb:bb:bb:bb\t2437\tweak\t[ESS]\tiot\n\
+            garbage\n\
+            cc:cc:cc:cc:cc:cc\t5180\t-52\t[ESS]\tcafe\n";
+        assert_eq!(
+            parse_scan_results(text, &[]),
+            vec![Seen { ssid: "cafe".into(), rssi: -52, saved_id: None }]
+        );
+        let list = "network id / ssid / bssid / flags\nx\tiot\tany\t\n1\tcafe\tany\t\n";
+        assert_eq!(
+            parse_list_networks(list),
+            vec![Saved { id: 1, ssid: "cafe".into(), current: false, disabled: false }]
+        );
+    }
+
+    #[test]
+    fn first_line_prefers_stderr_then_stdout_then_a_stand_in() {
+        assert_eq!(first_line("", "FAIL-BUSY\n"), "FAIL-BUSY");
+        assert_eq!(
+            first_line("Failed to connect to non-global ctrl_ifname: wlan0\n", "FAIL\n"),
+            "Failed to connect to non-global ctrl_ifname: wlan0"
+        );
+        assert_eq!(first_line("", ""), "wpa_cli failed");
+    }
+
+    #[test]
+    fn begin_claims_the_worker_once_until_it_finishes() {
+        let mut v = View { error: Some("OLD".into()), ..View::default() };
+        assert!(v.begin("SCANNING"));
+        assert_eq!(v.busy, Some("SCANNING"));
+        assert_eq!(v.error, None, "a fresh command clears the last error");
+        assert!(!v.begin("JOINING"), "a second command waits its turn");
+        assert_eq!(v.busy, Some("SCANNING"));
+        v.busy = None;
+        assert!(v.begin("JOINING"));
+        assert_eq!(v.busy, Some("JOINING"));
     }
 
     #[test]
