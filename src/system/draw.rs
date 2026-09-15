@@ -281,12 +281,14 @@ fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &wifi::V
     if let Some(error) = &w.error {
         rows.line(surf, font, &error.to_uppercase());
     }
+    // RESCAN sits above the list so a long list of saved networks, which is
+    // cut at the notice line, can never push it off the page.
+    rows.row(surf, font, "RESCAN", "", false, Some(Act::WifiRescan));
     rows.line(surf, font, "SAVED");
     for s in &w.saved {
         let value = if s.current { "●" } else if s.disabled { "DISABLED" } else { "" };
         rows.row(surf, font, &s.ssid.to_uppercase(), value, s.current, Some(Act::WifiSelect(s.id)));
     }
-    rows.row(surf, font, "RESCAN", "", false, Some(Act::WifiRescan));
     if w.seen.is_empty() {
         return;
     }
@@ -424,10 +426,10 @@ mod tests {
             assert!(b.y1 < NOTICE_Y as i32, "{act:?} reaches the notice line");
         }
         // Thirty saved rows do not fit; the list is cut where the notice
-        // line begins and RESCAN, which follows the list, is not painted.
+        // line begins. RESCAN sits above the list, so it is always painted.
+        assert!(page.hits.region(Act::WifiRescan).is_some(), "RESCAN is reachable above a long list");
         assert!(page.hits.region(Act::WifiSelect(0)).is_some());
         assert!(page.hits.region(Act::WifiSelect(29)).is_none());
-        assert!(page.hits.region(Act::WifiRescan).is_none());
     }
 
     #[test]

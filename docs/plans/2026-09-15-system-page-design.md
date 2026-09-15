@@ -39,10 +39,10 @@ is drawn at a time:
 
 | Section | Rows |
 |---|---|
-| ORACLE | PRESET picker (Vellum / Gemini / OpenAI / OpenRouter) · MODEL stepper (per-preset list) · REASONING stepper · MAX TOKENS stepper · KEY: SET / MISSING (never the value) · RESET OVERRIDES |
+| ORACLE | PRESET picker (Vellum / Gemini / OpenAI / OpenRouter, or CUSTOM showing the base) · MODEL stepper (per-preset list) · REASONING stepper · MAX TOKENS stepper · KEY: SET / MISSING (never the value) · RESET OVERRIDES |
 | INPUT | STEALTH / GUIDED · IDLE-SEND on/off + delay stepper · PALM HOLDOFF stepper (0, 250, 500, 750, 1000, 1500 ms) |
 | LEARN | KIDS LEARN MODE on/off · TUTOR MODEL picker · NEXT-PAGE DWELL stepper |
-| WI-FI | status line (SSID · IP · signal, or DISCONNECTED) · saved networks (tap = select, wait for the join, re-enable the rest) · RESCAN → in-range list, saved ones marked, unsaved rows inert with a one-line "add over ssh" note |
+| WI-FI | status line (SSID · IP · signal, or DISCONNECTED) · RESCAN · saved networks (tap = select, wait for the join, re-enable the rest) · in-range list after a rescan, saved ones marked, unsaved rows inert with a one-line "add over ssh" note |
 | DEVICE | battery % + charging · free space on /home · clock (configured offset) · OS version · running build (short git hash, compile-time) · HUB: last poll age or UNREACHABLE |
 | POWER | SLEEP (existing suspend + sleep card) · LEAVE TO STOCK UI (existing quit) · REBOOT · POWER OFF |
 
