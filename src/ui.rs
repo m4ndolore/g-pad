@@ -12,10 +12,10 @@ use crate::surface::{Surface, BLACK, WHITE};
 
 pub const UI_FONT_TTF: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 pub const PANEL_W: usize = SCREEN_W * 50 / 100;
-const LABEL_PX: f32 = 32.0;
-const TITLE_PX: f32 = 64.0;
-const PAD: usize = 36;
-const BLUE: u16 = 0x0335;
+pub(crate) const LABEL_PX: f32 = 32.0;
+pub(crate) const TITLE_PX: f32 = 64.0;
+pub(crate) const PAD: usize = 36;
+pub(crate) const BLUE: u16 = 0x0335;
 const HEADER_H: i32 = 105;
 const THREAD_Y0: i32 = 148;
 const CONV_ROW_H: usize = 168;
@@ -1002,11 +1002,11 @@ fn text(surf: &mut Surface, font: &FontRef, value: &str, px: f32, x: usize, y: u
     render_text(surf, font, value, px, x, y, color, PANEL_W);
 }
 
-fn full_text(surf: &mut Surface, font: &FontRef, value: &str, px: f32, x: usize, y: usize, color: u16) {
+pub(crate) fn full_text(surf: &mut Surface, font: &FontRef, value: &str, px: f32, x: usize, y: usize, color: u16) {
     render_text(surf, font, value, px, x, y, color, SCREEN_W);
 }
 
-fn render_text(surf: &mut Surface, font: &FontRef, value: &str, px: f32, x: usize, y: usize, color: u16, limit_x: usize) {
+pub(crate) fn render_text(surf: &mut Surface, font: &FontRef, value: &str, px: f32, x: usize, y: usize, color: u16, limit_x: usize) {
     let raster = script::rasterize_line(font, value, px);
     for row in 0..raster.height {
         if y + row >= SCREEN_H { break; }
