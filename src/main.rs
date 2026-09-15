@@ -32,6 +32,7 @@ mod overrides;
 mod pen;
 mod power;
 mod preferences;
+mod presets;
 mod qtfb;
 #[cfg(all(feature = "rm2", not(feature = "takeover")))]
 mod rm2fb;
