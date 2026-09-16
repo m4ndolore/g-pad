@@ -5,6 +5,7 @@
 
 use std::io;
 use std::os::fd::RawFd;
+use std::time::{Duration, Instant};
 
 use crate::evdev;
 
@@ -69,6 +70,31 @@ impl Drop for PowerButton {
             libc::close(self.fd);
         }
     }
+}
+
+/// Anything that can say "the power key was pressed since you last asked".
+/// `PowerButton` is the real one; the tests use a fake.
+pub trait PressSource {
+    fn drain_pressed(&mut self) -> bool;
+}
+
+impl PressSource for PowerButton {
+    fn drain_pressed(&mut self) -> bool {
+        PowerButton::drain_pressed(self)
+    }
+}
+
+/// The boot escape hatch: true if the power key is pressed within `window`.
+/// Polls at 50ms; the key is grabbed, so nothing else sees the press.
+pub fn escape_window<P: PressSource>(dev: &mut P, window: Duration) -> bool {
+    let deadline = Instant::now() + window;
+    while Instant::now() < deadline {
+        if dev.drain_pressed() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    dev.drain_pressed()
 }
 
 /// The kernel's successful-suspend counter — the authoritative "we slept"
@@ -161,5 +187,32 @@ mod tests {
                 .unwrap_or(0),
             0
         );
+    }
+
+    struct Fake {
+        presses_after: usize,
+        calls: usize,
+    }
+    impl PressSource for Fake {
+        fn drain_pressed(&mut self) -> bool {
+            self.calls += 1;
+            self.calls > self.presses_after
+        }
+    }
+
+    #[test]
+    fn a_press_inside_the_window_escapes_early() {
+        let mut dev = Fake { presses_after: 2, calls: 0 };
+        let t0 = Instant::now();
+        assert!(escape_window(&mut dev, Duration::from_secs(2)));
+        assert!(t0.elapsed() < Duration::from_secs(1), "escape did not return on the press");
+    }
+
+    #[test]
+    fn silence_runs_the_window_out_and_continues() {
+        let mut dev = Fake { presses_after: usize::MAX, calls: 0 };
+        let t0 = Instant::now();
+        assert!(!escape_window(&mut dev, Duration::from_millis(120)));
+        assert!(t0.elapsed() >= Duration::from_millis(120));
     }
 }
