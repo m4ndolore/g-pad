@@ -724,6 +724,23 @@ fn run() -> std::io::Result<()> {
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&sigterm))?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&sigterm))?;
 
+    // The Anthink card is the first frame: it holds the panel through the
+    // escape window and the rest of init, then the page replaces it.
+    splash::draw(&mut surf, &font, &ui_font, splash::Card::Boot);
+    disp.full_refresh(surf.w, surf.h);
+    if let Some(ref mut pd) = power_dev {
+        if power::escape_window(pd, Duration::from_secs(3)) {
+            eprintln!("g-pad: power press in the escape window — stock UI this boot");
+            disp.terminate();
+            return Ok(());
+        }
+    } else if takeover {
+        eprintln!("g-pad: no power button, so no escape window this boot");
+    }
+    splash::erase_hatch(&mut surf);
+    let (hx, hy, hw, hh) = splash::HATCH;
+    disp.update(hx as i32, hy as i32, hw as i32, hh as i32, false);
+
     // Blank page, with the corner button that opens the controls.
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
     ui::draw_corner(&mut surf);
