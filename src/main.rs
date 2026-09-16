@@ -1139,7 +1139,7 @@ fn run() -> std::io::Result<()> {
                         learn_auto_at = None;
                         learn_tap_advance = false;
                     } else if matches!(state, State::System { .. }) {
-                        let after = system_tap(x, y, &mut state, &mut surf, &disp, &ui_font, &mut prefs,
+                        let after = system_tap(x, y, &mut state, &mut surf, &disp, &ui_font, &font, &mut prefs,
                             &mut idle_commit, &mut overrides, &presets, &mut oracle, &store,
                             &mut palm_holdoff, &mut learn_next_dwell, &mut learn_model,
                             &mut sleep_requested, &mut learn_session, &mut user_ink,
@@ -2399,7 +2399,7 @@ enum After {
 /// values the loop captured at boot. See docs/plans/2026-09-15-system-page-design.md.
 #[allow(clippy::too_many_arguments)]
 fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &display::Display,
-    ui_font: &FontRef, prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
+    ui_font: &FontRef, hand: &FontRef, prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
     overrides: &mut overrides::Overrides, presets: &[presets::Preset],
     oracle: &mut Option<oracle::Oracle>, store: &Option<memory::MemoryStore>,
     palm_holdoff: &mut Duration, learn_next_dwell: &mut Option<Duration>, learn_model: &mut Option<String>,
@@ -2578,10 +2578,18 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
         Act::Reboot | Act::PowerOff => match page.arm.tap(act, now) {
             Outcome::Armed(_) => {}
             Outcome::Confirmed(confirmed) => {
-                let verb = if confirmed == Act::Reboot { "reboot" } else { "poweroff" };
+                let (verb, card) = if confirmed == Act::Reboot {
+                    ("reboot", splash::Card::Restart)
+                } else {
+                    ("poweroff", splash::Card::PowerOff)
+                };
                 eprintln!("g-pad: {verb} from system");
+                // The card goes up first; the OS draws its twin once the
+                // unit is stopped, so the panel never shows the page again.
+                splash::draw(surf, hand, ui_font, card);
+                disp.full_refresh(SCREEN_W, SCREEN_H);
                 match std::process::Command::new("systemctl").arg(verb).status() {
-                    Ok(s) if s.success() => {}
+                    Ok(s) if s.success() => return After::Stay,
                     Ok(s) => page.notice = Some(format!("{verb} failed: {s}").to_uppercase()),
                     Err(e) => page.notice = Some(format!("{verb} failed: {e}").to_uppercase()),
                 }
