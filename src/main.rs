@@ -85,6 +85,9 @@ usage:
   g-pad --learn-sheets [DIR]  render sample Learn-mode worksheets for every
                               level into DIR (default /tmp/learn-sheets) as
                               PNGs; no display or oracle needed
+  g-pad --render-cards [DIR]  render the Anthink boot, power-off and restart
+                              cards into DIR (default /tmp/g-pad-cards) in
+                              the OS's grayscale PNG format; no display needed
   g-pad --learn-test [ANS]    one Learn-mode tutor round trip with a simulated
                               child answer (default: the correct one); prints
                               the verdict; verifies key + endpoint + model
@@ -322,6 +325,32 @@ fn main() {
         Some("--learn-sheets") => {
             let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/learn-sheets");
             std::process::exit(learn_sheets(dir));
+        }
+        // Diagnostic: render the Anthink cards (boot, power-off, restart) in
+        // the OS's own image format. install-boot-rm2.sh copies two of them
+        // over /usr/share/remarkable. No display needed.
+        Some("--render-cards") => {
+            let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/g-pad-cards");
+            let Ok(ui_font) = FontRef::try_from_slice(ui::UI_FONT_TTF) else {
+                eprintln!("g-pad: bundled UI font unreadable");
+                std::process::exit(1);
+            };
+            let Ok(hand) = FontRef::try_from_slice(FONT_TTF) else {
+                eprintln!("g-pad: bundled hand font unreadable");
+                std::process::exit(1);
+            };
+            std::process::exit(match splash::render_to(dir, &hand, &ui_font) {
+                Ok(paths) => {
+                    for p in paths {
+                        println!("{p}");
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("g-pad: render cards: {e}");
+                    1
+                }
+            });
         }
         // Diagnostic: one full tutor round trip with a simulated child answer
         // — draws a number bond, writes ANSWER into the blank in the reply
