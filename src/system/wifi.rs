@@ -34,12 +34,13 @@ pub struct Saved {
 }
 
 /// One network in range, strongest access point only; `saved_id` when it is
-/// a saved connection's name.
+/// a saved connection's name; `secured` when joining it needs a password.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seen {
     pub ssid: String,
     pub rssi: i32,
     pub saved_id: Option<u32>,
+    pub secured: bool,
 }
 
 /// One row of the scan list as nmcli prints it.
@@ -48,6 +49,7 @@ pub struct Heard {
     pub in_use: bool,
     pub ssid: String,
     pub signal: u8,
+    pub security: String,
 }
 
 /// What the page shows. `busy` names the command in flight, if any.
@@ -87,6 +89,15 @@ impl View {
             .find(|s| s.id == id)
             .map(|s| Cmd::Select(s.ssid.clone()))
     }
+
+    /// The in-range row a tap named that is not saved: its name and whether
+    /// it needs a password. None for a saved row or a stale index.
+    pub fn new_network(&self, index: u32) -> Option<(String, bool)> {
+        self.seen
+            .get(index as usize)
+            .filter(|s| s.saved_id.is_none())
+            .map(|s| (s.ssid.clone(), s.secured))
+    }
 }
 
 /// What the page asks of the worker.
@@ -95,6 +106,9 @@ pub enum Cmd {
     Refresh,
     Scan,
     Select(String),
+    /// Join a network the tablet has no connection for; NetworkManager
+    /// saves one on success. `password` is None for an open network.
+    Join { ssid: String, password: Option<String> },
 }
 
 /// What the worker sends back; `Failed` carries nmcli's first line.
@@ -164,6 +178,19 @@ pub fn spawn(cmd: Cmd, tx: Sender<Event>) {
                 // NetworkManager owns roaming: activating a saved connection
                 // is one call that waits for the join or says why it failed.
                 if let Err(e) = nm(&["--wait", JOIN_WAIT_SECS, "con", "up", "id", &name]) {
+                    return send(Event::Failed(e));
+                }
+                refresh(&send);
+            }
+            Cmd::Join { ssid, password } => {
+                // The password rides on nmcli's command line, briefly visible
+                // to a process listing on the tablet — the same trust
+                // boundary as oracle.env on a single-user device.
+                let mut args = vec!["--wait", JOIN_WAIT_SECS, "dev", "wifi", "connect", &ssid];
+                if let Some(p) = &password {
+                    args.extend(["password", p.as_str()]);
+                }
+                if let Err(e) = nm(&args) {
                     return send(Event::Failed(e));
                 }
                 refresh(&send);
@@ -268,6 +295,7 @@ pub fn parse_wifi_list(text: &str) -> Vec<Heard> {
                 in_use: f[0].trim() == "*",
                 ssid: f[1].clone(),
                 signal: f[2].trim().parse().ok()?,
+                security: f.get(3).map(|s| s.trim().to_string()).unwrap_or_default(),
             })
         })
         .collect()
@@ -300,6 +328,7 @@ pub fn seen_from(heard: &[Heard], saved: &[Saved]) -> Vec<Seen> {
             ssid: h.ssid.clone(),
             rssi: pct_to_rssi(h.signal),
             saved_id: saved.iter().find(|s| s.ssid == h.ssid).map(|s| s.id),
+            secured: !h.security.is_empty() && h.security != "--",
         })
         .collect();
     seen.sort_by_key(|s| std::cmp::Reverse(s.rssi));
@@ -400,12 +429,28 @@ mod tests {
     fn scan_rows_sort_strongest_first_dedupe_and_mark_saved() {
         // The rM2's own list: a dual-band router answers once per band, a
         // hidden network prints an empty SSID, and one row is garbage.
-        let text = " :iot dont use me:95:WPA2\n :spaceship-321:70:WPA2\n ::79:WPA2\n :spaceship-321:84:WPA2\ngarbage\n :cafe:weak:WPA2\n";
+        let text = " :iot dont use me:95:WPA2\n :spaceship-321:70:WPA2\n ::79:WPA2\n :spaceship-321:84:WPA2\ngarbage\n :cafe:weak:WPA2\n :open cafe:60:\n";
         let saved = parse_con_show("spaceship-321:802-11-wireless:yes:yes\n");
         assert_eq!(seen_from(&parse_wifi_list(text), &saved), vec![
-            Seen { ssid: "iot dont use me".into(), rssi: -53, saved_id: None },
-            Seen { ssid: "spaceship-321".into(), rssi: -58, saved_id: Some(0) },
+            Seen { ssid: "iot dont use me".into(), rssi: -53, saved_id: None, secured: true },
+            Seen { ssid: "spaceship-321".into(), rssi: -58, saved_id: Some(0), secured: true },
+            Seen { ssid: "open cafe".into(), rssi: -70, saved_id: None, secured: false },
         ]);
+    }
+
+    #[test]
+    fn a_new_network_is_named_only_when_it_is_not_saved() {
+        let saved = parse_con_show("home:802-11-wireless:yes:yes\n");
+        let v = View {
+            seen: seen_from(&parse_wifi_list("*:home:80:WPA2\n :cafe:60:\n :office:70:WPA3\n"), &saved),
+            saved,
+            ..View::default()
+        };
+        // Strongest first: home (80%), office (70%), cafe (60%).
+        assert_eq!(v.new_network(0), None, "a saved row joins through select");
+        assert_eq!(v.new_network(1), Some(("office".into(), true)));
+        assert_eq!(v.new_network(2), Some(("cafe".into(), false)));
+        assert_eq!(v.new_network(9), None);
     }
 
     #[test]

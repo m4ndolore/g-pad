@@ -13,7 +13,7 @@ use crate::script;
 use crate::surface::{Surface, BLACK, WHITE};
 use crate::ui::{full_text, render_text, BLUE, LABEL_PX, PAD, TITLE_PX};
 
-use super::{device, wifi, Act, Hits, Page, Section};
+use super::{device, keyboard, wifi, Act, Hits, Join, Page, Section};
 
 /// Rows start here and stack ROW_H apart until the notice line.
 pub const ROWS_Y: i32 = 300;
@@ -46,7 +46,9 @@ const TEXT_DY: i32 = 39;
 /// its members read as one block; the minor rule sits this far above the
 /// head row's foot.
 const GROUP_INDENT: i32 = 48;
-const GROUP_RULE_DY: i32 = 18;
+/// RGB565 light gray: the band behind a group head. The one gray in the UI,
+/// used for structure only, so it never competes with signal blue.
+pub const GROUP_BAND: u16 = 0xDEFB;
 const FOOTER_Y: usize = SCREEN_H - 70;
 /// Liberation Sans has no U+25AE (▮); a bar of signal is a pipe.
 const SIGNAL_BAR: &str = "|";
@@ -108,7 +110,7 @@ pub fn draw(surf: &mut Surface, font: &FontRef, page: &mut Page, view: &View, pr
         Section::Oracle => oracle(surf, font, &mut rows, view),
         Section::Input => input(surf, font, &mut rows, view, prefs),
         Section::Learn => learn(surf, font, &mut rows, view, prefs),
-        Section::Wifi => wifi_section(surf, font, &mut rows, &mut page.wifi),
+        Section::Wifi => wifi_section(surf, font, &mut rows, &mut page.wifi, page.join.as_ref()),
         Section::Device => device_section(surf, font, &mut rows, &view.facts),
         Section::Power => power(surf, font, &mut rows),
     }
@@ -168,16 +170,17 @@ impl Rows<'_> {
         render_text(surf, font, s, LABEL_PX, x as usize, (self.y + TEXT_DY) as usize, color, limit_x as usize);
     }
 
-    /// A group head: the label with a minor rule under it, and every row
-    /// until `ungroup` inset beneath it, so the head and its members read
-    /// as one block instead of a run of look-alike lines.
+    /// A group head: the label on a light gray band the full width of the
+    /// page, and every row until `ungroup` inset beneath it, so the head
+    /// and its members read as one block instead of a run of look-alike
+    /// lines.
     fn group(&mut self, surf: &mut Surface, font: &FontRef, label: &str) {
         self.indent = 0;
         if !self.room() {
             return;
         }
+        surf.fill_rect(0, self.y as usize, SCREEN_W, ROW_H as usize, GROUP_BAND);
         self.text(surf, font, label, PAD as i32, BLACK, SCREEN_W as i32);
-        surf.fill_rect(PAD, (self.y + ROW_H - GROUP_RULE_DY) as usize, SCREEN_W - 2 * PAD, 1, BLACK);
         self.y += ROW_H;
         self.indent = GROUP_INDENT;
     }
@@ -314,17 +317,33 @@ fn learn(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View, prefs
 enum WifiItem<'a> {
     Group(String),
     Saved(&'a wifi::Saved),
-    Seen(&'a wifi::Seen),
+    /// An in-range row and its index into `seen`, the handle a join carries.
+    Seen(u32, &'a wifi::Seen),
     Note(&'static str),
 }
 
-fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &mut wifi::View) {
+/// Keys are this tall; the keyboard's five rows stand on the notice line.
+const KEY_H: i32 = 82;
+const KEY_ROWS: i32 = 5;
+const KEY_OUTLINE: i32 = 2;
+
+fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &mut wifi::View, join: Option<&Join>) {
     rows.line(surf, font, &wifi_head(&w.status));
     if let Some(busy) = w.busy {
         rows.line(surf, font, &format!("{busy}…"));
     }
     if let Some(error) = &w.error {
         rows.line(surf, font, &error.to_uppercase());
+    }
+    if let Some(join) = join {
+        // The join sheet replaces the list: the network, the password so
+        // far with a caret, and the keyboard along the foot of the page.
+        rows.group(surf, font, &format!("JOIN {}", join.ssid.to_uppercase()));
+        rows.line(surf, font, &format!("{}|", join.keyboard.text));
+        rows.ungroup();
+        keyboard_rows(surf, font, rows.hits, &join.keyboard);
+        w.next_offset = None;
+        return;
     }
     // RESCAN sits above the list so no amount of networks can push it off
     // the page.
@@ -338,8 +357,8 @@ fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &mut wif
     items.extend(w.saved.iter().map(WifiItem::Saved));
     if !w.seen.is_empty() {
         items.push(WifiItem::Group(format!("IN RANGE · {}", w.seen.len())));
-        items.extend(w.seen.iter().map(WifiItem::Seen));
-        items.push(WifiItem::Note("NEW NETWORKS ARE ADDED OVER SSH"));
+        items.extend(w.seen.iter().enumerate().map(|(i, s)| WifiItem::Seen(i as u32, s)));
+        items.push(WifiItem::Note("TAP A NETWORK TO JOIN IT"));
     }
     let offset = w.offset.min(items.len() - 1);
     if offset > 0 && !matches!(items[offset], WifiItem::Group(_)) {
@@ -361,8 +380,12 @@ fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &mut wif
                 let value = if s.current { "●" } else if s.disabled { "DISABLED" } else { "" };
                 rows.row(surf, font, &s.ssid.to_uppercase(), value, s.current, Some(Act::WifiSelect(s.id)));
             }
-            WifiItem::Seen(s) => {
-                rows.row(surf, font, &s.ssid.to_uppercase(), &signal(s.rssi), false, s.saved_id.map(Act::WifiSelect));
+            WifiItem::Seen(i, s) => {
+                // A saved network joins through its connection; any other
+                // one is new, open or not.
+                let act = s.saved_id.map(Act::WifiSelect).unwrap_or(Act::WifiNew(*i));
+                let value = if s.secured { signal(s.rssi) } else { format!("{} · OPEN", signal(s.rssi)) };
+                rows.row(surf, font, &s.ssid.to_uppercase(), &value, false, Some(act));
             }
             WifiItem::Note(n) => rows.line(surf, font, n),
         }
@@ -377,6 +400,38 @@ fn wifi_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, w: &mut wif
     } else {
         None
     };
+}
+
+/// The keyboard: five rows of outlined keys standing on the notice line,
+/// each row's units scaled to the page width. A key that is on (SHIFT, the
+/// symbols page) is filled. Every key is a hit region.
+fn keyboard_rows(surf: &mut Surface, font: &FontRef, hits: &mut Hits, kb: &keyboard::Keyboard) {
+    let top = NOTICE_Y - KEY_ROWS * KEY_H;
+    for (r, row) in kb.rows().iter().enumerate() {
+        let y = top + r as i32 * KEY_H;
+        let units: f32 = row.iter().map(|c| c.units).sum();
+        let unit_w = SCREEN_W as f32 / units;
+        let mut x = 0.0f32;
+        for cap in row {
+            let w = (cap.units * unit_w).round() as i32;
+            let xi = x.round() as i32;
+            let on = matches!(
+                (cap.key, kb.shift, kb.symbols),
+                (keyboard::Key::Shift, true, _) | (keyboard::Key::Symbols, _, true)
+            );
+            if on {
+                surf.fill_rect(xi as usize, y as usize, w as usize, KEY_H as usize, BLACK);
+            } else {
+                outline(surf, xi, y, w, KEY_H, KEY_OUTLINE, BLACK);
+            }
+            let lw = script::rasterize_line(font, &cap.label, LABEL_PX).width as i32;
+            let color = if on { WHITE } else { BLACK };
+            render_text(surf, font, &cap.label, LABEL_PX, (xi + (w - lw).max(0) / 2) as usize,
+                (y + TEXT_DY - (ROW_H - KEY_H) / 2) as usize, color, (xi + w) as usize);
+            hits.push(Act::Key(cap.key), xi, y, w, KEY_H);
+            x += cap.units * unit_w;
+        }
+    }
 }
 
 fn wifi_head(status: &wifi::Status) -> String {
@@ -539,7 +594,7 @@ mod tests {
         page.wifi = wifi::View {
             saved: vec![wifi::Saved { id: 0, ssid: "home".into(), current: true, disabled: false }],
             seen: (0..30)
-                .map(|i| wifi::Seen { ssid: format!("ap{i}"), rssi: -50 - i, saved_id: (i == 29).then_some(0) })
+                .map(|i| wifi::Seen { ssid: format!("ap{i}"), rssi: -50 - i, saved_id: (i == 29).then_some(0), secured: true })
                 .collect(),
             ..wifi::View::default()
         };
@@ -564,6 +619,66 @@ mod tests {
         page.wifi.offset = 0;
         draw(&mut surf, &font, &mut page, &view, Preferences::default());
         assert!(page.wifi.next_offset.is_some_and(|n| n > 0), "back at the top, MORE leads on again");
+    }
+
+    #[test]
+    fn a_new_network_row_joins_and_a_group_head_sits_on_a_gray_band() {
+        let mut bytes = canvas();
+        let mut surf = surface(&mut bytes);
+        let font = font();
+        let view = View::sample();
+        let mut page = page(Section::Wifi);
+        page.wifi = wifi::View {
+            saved: vec![wifi::Saved { id: 0, ssid: "home".into(), current: true, disabled: false }],
+            seen: vec![
+                wifi::Seen { ssid: "home".into(), rssi: -50, saved_id: Some(0), secured: true },
+                wifi::Seen { ssid: "cafe".into(), rssi: -60, saved_id: None, secured: false },
+                wifi::Seen { ssid: "office".into(), rssi: -70, saved_id: None, secured: true },
+            ],
+            ..wifi::View::default()
+        };
+        draw(&mut surf, &font, &mut page, &view, Preferences::default());
+        assert!(page.hits.region(Act::WifiSelect(0)).is_some(), "a saved network joins by its connection");
+        assert!(page.hits.region(Act::WifiNew(1)).is_some(), "an open network is a join target");
+        assert!(page.hits.region(Act::WifiNew(2)).is_some(), "a secured new network opens the sheet");
+        assert!(page.hits.region(Act::WifiNew(0)).is_none());
+        // The SAVED head is the third row (status line, RESCAN, then the
+        // head): its band is gray right out to the page edge, where no
+        // label reaches; the row under it is white there.
+        let head_y = ROWS_Y + 2 * ROW_H + ROW_H / 2;
+        let l = surf.luma(SCREEN_W as i32 - 20, head_y);
+        assert!(l < 250 && l > 100, "group head band should be light gray, got {l}");
+        assert_eq!(surf.luma(SCREEN_W as i32 - 20, head_y + ROW_H), 255, "member rows stay white");
+    }
+
+    #[test]
+    fn the_join_sheet_paints_a_keyboard_whose_every_key_is_a_target() {
+        let mut bytes = canvas();
+        let mut surf = surface(&mut bytes);
+        let font = font();
+        let view = View::sample();
+        let mut page = page(Section::Wifi);
+        page.join = Some(super::Join::new("office".into()));
+        page.join.as_mut().unwrap().keyboard.press(keyboard::Key::Char('p'));
+        draw(&mut surf, &font, &mut page, &view, Preferences::default());
+        for key in [keyboard::Key::Char('q'), keyboard::Key::Char('1'), keyboard::Key::Shift,
+            keyboard::Key::Symbols, keyboard::Key::Backspace, keyboard::Key::Space,
+            keyboard::Key::Cancel, keyboard::Key::Go]
+        {
+            assert!(page.hits.region(Act::Key(key)).is_some(), "{key:?} has no target");
+        }
+        assert!(page.hits.region(Act::WifiRescan).is_none(), "the list is replaced by the sheet");
+        for (act, b) in page.hits.regions() {
+            assert!(b.y1 < NOTICE_Y, "{act:?} reaches the notice line");
+            assert!(b.x1 < SCREEN_W as i32, "{act:?} runs off the right edge");
+        }
+        // Symbols on: the letter row becomes the symbol row and the toggle
+        // key fills, so its centre is black instead of white.
+        page.join.as_mut().unwrap().keyboard.press(keyboard::Key::Symbols);
+        draw(&mut surf, &font, &mut page, &view, Preferences::default());
+        assert!(page.hits.region(Act::Key(keyboard::Key::Char('!'))).is_some());
+        let b = page.hits.region(Act::Key(keyboard::Key::Symbols)).unwrap();
+        assert_ne!(surf.luma(b.x0 + 8, b.y0 + 8), 255, "an on key is filled");
     }
 
     #[test]

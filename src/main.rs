@@ -723,8 +723,9 @@ fn run() -> std::io::Result<()> {
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&sigterm))?;
     signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&sigterm))?;
 
-    // Blank page.
+    // Blank page, with the corner button that opens the controls.
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    ui::draw_corner(&mut surf);
     disp.update_all(surf.w, surf.h);
 
     // The diary's memory (None = RIDDLE_MEMORY=off or the dir is unusable).
@@ -941,6 +942,21 @@ fn run() -> std::io::Result<()> {
         // Touch belongs to overlays while they are visible. Edge gestures are
         // consumed here and never reach page navigation or page ink.
         for gesture in gestures {
+            // A tap on the corner button is the top-edge swipe by another
+            // name: it opens the controls on a page with none open. Once the
+            // strip is up the corner is its close cell and the tap reaches
+            // control_action below like any other.
+            let gesture = match gesture {
+                touch::Gesture::Tap(x, y)
+                    if ui::corner_hit(x, y)
+                        && controls_saved.is_none()
+                        && palette.is_none()
+                        && matches!(state, State::Listening { .. } | State::Lingering { .. }) =>
+                {
+                    touch::Gesture::OpenControls
+                }
+                other => other,
+            };
             match gesture {
                 touch::Gesture::OpenControls => {
                     if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
@@ -1028,6 +1044,7 @@ fn run() -> std::io::Result<()> {
                     if flipped {
                         send_mode = None;
                         state = State::Listening { last_pen: None };
+                        ui::draw_corner(&mut surf);
                         let (current, total) = notebook.position();
                         eprintln!("g-pad: page {current} of {total}");
                         banner_saved = Some(ui::draw_page_banner(&mut surf, &ui_font, current, total));
@@ -2367,6 +2384,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
     match act {
         Act::Tab(s) => {
             page.section = s;
+            page.join = None;
             if s == Section::Wifi && page.wifi.begin("READING") {
                 system::wifi::spawn(Cmd::Refresh, page.wifi_tx.clone());
             }
@@ -2438,6 +2456,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
             *learn_auto_at = None;
             *learn_tap_advance = false;
             surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+            ui::draw_corner(surf);
             *learn_session = match prefs.page {
                 preferences::Page::Learn => {
                     let mut s = learn::Session::start();
@@ -2474,6 +2493,30 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
         Act::WifiMore => {
             if let Some(next) = page.wifi.next_offset {
                 page.wifi.offset = next;
+            }
+        }
+        Act::WifiNew(i) => match page.wifi.new_network(i) {
+            Some((ssid, true)) => page.join = Some(system::Join::new(ssid)),
+            Some((ssid, false)) => {
+                if page.wifi.begin("JOINING") {
+                    system::wifi::spawn(Cmd::Join { ssid, password: None }, page.wifi_tx.clone());
+                }
+            }
+            None => {}
+        },
+        Act::Key(key) => {
+            let outcome = page.join.as_mut().map(|j| j.keyboard.press(key));
+            match outcome {
+                Some(system::keyboard::Outcome::Cancel) => page.join = None,
+                Some(system::keyboard::Outcome::Go) => {
+                    if let Some(join) = page.join.take() {
+                        if page.wifi.begin("JOINING") {
+                            let cmd = Cmd::Join { ssid: join.ssid, password: Some(join.keyboard.text) };
+                            system::wifi::spawn(cmd, page.wifi_tx.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Act::Sleep => {
@@ -2995,7 +3038,9 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
     match action {
         ui::Action::Send => *send_mode = Some(CommitMode::Capture),
         ui::Action::Erase => {
-            surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE); disp.full_refresh(surf.w, surf.h);
+            surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+            ui::draw_corner(surf);
+            disp.full_refresh(surf.w, surf.h);
             user_ink.clear(); *state = State::Listening { last_pen: None };
         }
         ui::Action::NewPage => {
@@ -3006,6 +3051,7 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
                 surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
                 user_ink.clear();
             }
+            ui::draw_corner(surf);
             disp.full_refresh(surf.w, surf.h);
             *state = State::Listening { last_pen: None };
         }
@@ -3442,6 +3488,7 @@ fn append_reply(font: &FontRef, plan: &mut WritePlan, more: &str) {
 
 fn continue_reply(font: &FontRef, leftover: String, state: &mut State, surf: &mut Surface, disp: &display::Display) {
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    ui::draw_corner(surf);
     disp.full_refresh(surf.w, surf.h);
     let plan = plan_reply(font, leftover.trim(), Some(TOP_WRITING_LINE));
     *state = State::Replying { plan, next: Instant::now(), rx: None };
@@ -3449,6 +3496,7 @@ fn continue_reply(font: &FontRef, leftover: String, state: &mut State, surf: &mu
 
 fn paint_reply_page(font: &FontRef, text: &str, reply_w: i32, surf: &mut Surface, disp: &display::Display) -> BBox {
     surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    ui::draw_corner(surf);
     disp.full_refresh(surf.w, surf.h);
     let plan = plan_reply(font, text, Some(TOP_WRITING_LINE));
     for stroke in &plan.strokes {

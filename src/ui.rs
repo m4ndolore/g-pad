@@ -809,27 +809,54 @@ fn context_text(surf: &mut Surface, font: &FontRef, value: &str, y: &mut i32) {
     }
 }
 
+/// The corner button: an 82 px square at the page's top-left, the strip's
+/// height, that a finger tap opens the controls with (the strip in Guided,
+/// the SYSTEM page in Stealth) — the same as the top-edge swipe, without a
+/// palm being able to do it. Painted with every writing page; pen strokes
+/// over it are ink like anywhere else. Three short bars, drawn as rules so
+/// no glyph coverage is assumed of the font.
+pub const CORNER: usize = 82;
+const CORNER_BAR_W: usize = 30;
+const CORNER_BAR_H: usize = 3;
+
+pub fn draw_corner(surf: &mut Surface) {
+    let x = (CORNER - CORNER_BAR_W) / 2;
+    for i in 0..3 {
+        rule(surf, x, 29 + i * 10, CORNER_BAR_W, CORNER_BAR_H);
+    }
+}
+
+pub fn corner_hit(x: i32, y: i32) -> bool {
+    x >= 0 && y >= 0 && x < CORNER as i32 && y < CORNER as i32
+}
+
+/// The strip: a close cell where the corner button was, then seven equal
+/// cells across the rest of the width.
 pub fn draw_controls(surf: &mut Surface, font: &FontRef, reply_visible: bool) -> Vec<u8> {
-    let h = 82;
+    let h = CORNER;
     let saved = surf.copy_rect(0, 0, SCREEN_W, h);
     surf.fill_rect(0, 0, SCREEN_W, h, WHITE);
+    full_text(surf, font, "×", LABEL_PX, 30, 25, BLACK);
+    surf.fill_rect(CORNER, 0, 1, h, BLACK);
     let labels = if reply_visible {
         ["DISMISS", "ERASE", "NEW PAGE", "HISTORY", "CORPUS", "SLEEP", "SETTINGS"]
     } else {
         ["SEND", "ERASE", "NEW PAGE", "HISTORY", "CORPUS", "SLEEP", "SETTINGS"]
     };
-    let w = SCREEN_W / labels.len();
+    let w = (SCREEN_W - CORNER) / labels.len();
     for (i, label) in labels.iter().enumerate() {
-        if i > 0 { surf.fill_rect(i * w, 0, 1, h, BLACK); }
-        full_text(surf, font, label, LABEL_PX, i * w + 12, 25, if i == 3 || i == 4 { BLUE } else { BLACK });
+        let x = CORNER + i * w;
+        if i > 0 { surf.fill_rect(x, 0, 1, h, BLACK); }
+        full_text(surf, font, label, LABEL_PX, x + 12, 25, if i == 3 || i == 4 { BLUE } else { BLACK });
     }
     rule(surf, 0, h - 2, SCREEN_W, 2);
     saved
 }
 
 pub fn control_action(x: i32, y: i32, reply_visible: bool) -> Action {
-    if y < 0 || y >= 82 || x < 0 || x >= SCREEN_W as i32 { return Action::None; }
-    match x as usize / (SCREEN_W / 7) {
+    if y < 0 || y >= CORNER as i32 || x < 0 || x >= SCREEN_W as i32 { return Action::None; }
+    if corner_hit(x, y) { return Action::Close; }
+    match (x as usize - CORNER) / ((SCREEN_W - CORNER) / 7) {
         0 if reply_visible => Action::Dismiss,
         0 => Action::Send,
         1 => Action::Erase,
@@ -1012,9 +1039,14 @@ mod tests {
 
     #[test]
     fn controls_use_fixed_hit_regions() {
-        assert_eq!(control_action(10, 20, false), Action::Send);
-        assert_eq!(control_action((SCREEN_W * 3 / 7 + 2) as i32, 20, false), Action::History);
+        assert_eq!(control_action(10, 20, false), Action::Close, "the corner cell closes the strip");
+        assert_eq!(control_action(CORNER as i32 + 8, 20, false), Action::Send);
+        assert_eq!(control_action(CORNER as i32 + 8, 20, true), Action::Dismiss);
+        let cell = ((SCREEN_W - CORNER) / 7) as i32;
+        assert_eq!(control_action(CORNER as i32 + cell * 3 + 2, 20, false), Action::History);
+        assert_eq!(control_action(SCREEN_W as i32 - 2, 20, false), Action::Settings);
         assert_eq!(control_action(10, 100, false), Action::None);
+        assert!(corner_hit(0, 0) && corner_hit(81, 81) && !corner_hit(82, 10) && !corner_hit(10, 82));
     }
 
     #[test]

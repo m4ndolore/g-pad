@@ -4,6 +4,7 @@
 
 pub mod device;
 pub mod draw;
+pub mod keyboard;
 pub mod wifi;
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -69,6 +70,11 @@ pub enum Act {
     WifiRescan,
     /// The next page of the Wi-Fi list, or back to its top from the last.
     WifiMore,
+    /// Join a network the tablet has never seen: the index into `seen`. An
+    /// open network joins at once; a secured one opens the join sheet.
+    WifiNew(u32),
+    /// One key of the join sheet's keyboard.
+    Key(keyboard::Key),
     Sleep,
     Leave,
     Reboot,
@@ -218,6 +224,21 @@ pub struct Page {
     pub wifi_rx: Receiver<wifi::Event>,
     /// One line of outcome at the foot of the section (an error, "SAVED", …).
     pub notice: Option<String>,
+    /// The join sheet, while a password is being typed for a new network.
+    pub join: Option<Join>,
+}
+
+/// A new network being joined: its name and the password so far.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Join {
+    pub ssid: String,
+    pub keyboard: keyboard::Keyboard,
+}
+
+impl Join {
+    pub fn new(ssid: String) -> Self {
+        Self { ssid, keyboard: keyboard::Keyboard::new("JOIN") }
+    }
 }
 
 impl Default for Page {
@@ -231,6 +252,7 @@ impl Default for Page {
             wifi_tx,
             wifi_rx,
             notice: None,
+            join: None,
         }
     }
 }
