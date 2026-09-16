@@ -58,7 +58,7 @@ const MARK_PNG: &[u8] = include_bytes!("../assets/mc-mark.png");
 
 /// Decode the mark once: (width, height, gray bytes). Returns None rather than
 /// panicking — a bad asset must never keep the pad from sleeping.
-fn mark_gray() -> Option<(usize, usize, Vec<u8>)> {
+pub(crate) fn mark_gray() -> Option<(usize, usize, Vec<u8>)> {
     let dec = png::Decoder::new(MARK_PNG);
     let mut reader = dec.read_info().ok()?;
     let mut buf = vec![0u8; reader.output_buffer_size()];
@@ -73,7 +73,7 @@ fn mark_gray() -> Option<(usize, usize, Vec<u8>)> {
 /// Paint 8-bit gray art onto the surface. The panel's GC16 waveform resolves
 /// 16 levels, so the mark's antialiased curves survive as real tone rather
 /// than a threshold-crushed silhouette.
-fn blit_gray(surf: &mut Surface, x0: usize, y0: usize, w: usize, h: usize, gray: &[u8]) {
+pub(crate) fn blit_gray(surf: &mut Surface, x0: usize, y0: usize, w: usize, h: usize, gray: &[u8]) {
     for row in 0..h {
         for col in 0..w {
             let g = gray[row * w + col];
@@ -89,7 +89,7 @@ fn blit_gray(surf: &mut Surface, x0: usize, y0: usize, w: usize, h: usize, gray:
 
 /// Letter-spaced type from a fixed left edge, the way the site sets its
 /// eyebrow lines and logotype. `tracking` is extra px between glyphs.
-fn blit_left(
+pub(crate) fn blit_left(
     surf: &mut Surface,
     font: &FontRef,
     text: &str,
@@ -97,6 +97,21 @@ fn blit_left(
     tracking: usize,
     x0: usize,
     y: usize,
+) {
+    blit_left_in(surf, font, text, px_size, tracking, x0, y, BLACK);
+}
+
+/// `blit_left` in any ink: the boot card's hatch line is FADED gray.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn blit_left_in(
+    surf: &mut Surface,
+    font: &FontRef,
+    text: &str,
+    px_size: f32,
+    tracking: usize,
+    x0: usize,
+    y: usize,
+    color: u16,
 ) {
     // A space rasterizes to a zero-width mask, so carry the word gap
     // explicitly or tracked lines run their words together.
@@ -111,7 +126,7 @@ fn blit_left(
         for row in 0..g.height {
             for col in 0..g.width {
                 if g.mask[row * g.width + col] {
-                    surf.put_px((x + col) as i32, (y + row) as i32, BLACK);
+                    surf.put_px((x + col) as i32, (y + row) as i32, color);
                 }
             }
         }
@@ -187,7 +202,7 @@ pub fn restore_sleep(surf: &mut Surface, saved: &[u8]) {
     surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, saved);
 }
 
-fn frame(surf: &mut Surface, x: usize, y: usize, w: usize, h: usize, t: usize) {
+pub(crate) fn frame(surf: &mut Surface, x: usize, y: usize, w: usize, h: usize, t: usize) {
     surf.fill_rect(x, y, w, t, BLACK);
     surf.fill_rect(x, y + h - t, w, t, BLACK);
     surf.fill_rect(x, y, t, h, BLACK);
@@ -196,7 +211,7 @@ fn frame(surf: &mut Surface, x: usize, y: usize, w: usize, h: usize, t: usize) {
 
 /// Centered because the sleep card is lapidary text — the one case the UX
 /// system allows it. Everything else on the pad is flush-left.
-fn blit_centered(surf: &mut Surface, font: &FontRef, text: &str, px_size: f32, panel_x: usize, panel_w: usize, y: usize) {
+pub(crate) fn blit_centered(surf: &mut Surface, font: &FontRef, text: &str, px_size: f32, panel_x: usize, panel_w: usize, y: usize) {
     let line = script::rasterize_line(font, text, px_size);
     let x = panel_x + panel_w.saturating_sub(line.width) / 2;
     for row in 0..line.height {
