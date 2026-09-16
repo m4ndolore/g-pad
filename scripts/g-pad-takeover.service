@@ -6,6 +6,10 @@ ConditionPathExists=!/home/root/g-pad-boot-off
 # Let xochitl's start job finish first so our stop cancels a settled
 # unit instead of racing its startup for the panel.
 After=xochitl.service
+# The OS draws poweroff.png / rebooting.png after everything that holds the
+# panel has let go. Stop us before those units start, or they fail to lock
+# the framebuffer and the shutdown screen is whatever we left.
+Before=remarkable-shutdown.service remarkable-reboot.service
 
 [Service]
 Type=simple
@@ -17,8 +21,9 @@ Restart=no
 # a blocking start deadlocks `systemctl restart g-pad-takeover` — the
 # After=xochitl ordering queues xochitl's start behind this unit's stop,
 # which is itself waiting on this very command (seen wedged on hardware,
-# "State 'stop-sigterm' timed out").
-ExecStopPost=/bin/systemctl start --no-block xochitl
+# "State 'stop-sigterm' timed out"). During shutdown the restart is skipped
+# so it cannot race the OS's own shutdown screen.
+ExecStopPost=/bin/sh -c '[ "$(systemctl is-system-running)" = stopping ] || systemctl start --no-block xochitl'
 
 [Install]
 WantedBy=multi-user.target

@@ -234,6 +234,23 @@ done
     fix "./build-rm2.sh && RM_HOST=$RM_HOST ./scripts/install-rm2.sh"
 }
 
+# --- 5. the Anthink shutdown images -------------------------------------------
+# install-boot-rm2.sh keeps the stock poweroff.png once under /home/root and
+# overwrites the OS copy. An OS update replaces the root partition, so the OS
+# copy being byte-identical to the kept stock file again means an update has
+# undone the install.
+say "Anthink shutdown images"
+if rm_ssh 'test -e /home/root/g-pad-stock-images/poweroff.png'; then
+    if rm_ssh 'cmp -s /usr/share/remarkable/poweroff.png /home/root/g-pad-stock-images/poweroff.png'; then
+        bad "the OS shutdown images are back to stock — an OS update restored them"
+        fix "./scripts/install-boot-rm2.sh   # re-renders and re-installs the Anthink cards"
+    else
+        ok "power-off and reboot images are the Anthink cards"
+    fi
+else
+    warn "Anthink shutdown images were never installed (install-boot-rm2.sh does it)"
+fi
+
 # --- verdict -----------------------------------------------------------------
 printf '\n\033[1mVerdict\033[0m\n'
 if [ "${#VERDICT[@]}" -eq 0 ]; then
