@@ -37,6 +37,7 @@ mod qtfb;
 #[cfg(all(feature = "rm2", not(feature = "takeover")))]
 mod rm2fb;
 mod script;
+mod splash;
 mod surface;
 mod system;
 mod touch;
@@ -621,7 +622,7 @@ fn learn_test(answer: Option<&str>) -> i32 {
 }
 
 /// Write the whole page as an 8-bit grayscale PNG (full resolution).
-fn dump_page(surf: &Surface, path: &str) -> std::io::Result<()> {
+pub(crate) fn dump_page(surf: &Surface, path: &str) -> std::io::Result<()> {
     let mut gray = vec![0u8; surf.w * surf.h];
     for y in 0..surf.h {
         for x in 0..surf.w {
