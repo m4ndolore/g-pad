@@ -2584,12 +2584,15 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
                     ("poweroff", splash::Card::PowerOff)
                 };
                 eprintln!("g-pad: {verb} from system");
-                // The card goes up first; the OS draws its twin once the
-                // unit is stopped, so the panel never shows the page again.
+                // The card goes up first; the OS draws its twin once we have
+                // let go of the panel. `systemctl` returns as soon as the job
+                // is queued, so leave right away: staying in the loop would
+                // let a stray tap redraw the page over the card before the
+                // unit is stopped.
                 splash::draw(surf, hand, ui_font, card);
                 disp.full_refresh(SCREEN_W, SCREEN_H);
                 match std::process::Command::new("systemctl").arg(verb).status() {
-                    Ok(s) if s.success() => return After::Stay,
+                    Ok(s) if s.success() => return After::Leave,
                     Ok(s) => page.notice = Some(format!("{verb} failed: {s}").to_uppercase()),
                     Err(e) => page.notice = Some(format!("{verb} failed: {e}").to_uppercase()),
                 }
