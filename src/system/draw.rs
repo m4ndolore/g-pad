@@ -117,7 +117,15 @@ pub fn draw(surf: &mut Surface, font: &FontRef, page: &mut Page, view: &View, pr
     if let Some(notice) = &page.notice {
         full_text(surf, font, notice, LABEL_PX, PAD, NOTICE_Y as usize, BLACK);
     }
-    full_text(surf, font, &format!("G-PAD {}", view.facts.build), LABEL_PX, PAD, FOOTER_Y, BLACK);
+    full_text(
+        surf,
+        font,
+        &format!("ANTHINK SLATE  ·  A MERGE COMBINATOR VENTURE  ·  {}", view.facts.build),
+        LABEL_PX,
+        PAD,
+        FOOTER_Y,
+        BLACK,
+    );
     page.hits = hits;
 }
 
