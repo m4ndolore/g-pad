@@ -10,6 +10,9 @@ environment are still named for their history and are not being churned — the
 names above are how the surfaces are described, not a rename of the install
 path.
 
+The pad boots into an Anthink card and sleeps on the Merge Combinator mission
+card. POWER OFF and REBOOT leave a matching card on the panel.
+
 A vision-capable API key is enough to get a reply. gstack and gbrain are
 optional: when they are there, the pad is I/O for a real corpus; when they
 are not, pages still land on the tablet.

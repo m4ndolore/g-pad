@@ -204,9 +204,15 @@ not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
   and AppLoad v0.5.3 aborts xochitl on 3.28 even with a fresh hashtable. Until
   a release ships, do not run `/home/root/xovi/start` on 3.28. The takeover
   does not need AppLoad: the boot unit starts g-pad directly.
+- **The shutdown images revert to stock** (`/usr/share/remarkable/poweroff.png`
+  and `rebooting.png` live on the root partition). POWER OFF and REBOOT show
+  the reMarkable screens again instead of the Anthink cards. Re-run
+  `./scripts/install-boot-rm2.sh`, which re-renders and re-installs them
+  (`rm2-doctor.sh` reports it).
 - **3.28 dropped `timeout` and `pkill` from busybox.** Scripts that relied on
-  them stop working silently; `g-pad-boot.sh`'s escape window now uses a
-  background `dd` instead.
+  them stop working silently. The boot escape window lives inside g-pad now;
+  `g-pad-boot.sh` holds it itself only when the binary will not start, with
+  bash's own timed `read`.
 - **The e-ink engine ABI changed.** `libqsgepaper.so` on 3.28 exports a
   different `EPFramebuffer::swapBuffers` signature, so a `libquill.so` built
   for 3.27 initializes but never updates the screen. Rebuild it with
