@@ -18,8 +18,10 @@ Date: 2026-09-16. Base branch: `worktree-quill-3-28` (what the rM2 runs on OS 3.
   stock-UI flash, but after an OS update xochitl is what marks the new root
   partition good; if it never runs the bootloader falls back. Not worth it.
 - **The escape window moves into g-pad, with a script fallback.** The old
-  window in `g-pad-boot.sh` depended on `timeout`, which OS 3.28 removed, so it
-  has been silently dead since the update. g-pad already grabs the power key.
+  window in `g-pad-boot.sh` ran on the frozen stock frame with a background
+  `dd` (OS 3.28 removed `timeout`; main's copy still uses it and is dead
+  there). g-pad already grabs the power key, so the window can sit under the
+  card; the script keeps a window of its own for a binary that will not start.
 - **SYSTEM page footer** becomes `ANTHINK SLATE · A MERGE COMBINATOR VENTURE ·
   <build>`.
 
@@ -27,8 +29,9 @@ Date: 2026-09-16. Base branch: `worktree-quill-3-28` (what the rM2 runs on OS 3.
 
 One renderer (`src/splash.rs`) draws three variants onto any `Surface`, using
 the sleep card's grammar: white page, 2px hairline frame inset 56px, left
-spine at x=150, 1px rules, Liberation Sans for set type, Dancing Script for
-the one human line.
+spine at x=150, 1px rules, Liberation Sans for set type, and the reply hand for
+the one human line (Liberation Sans by default; cursive only when
+`RIDDLE_FONT_FILE` opts in), exactly as the sleep card does.
 
 Top to bottom (y from `(SCREEN_H - 1030) / 2 - 60`):
 
@@ -40,7 +43,7 @@ Top to bottom (y from `(SCREEN_H - 1030) / 2 - 60`):
 | rule | 1px | |
 | MC mark | grayscale PNG shrunk 3× (206×121) | right-hung against the right margin |
 | `A MERGE COMBINATOR VENTURE.` | 32px, tracking 7 | vertically centered on the mark |
-| human line | 50px Dancing Script, centered, y = SCREEN_H - 210 | varies by card |
+| human line | 50px reply hand, centered, y = SCREEN_H - 210 | varies by card |
 | hatch line | 22px, tracking 6, FADED gray, at (150, SCREEN_H - 120) | boot card only |
 
 Human line per card: Boot `Getting the pen ready.`, PowerOff `Powering off.`,
@@ -57,8 +60,10 @@ From power-on: bootloader logo → stock home UI while xochitl settles →
 
 1. `g-pad-boot.sh` stops xochitl as today. It then runs `g-pad --version`;
    if the binary cannot even do that, it holds the old 3s window on the frozen
-   stock frame using bash's `read -t 3 -N 16 < /dev/input/event0` (bash 5.2
-   is on the tablet; `timeout` is not). Otherwise it hands over immediately.
+   stock frame using bash's `read -t 3 -N 1 < /dev/input/event0` (bash 5.2
+   is on the tablet; `timeout` is not). One byte, not sixteen: `read` drops
+   NUL bytes and a power event is mostly NULs, and event0 carries only the
+   power key. Otherwise it hands over immediately.
 2. g-pad draws the boot card as its first frame, replacing the blank white
    fill, right after the display and the power device open.
 3. g-pad watches the grabbed power device for 3 seconds. A press means
@@ -78,7 +83,8 @@ hold power to force off).
 
 - `g-pad --render-cards [DIR]` draws the three cards offscreen and writes
   `boot.png`, `poweroff.png`, `rebooting.png` as 1404×1872 8-bit grayscale
-  PNGs, the stock files' exact format. Runs on the laptop's host build.
+  PNGs, the stock files' exact format. Runs on the laptop's host build with
+  `--features rm2`, which selects the rM2 panel size.
 - `scripts/install-boot-rm2.sh` renders the cards, backs up the stock
   `poweroff.png` and `rebooting.png` once to `/home/root/g-pad-stock-images/`,
   then copies the branded ones over `/usr/share/remarkable/`. `restart-crashed.png`

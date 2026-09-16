@@ -684,7 +684,7 @@ systemctl stop xochitl
 # frame instead, with bash's own timed read (OS 3.28 has no `timeout`).
 if ! "$HERE/g-pad" --version >/dev/null 2>&1; then
     echo "g-pad-boot: binary does not start; escape window on the stock frame"
-    if IFS= read -r -t 3 -N 16 _ < /dev/input/event0; then
+    if IFS= read -r -t 3 -N 1 _ < /dev/input/event0; then
         echo "g-pad-boot: power press in the escape window — stock UI this boot"
         systemctl start xochitl
         exit 0
@@ -707,7 +707,7 @@ head -c 16 /dev/zero > "$tmp/keys"
 bash "$tmp/g-pad-boot.sh"
 ```
 
-Expected output ends with `stock-restarted` (16 bytes on the fake device count as a press). Then `: > "$tmp/keys"` and re-run: expected `takeover-ran` after about 3s (an empty file makes `read` hit EOF immediately on a regular file, so if it returns at once, test the delay with `mkfifo "$tmp/keys"` and a background `sleep 5 > "$tmp/keys" &`).
+Expected output ends with `stock-restarted` (one byte on the fake device counts as a press; `read` drops NULs, so a 16-byte count never fills from a real event). Then `: > "$tmp/keys"` and re-run: expected `takeover-ran` after about 3s (an empty file makes `read` hit EOF immediately on a regular file, so if it returns at once, test the delay with `mkfifo "$tmp/keys"` and a background `sleep 5 > "$tmp/keys" &`).
 
 Run `shellcheck scripts/g-pad-boot.sh` if shellcheck is installed; fix anything it flags.
 
@@ -750,7 +750,7 @@ ExecStopPost=/bin/sh -c '[ "$(systemctl is-system-running)" = stopping ] || syst
 # stock files are kept once under /home/root, which survives OS updates;
 # the images themselves do not (see the caveat above) — rerun after an update.
 CARDS=dist/cards
-cargo run --quiet --release -- --render-cards "$CARDS" >/dev/null
+cargo run --quiet --release --features rm2 -- --render-cards "$CARDS" >/dev/null
 $SSH 'mkdir -p /home/root/g-pad-stock-images && for f in poweroff rebooting; do
     [ -e /home/root/g-pad-stock-images/$f.png ] || cp /usr/share/remarkable/$f.png /home/root/g-pad-stock-images/; done'
 for f in poweroff rebooting; do

@@ -131,8 +131,10 @@ pub fn render_to(dir: &str, hand: &FontRef, ui_font: &FontRef) -> std::io::Resul
 mod tests {
     use super::*;
 
+    /// The reply hand as it ships (the legible sans; cursive is an opt-in
+    /// via RIDDLE_FONT_FILE), so the snapshot matches the panel.
     fn fonts() -> (FontRef<'static>, FontRef<'static>) {
-        let hand = FontRef::try_from_slice(include_bytes!("../fonts/DancingScript.ttf")).unwrap();
+        let hand = FontRef::try_from_slice(crate::FONT_TTF).unwrap();
         let ui = FontRef::try_from_slice(crate::ui::UI_FONT_TTF).unwrap();
         (hand, ui)
     }
