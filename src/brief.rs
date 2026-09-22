@@ -225,6 +225,106 @@ pub(crate) fn json_field(block: &str, key: &str) -> Option<String> {
     Some(out)
 }
 
+// ---- configuration ----------------------------------------------------
+
+/// The feed URL, e.g. `https://api.example.com/api/intel/feed`. Unset = the
+/// BRIEF tab reports itself unconfigured and no thread ever starts.
+pub fn url() -> Option<String> {
+    url_from(std::env::var("RIDDLE_BRIEF_URL").ok().as_deref())
+}
+
+fn url_from(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+pub fn configured() -> bool {
+    url().is_some()
+}
+
+/// The poll cadence in seconds. The feed changes a few times a day, so the
+/// default is fifteen minutes; the floor keeps a typo from hammering it.
+fn poll_every(raw: Option<&str>) -> u64 {
+    raw.and_then(|s| s.parse::<u64>().ok()).unwrap_or(900).max(60)
+}
+
+/// "24 August 2026" for a unix time shifted by an offset in seconds — the
+/// header the design wrote, in the reader's own day.
+pub fn date_label(unix: i64, offset_s: i64) -> String {
+    let (y, mo, d, _) = crate::memory::civil(unix + offset_s);
+    const MONTHS: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July", "August", "September",
+        "October", "November", "December",
+    ];
+    format!("{d} {} {y}", MONTHS[(mo - 1).clamp(0, 11) as usize])
+}
+
+fn today_label() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let offset: i64 = std::env::var("RIDDLE_TZ_OFFSET")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map_or(0, |h| (h * 3600.0) as i64);
+    date_label(now, offset)
+}
+
+// ---- the held brief ---------------------------------------------------
+
+/// The brief arrives from a poll, not from the draw path, so the drawer and
+/// the page read the last thing we were told. A feed that cannot be reached
+/// keeps its previous contents and marks them stale — the bridge's rule: a
+/// stale page that says so beats an empty one.
+static HELD: std::sync::Mutex<Option<Brief>> = std::sync::Mutex::new(None);
+
+/// The brief to draw. Empty and non-stale before the first poll.
+pub fn held() -> Brief {
+    HELD.lock().ok().and_then(|g| g.clone()).unwrap_or_default()
+}
+
+/// Take a fresh poll. Nothing else in the tree writes this.
+pub fn replace(brief: Brief) {
+    if let Ok(mut g) = HELD.lock() {
+        *g = Some(brief);
+    }
+}
+
+/// Mark what we hold as stale after a failed poll, keeping the contents.
+pub fn mark_stale() {
+    if let Ok(mut g) = HELD.lock() {
+        let b = g.get_or_insert_with(Brief::default);
+        b.stale = true;
+    }
+}
+
+/// Start polling the feed, if one is configured. Without RIDDLE_BRIEF_URL
+/// the thread never starts and the BRIEF tab says so — the pad loses
+/// nothing. A failed poll marks what is held as stale rather than clearing
+/// it. See `docs/daily-brief.md`.
+pub fn spawn_poll() {
+    let Some(url) = url() else { return };
+    let every = poll_every(std::env::var("RIDDLE_BRIEF_POLL_S").ok().as_deref());
+    eprintln!("g-pad: brief polling {url} every {every}s");
+    std::thread::spawn(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(15))
+            .build();
+        loop {
+            match agent.get(&url).call().ok().and_then(|r| r.into_string().ok()) {
+                Some(body) => replace(Brief {
+                    date: today_label(),
+                    summary: None,
+                    items: parse_feed(&body),
+                    stale: false,
+                }),
+                None => mark_stale(),
+            }
+            std::thread::sleep(std::time::Duration::from_secs(every));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +470,81 @@ mod tests {
         let layout = layout_item(&f, &item(&long, &long));
         assert!(layout.title_lines.len() <= page::MAX_TITLE_LINES);
         assert!(layout.body_lines.len() <= MAX_BODY_LINES);
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    /// `HELD` is process-wide; these tests take turns.
+    static HELD_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn one(title: &str) -> Item {
+        Item { id: title.into(), title: title.into(), source: "Irregulars".into(),
+            excerpt: "Something happened, and here is why it matters.".into(), date: "today".into() }
+    }
+
+    #[test]
+    fn a_failed_refresh_keeps_the_last_brief_and_says_not_refreshed() {
+        let _g = HELD_TESTS.lock().unwrap();
+        replace(Brief { date: "24 August 2026".into(), summary: None,
+            items: vec![one("A"), one("B")], stale: false });
+        mark_stale();
+        let held = held();
+        assert_eq!(held.items.len(), 2, "a failed poll must not empty the page");
+        assert_eq!(held.date, "24 August 2026");
+        assert!(held.stale);
+        let font = FontRef::try_from_slice(crate::ui::UI_FONT_TTF).unwrap();
+        let label = footer_label(&layout_page(&font, &held), held.stale);
+        assert!(label.contains("not refreshed"), "{label:?}");
+        replace(Brief::default());
+    }
+
+    #[test]
+    fn a_pad_that_never_heard_from_the_feed_reads_as_stale_and_empty() {
+        let _g = HELD_TESTS.lock().unwrap();
+        replace(Brief::default());
+        assert!(!held().stale, "before any poll nothing is stale — there is nothing to be stale");
+        mark_stale();
+        assert!(held().stale);
+        assert!(held().items.is_empty());
+        replace(Brief::default());
+    }
+
+    #[test]
+    fn a_fresh_poll_replaces_the_page_and_clears_stale() {
+        let _g = HELD_TESTS.lock().unwrap();
+        mark_stale();
+        replace(Brief { date: "25 August 2026".into(), summary: None, items: vec![one("C")], stale: false });
+        let held = held();
+        assert!(!held.stale);
+        assert_eq!(held.items[0].title, "C");
+        replace(Brief::default());
+    }
+
+    #[test]
+    fn the_poll_cadence_defaults_to_fifteen_minutes_and_floors_at_a_minute() {
+        assert_eq!(poll_every(None), 900);
+        assert_eq!(poll_every(Some("60")), 60);
+        assert_eq!(poll_every(Some("5")), 60);
+        assert_eq!(poll_every(Some("garbage")), 900);
+    }
+
+    #[test]
+    fn the_header_date_reads_the_way_the_design_wrote_it() {
+        // 2026-08-24T15:00:00Z
+        assert_eq!(date_label(1_787_583_600, 0), "24 August 2026");
+        // 17:00 UTC on the 24th is already the 25th in Manila.
+        assert_eq!(date_label(1_787_590_800, 8 * 3600), "25 August 2026");
+    }
+
+    #[test]
+    fn the_url_is_configuration_and_blank_means_unset() {
+        assert_eq!(url_from(Some("  ")), None);
+        assert_eq!(url_from(None), None);
+        assert_eq!(url_from(Some("https://feed.example.com/api/intel/feed ")),
+            Some("https://feed.example.com/api/intel/feed".to_string()));
     }
 }
 

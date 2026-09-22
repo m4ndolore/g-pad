@@ -1,6 +1,12 @@
 # The daily brief
 
-**Status:** Design. Tier 1 only — see "Not this build".
+**Status:** Shipped, Tier 1 (reading). The drawer's fifth tab, BRIEF, lists
+the day's items when `RIDDLE_BRIEF_URL` names the feed; any row opens the
+one-page brief full-page (`← BRIEF` returns to the drawer, `×` closes to the
+canvas). A poll thread (`RIDDLE_BRIEF_POLL_S`, default fifteen minutes)
+refreshes it; a failed poll keeps the last brief and says "not refreshed".
+Unset, the tab says so and nothing polls. Annotation is Tier 2 — see "Not
+this build".
 
 The pad reads as well as it writes. The first reading surface is a **daily
 brief**: one page, one day, no navigation, no article bodies, no fetching of
