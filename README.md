@@ -115,7 +115,7 @@ Everything below runs on the laptop. The tests build the page in memory and
 never touch a framebuffer.
 
 ```sh
-cargo test                                   # 251 tests, under three seconds
+cargo test                                   # 260 tests, under three seconds
 cargo build --release --features rm2
 ./target/release/g-pad --render-cards out/   # the boot, power-off and restart cards
 ./target/release/g-pad --learn-sheets out/   # every Learn worksheet, every level
@@ -132,7 +132,7 @@ cargo build --release --features rm2
 | Swipe up or down | Next or previous notebook page, or page through a long reply |
 | Tap with a bare finger | A pen palette where the finger landed |
 | Two-finger tap, three-finger tap | Undo, redo |
-| Swipe in from the left edge | The drawer: HISTORY, CORPUS, AGENTS, VAULT |
+| Swipe in from the left edge | The drawer: HISTORY, CORPUS, AGENTS, VAULT, BRIEF |
 | Swipe down from the top, or tap a corner | Controls, or the SYSTEM page |
 | Hold five fingers | Leave; the stock UI comes back |
 | Power button | Sleep card; press again and you are exactly where you were |
@@ -159,6 +159,11 @@ claims its room first, and the pad never invents one. See
 
 **Vault** lists markdown notes from a Vellum gateway and reads them full-page. Ink
 on a note becomes a proposed revision. Optional, off until configured.
+
+**Brief** is one page, one day: a feed of headlines with nothing to navigate and
+no article bodies, refreshed in the background and kept on the page when a
+refresh fails. Point `RIDDLE_BRIEF_URL` at a JSON feed to turn it on. See
+[docs/daily-brief.md](docs/daily-brief.md).
 
 The pen interaction model behind all of them is in
 [docs/anthink-interaction.md](docs/anthink-interaction.md): mark, do not
@@ -192,7 +197,7 @@ Verify on the device with `g-pad --oracle-test icon.png`.
   small and cross-compiles cleanly to 32-bit ARM.
 - **Gestures are local.** Recognition is geometry on the strokes. A gesture
   works with no network.
-- **Tested on the laptop.** 251 tests cover SSE decoding, the stream parser,
+- **Tested on the laptop.** 260 tests cover SSE decoding, the stream parser,
   gesture geometry, palm tolerance, pixel-exact sleep restore, and the SYSTEM
   page hit map, all against an in-memory surface.
 - **No SDK.** The display adapter is built with zig, Qt headers from a Debian
@@ -204,10 +209,9 @@ Verify on the device with `g-pad --oracle-test icon.png`.
 ## Status
 
 Live on a reMarkable 2 running OS 3.28.0.172. Pad, Learn, SYSTEM, the boot
-branding, and the Agent bridge are in daily use. The daily brief
-([docs/daily-brief.md](docs/daily-brief.md)) is laid out and tested but not yet
-reachable from the drawer. The windowed build for the stock UI is not maintained;
-takeover is the product.
+branding, and the Agent bridge are in daily use. The BRIEF tab is the newest
+surface and has not yet had a day on hardware. The windowed build for the stock
+UI is not maintained; takeover is the product.
 
 ## Origins
 
