@@ -1,6 +1,8 @@
 # The Claude bridge
 
-**Status:** Design. Tier 1 only — reading. See "Not this build".
+**Status:** Shipped. Reading (Tier 1) and responding (Tier 2, the handwritten
+nudge) are both live in `src/bridge.rs` and `main.rs`. The "Not this build"
+section below is the design's original deferral list, kept as history.
 
 The pad reads agent sessions. Flip through what Claude Code is doing, read the
 last exchange, and — later — answer it in your own hand.
