@@ -41,19 +41,26 @@ fix()  { FIXES+=("$*"); }
 VERDICT=(); FIXES=()
 
 # --- finding the tablet ------------------------------------------------------
-# Two addresses need no hunting at all. Over USB the rM2 is always 10.11.99.1.
-# On an iPhone/iPad Personal Hotspot the subnet is always 172.20.10.0/28 — the
-# phone is .1 and clients get .2 through .14 — so "I don't know the IP" is a
-# thirteen-address scan, not a search. Anything else (home Wi-Fi) still needs
-# RM_HOST, and the tablet will tell you: Settings > Wi-Fi, tap the connected
-# network.
+# Two addresses need no hunting at all. Over USB the rM2 is always 10.11.99.1,
+# and an answer there ends the search. On an iPhone/iPad Personal Hotspot the
+# subnet is always 172.20.10.0/28 — the phone is .1 and clients get .2 through
+# .14 — so "I don't know the IP" is a thirteen-address scan, not a search.
+# Anything else (home Wi-Fi) still needs RM_HOST, and the tablet will tell
+# you: Settings > Wi-Fi, tap the connected network.
 NC="$(command -v nc || true)"
+# macOS ships a netcat whose -w is an idle timeout: a probe of a dead address
+# waits the kernel's 75 s for the connect. Its -G flag caps the connect
+# instead. Every other netcat applies -w to the connect already.
+NC_PROBE=(-z -w 1)
+if [ -n "$NC" ] && { "$NC" -h 2>&1 || true; } | grep -qE '(^|[[:space:]])-G[[:space:]]'; then
+    NC_PROBE=(-z -G 1 -w 1)
+fi
 
 # Is anything listening on 22? nc when we have it (fast, no auth); otherwise ask
 # ssh and read what it says — a refused key still proves an sshd answered.
 port22() {
     if [ -n "$NC" ]; then
-        "$NC" -z -w 1 "$1" 22 >/dev/null 2>&1
+        "$NC" "${NC_PROBE[@]}" "$1" 22 >/dev/null 2>&1
     else
         out="$(ssh -n -o BatchMode=yes -o ConnectTimeout=2 \
                    -o StrictHostKeyChecking=no "root@$1" true 2>&1)" && return 0
@@ -66,13 +73,21 @@ banner() { [ -n "$NC" ] || return 0; "$NC" -w 2 "$1" 22 </dev/null 2>/dev/null |
 
 discover() {
     say "Looking for the tablet (no RM_HOST given)"
-    printf '  trying USB, then the iOS hotspot range 172.20.10.2-14 '
+    printf '  trying USB '
     FOUND=()
-    for h in "$USB_HOST" $(seq 2 14 | sed "s|^|$HOTSPOT_NET.|"); do
-        printf '.'
-        port22 "$h" && FOUND+=("$h")
-    done
-    printf '\n'
+    if port22 "$USB_HOST"; then
+        # Nothing but the tablet is ever 10.11.99.1; the hotspot scan would
+        # only find the same tablet again and call it two hosts.
+        FOUND=("$USB_HOST")
+        printf 'answered\n'
+    else
+        printf 'is silent; the iOS hotspot range 172.20.10.2-14 '
+        for h in $(seq 2 14 | sed "s|^|$HOTSPOT_NET.|"); do
+            printf '.'
+            port22 "$h" && FOUND+=("$h")
+        done
+        printf '\n'
+    fi
 
     for h in "${FOUND[@]:-}"; do
         [ -n "$h" ] || continue
