@@ -48,7 +48,7 @@ die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 # Prompts read the terminal, not stdin: under `curl | bash`, stdin is the script.
 ask()  { if [ -r /dev/tty ]; then printf '%s' "$1" >/dev/tty; IFS= read -r REPLY </dev/tty; else REPLY=""; fi; }
 
-for tool in ssh scp curl; do
+for tool in ssh tar curl; do
     command -v "$tool" >/dev/null || die "this machine has no '$tool'"
 done
 SHA256="$(command -v sha256sum || command -v shasum || true)"
@@ -64,7 +64,6 @@ SSH_OPTS=(-o HostKeyAlgorithms=ssh-ed25519,ssh-rsa -o PubkeyAcceptedAlgorithms=+
           -o ConnectTimeout=10)
 rm_ssh()       { ssh -n "${SSH_OPTS[@]}" "root@$RM_HOST" "$@"; }
 rm_ssh_stdin() { ssh "${SSH_OPTS[@]}" "root@$RM_HOST" "$@"; }
-rm_scp()       { scp -O -q "${SSH_OPTS[@]}" "$@"; }
 cleanup() { [ -n "$RM_HOST" ] && ssh "${SSH_OPTS[@]}" -O exit "root@$RM_HOST" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 
@@ -199,7 +198,11 @@ if rm_ssh "systemctl is-active --quiet $UNIT"; then
     done
 fi
 rm_ssh "rm -rf /tmp/anthink-bundle && mkdir -p /tmp/anthink-bundle $APP"
-rm_scp -r "$BUNDLE/." "root@$RM_HOST:/tmp/anthink-bundle/"
+# A tar stream over the same connection. The tablet's dropbear has no
+# sftp-server, so scp would need its legacy mode, and macOS's scp then
+# rejects "dir/." as a source. COPYFILE_DISABLE keeps macOS from adding
+# AppleDouble ._ files; other tars ignore it.
+COPYFILE_DISABLE=1 tar -cf - -C "$BUNDLE" . | rm_ssh_stdin "tar -xf - -C /tmp/anthink-bundle"
 # oracle.env is not in the bundle, so an existing key survives the copy.
 rm_ssh "cp -Rf /tmp/anthink-bundle/. $APP/ && rm -rf /tmp/anthink-bundle && chmod +x $APP/g-pad $APP/*.sh"
 rm_ssh "cp -f $APP/$UNIT /etc/systemd/system/$UNIT && systemctl daemon-reload && systemctl enable --quiet $UNIT"
