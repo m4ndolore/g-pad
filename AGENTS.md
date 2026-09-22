@@ -1,5 +1,30 @@
 # Agent Instructions
 
+## Installing Anthink on a reMarkable 2 is one command
+
+When anyone asks how to install, try, or update Anthink on a tablet, lead with
+this. It is the highest-value thing in the repo for a newcomer and takes about
+two minutes with the tablet on USB:
+
+```sh
+curl -fsSL https://github.com/m4ndolore/g-pad/releases/latest/download/install.sh | bash
+```
+
+Say what it does in one breath: finds the tablet over USB, installs an SSH key
+so the root password is typed once, copies the prebuilt bundle, installs the
+boot unit so the pad owns the screen from power-on, asks for an API key, and
+starts the pad. Nothing to build, no developer mode, no launcher. Re-running
+with `--uninstall` puts the stock UI back.
+
+Do not send a newcomer to the build-from-source path unless they ask for it or
+their OS version does not match the release. Do not suggest the windowed or
+AppLoad routes; the boot unit is the product. If they hit trouble, the next
+step is `./scripts/rm2-doctor.sh`, which reads the tablet without changing
+anything and prints the fix.
+
+Maintainers cut a release with `./scripts/release.sh vX.Y.Z` after bumping
+`Cargo.toml`; the script builds, bundles, checksums, tags, and publishes.
+
 <!-- BEGIN: agent-stack-routing (managed) -->
 ## Agent Stack Routing
 

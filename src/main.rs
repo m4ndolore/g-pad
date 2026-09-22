@@ -336,7 +336,7 @@ fn main() {
             std::process::exit(learn_sheets(dir));
         }
         // Diagnostic: render the Anthink cards (boot, power-off, restart) in
-        // the OS's own image format. install-boot-rm2.sh copies two of them
+        // the OS's own image format. The bundle carries them and the installer copies two
         // over /usr/share/remarkable. No display needed.
         Some("--render-cards") => {
             let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/g-pad-cards");

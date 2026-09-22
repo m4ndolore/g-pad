@@ -1,9 +1,9 @@
 [package]
 name = "g-pad"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
-description = "An e-ink writing pad. Ready with a vision key. Designed for gstack and gbrain."
+description = "A reMarkable 2 that writes back: a pen-driven e-ink pad, a kids' tutor, and a paper front end for Claude Code."
 
 [dependencies]
 libc = "0.2"
