@@ -20,15 +20,21 @@ const THREAD_Y0: i32 = 148;
 const CONV_ROW_H: usize = 168;
 const THREAD_FOOTER: i32 = 150;
 const SCROLL_STEP: i32 = 80;
-/// Four tabs across the drawer header. The labels are drawn at these same
+/// Five tabs across the drawer header. The labels are drawn at these same
 /// x positions, so a tap always lands on the word it looks like it hit.
-const TAB_HISTORY_X: usize = 100;
-const TAB_CORPUS_X: i32 = 252;
-const TAB_SESSIONS_X: i32 = 400;
-const TAB_VAULT_X: i32 = 548;
+/// Five words do not fit the half-width panel at the label size the rows
+/// use, so the header wears a slightly smaller face; a test measures the
+/// labels against these positions so a sixth tab cannot sneak in blind.
+const TAB_PX: f32 = 28.0;
+const TAB_GAP: i32 = 18;
+const TAB_HISTORY_X: usize = 94;
+const TAB_CORPUS_X: i32 = 226;
+const TAB_SESSIONS_X: i32 = 354;
+const TAB_VAULT_X: i32 = 478;
+const TAB_BRIEF_X: i32 = 576;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DrawerKind { History, Corpus, Sessions, Vault }
+pub enum DrawerKind { History, Corpus, Sessions, Vault, Brief }
 
 pub struct Drawer {
     pub kind: DrawerKind,
@@ -59,6 +65,11 @@ pub enum Action {
     OpenDir(usize),
     /// One step back up the vault — the ← that replaces × inside a folder.
     VaultUp,
+    /// The brief tab itself.
+    Brief,
+    /// Open the day's brief as a full page. Any item row opens the same
+    /// page: the brief is one page by design (docs/daily-brief.md).
+    OpenBrief,
     Replay(u64),
     Threads,
     OpenThread(usize),
@@ -88,7 +99,8 @@ impl Drawer {
     pub fn tap(&mut self, x: i32, y: i32, store: &Option<MemoryStore>) -> Action {
         if x < 0 || x >= PANEL_W as i32 { return Action::Close; }
         if y < HEADER_H {
-            if x < 100 {
+            // The corner glyph owns the header left of the first tab.
+            if x < TAB_HISTORY_X as i32 - TAB_GAP / 2 {
                 if self.kind == DrawerKind::History && self.thread.is_some() {
                     return Action::Threads;
                 }
@@ -102,7 +114,17 @@ impl Drawer {
             if x < TAB_CORPUS_X { return Action::History; }
             if x < TAB_SESSIONS_X { return Action::Corpus; }
             if x < TAB_VAULT_X { return Action::Sessions; }
-            return Action::Vault;
+            if x < TAB_BRIEF_X { return Action::Vault; }
+            return Action::Brief;
+        }
+        // The BRIEF tab lists the day's items; the brief itself is one page,
+        // so every row opens the same page. Row geometry is the board's.
+        if self.kind == DrawerKind::Brief {
+            let rows = crate::brief::held().items.len();
+            return match session_index_at(y) {
+                Some(i) if i + session_scroll(rows, self.scroll) < rows => Action::OpenBrief,
+                _ => Action::None,
+            };
         }
         // The AGENTS tab is a selector: tick a row, open that session. This
         // is navigation, which writes nothing — the read-only rule was only
@@ -160,21 +182,128 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
     let close = if (drawer.kind == DrawerKind::History && drawer.thread.is_some())
         || (drawer.kind == DrawerKind::Vault && !crate::vault::held().prefix.is_empty())
     { "←" } else { "×" };
-    text(surf, font, close, LABEL_PX, PAD, 36, BLACK);
-    text(surf, font, "HISTORY", LABEL_PX, TAB_HISTORY_X, 36,
+    text(surf, font, close, TAB_PX, PAD, 36, BLACK);
+    text(surf, font, "HISTORY", TAB_PX, TAB_HISTORY_X, 36,
         if drawer.kind == DrawerKind::History { BLUE } else { BLACK });
-    text(surf, font, "CORPUS", LABEL_PX, TAB_CORPUS_X as usize, 36,
+    text(surf, font, "CORPUS", TAB_PX, TAB_CORPUS_X as usize, 36,
         if drawer.kind == DrawerKind::Corpus { BLUE } else { BLACK });
-    text(surf, font, "AGENTS", LABEL_PX, TAB_SESSIONS_X as usize, 36,
+    text(surf, font, "AGENTS", TAB_PX, TAB_SESSIONS_X as usize, 36,
         if drawer.kind == DrawerKind::Sessions { BLUE } else { BLACK });
-    text(surf, font, "VAULT", LABEL_PX, TAB_VAULT_X as usize, 36,
+    text(surf, font, "VAULT", TAB_PX, TAB_VAULT_X as usize, 36,
         if drawer.kind == DrawerKind::Vault { BLUE } else { BLACK });
+    text(surf, font, "BRIEF", TAB_PX, TAB_BRIEF_X as usize, 36,
+        if drawer.kind == DrawerKind::Brief { BLUE } else { BLACK });
     rule(surf, 0, 104, PANEL_W, 2);
     match drawer.kind {
         DrawerKind::History => draw_history(surf, font, store, drawer),
         DrawerKind::Corpus => draw_corpus(surf, font, store, snapshot, drawer.scroll),
         DrawerKind::Sessions => draw_sessions(surf, font, &crate::bridge::held(), drawer.scroll),
         DrawerKind::Vault => draw_vault(surf, font, &crate::vault::held(), drawer.scroll),
+        DrawerKind::Brief => draw_brief(surf, font, &crate::brief::held(),
+            crate::brief::configured(), drawer.scroll),
+    }
+}
+
+/// The day's brief as rows — the selector for the one-page reader.
+///
+/// Title, then source and date: provenance stays visible on the shelf as it
+/// does on the page. `configured` rides in as an argument so the drawing
+/// can be checked without touching the process environment.
+fn draw_brief(surf: &mut Surface, font: &FontRef, brief: &crate::brief::Brief,
+    configured: bool, scroll: i32) {
+    if !configured {
+        text(surf, font, "BRIEF NOT CONFIGURED", LABEL_PX, PAD, 170, BLACK);
+        text(surf, font, "SET RIDDLE_BRIEF_URL IN ORACLE.ENV", LABEL_PX, PAD, 220, BLUE);
+        return;
+    }
+    if brief.items.is_empty() {
+        let msg = if brief.stale { "NO BRIEF · NOT REFRESHED" } else { "NO BRIEF YET" };
+        text(surf, font, msg, LABEL_PX, PAD, 170, BLACK);
+        return;
+    }
+    let skipped = session_scroll(brief.items.len(), scroll);
+    let mut y = HEADER_H as usize + 16;
+    let mut shown = 0usize;
+    for item in &brief.items[skipped..] {
+        if y + CONV_ROW_H > SCREEN_H { break; }
+        let meta = crate::page::meta_line(&item.source, &item.date).to_uppercase();
+        text(surf, font, &one_line(&item.title, 34), LABEL_PX, PAD, y, BLACK);
+        text(surf, font, &one_line(&meta, 34), LABEL_PX, PAD, y + 42, BLUE);
+        text(surf, font, &one_line(&item.excerpt, 42), LABEL_PX, PAD, y + 84, BLACK);
+        rule(surf, PAD, y + CONV_ROW_H - 16, PANEL_W - 2 * PAD, 1);
+        y += CONV_ROW_H;
+        shown += 1;
+    }
+    // The date leads the footer, then what was left out.
+    let mut parts: Vec<String> = vec![brief.date.to_uppercase()];
+    let more = sessions_footer(brief.items.len() - skipped, shown, brief.stale);
+    if !more.is_empty() {
+        parts.push(more);
+    }
+    text(surf, font, &parts.join(" · "), LABEL_PX, PAD, SCREEN_H - 60, BLUE);
+}
+
+/// The brief page's header targets, mirroring `note_page_action`: `← BRIEF`
+/// on the left returns to the drawer, `×` on the right closes to the canvas,
+/// and the rest of the page is inert to touch.
+pub fn brief_page_action(x: i32, y: i32) -> Action {
+    if !(0..=100).contains(&y) {
+        return Action::None;
+    }
+    if (0..420).contains(&x) {
+        return Action::Brief;
+    }
+    if (SCREEN_W as i32 - 240..SCREEN_W as i32).contains(&x) {
+        return Action::Close;
+    }
+    Action::None
+}
+
+/// The day's brief, full page, through `brief::layout_page`: the date, an
+/// optional briefing line, then as many items as fit, and a footer that
+/// says how many did not. One page, no navigation (docs/daily-brief.md).
+pub fn draw_brief_page(surf: &mut Surface, font: &FontRef, brief: &crate::brief::Brief) {
+    use crate::page;
+    let layout = crate::brief::layout_page(font, brief);
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    full_text(surf, font, "← BRIEF", PAGE_LABEL_PX, page::PAD, 40, BLACK);
+    full_text(surf, font, "×", PAGE_LABEL_PX, SCREEN_W - page::PAD - 28, 40, BLACK);
+    rule(surf, page::PAD, 100, SCREEN_W - page::PAD * 2, 2);
+    // The date shares the header row with the targets, right of ← BRIEF's
+    // reach, so the items start where `layout_page` measured from.
+    let header = if brief.date.is_empty() { "THE BRIEF".to_string() } else { brief.date.to_uppercase() };
+    full_text(surf, font, &header, PAGE_LABEL_PX, 440, 40, BLUE);
+    let mut y = page::HEADER_H;
+    if let Some(summary) = &brief.summary {
+        for line in page::wrap_capped(font, summary, page::BODY_PX, 2) {
+            full_text(surf, font, &line, page::BODY_PX, page::PAD, y, BLACK);
+            y += page::LINE_H;
+        }
+    }
+    if layout.laid_out.is_empty() {
+        let msg = if brief.stale { "Nothing held, and the feed could not be reached." }
+            else { "Nothing in the brief yet." };
+        full_text(surf, font, msg, page::BODY_PX, page::PAD, y, BLACK);
+    }
+    for item in &layout.laid_out {
+        for line in &item.title_lines {
+            full_text(surf, font, line, page::TITLE_PX, page::PAD, y, BLACK);
+            y += page::TITLE_LINE_H;
+        }
+        full_text(surf, font, &item.meta, PAGE_LABEL_PX, page::PAD, y, BLUE);
+        y += page::LINE_H;
+        for line in &item.body_lines {
+            full_text(surf, font, line, page::BODY_PX, page::PAD, y, BLACK);
+            y += page::LINE_H;
+        }
+        y += item.height
+            - item.title_lines.len() * page::TITLE_LINE_H
+            - page::LINE_H
+            - item.body_lines.len() * page::LINE_H;
+    }
+    let footer = crate::brief::footer_label(&layout, brief.stale);
+    if !footer.is_empty() {
+        full_text(surf, font, &footer.to_uppercase(), PAGE_LABEL_PX, page::PAD, SCREEN_H - 66, BLUE);
     }
 }
 
@@ -1050,7 +1179,7 @@ mod tests {
     }
 
     #[test]
-    fn the_header_splits_three_ways_and_each_tab_is_reachable() {
+    fn the_header_splits_five_ways_and_each_tab_is_reachable() {
         let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
         let ptr = bytes.as_mut_ptr();
         let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
@@ -1059,7 +1188,32 @@ mod tests {
         assert_eq!(d.tap(TAB_HISTORY_X as i32 + 4, 36, &None), Action::History);
         assert_eq!(d.tap(TAB_CORPUS_X + 4, 36, &None), Action::Corpus);
         assert_eq!(d.tap(TAB_SESSIONS_X + 4, 36, &None), Action::Sessions);
+        assert_eq!(d.tap(TAB_VAULT_X + 4, 36, &None), Action::Vault);
+        assert_eq!(d.tap(TAB_BRIEF_X + 4, 36, &None), Action::Brief);
         assert_eq!(d.tap(20, 36, &None), Action::Close);
+    }
+
+    #[test]
+    fn five_tab_labels_fit_the_header_without_touching() {
+        // The labels are drawn at the tab x positions the taps are read
+        // against, so a label that runs into its neighbour is also a tap
+        // that lands on the wrong word. Measure, do not eyeball.
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let tabs = [
+            (TAB_HISTORY_X as i32, "HISTORY"), (TAB_CORPUS_X, "CORPUS"), (TAB_SESSIONS_X, "AGENTS"),
+            (TAB_VAULT_X, "VAULT"), (TAB_BRIEF_X, "BRIEF"),
+        ];
+        for w in tabs.windows(2) {
+            let end = w[0].0 + script::measure(&font, w[0].1, TAB_PX).ceil() as i32;
+            assert!(end + TAB_GAP <= w[1].0,
+                "{} runs to {end} but {} starts at {}", w[0].1, w[1].1, w[1].0);
+        }
+        let (x, label) = tabs[4];
+        let end = x + script::measure(&font, label, TAB_PX).ceil() as i32;
+        assert!(end + PAD as i32 <= PANEL_W as i32 - 2, "BRIEF runs to {end}, past the panel's margin");
+        // The close glyph keeps its own room before the first tab.
+        let close_end = PAD as i32 + script::measure(&font, "×", TAB_PX).ceil() as i32;
+        assert!(close_end + TAB_GAP <= TAB_HISTORY_X as i32);
     }
 
     #[test]
@@ -1217,6 +1371,86 @@ mod tests {
         assert_eq!(note_page_action(50, 40), Action::Vault);
         assert_eq!(note_page_action(SCREEN_W as i32 - 50, 40), Action::Close);
         assert_eq!(note_page_action(700, 900), Action::None);
+    }
+
+    fn brief_with(n: usize) -> crate::brief::Brief {
+        crate::brief::Brief {
+            date: "24 August 2026".into(),
+            summary: None,
+            items: (0..n).map(|i| crate::brief::Item {
+                id: format!("item-{i}"),
+                title: format!("Headline number {i} about a program moving to production"),
+                source: "Defense Innovation Unit".into(),
+                excerpt: "The unit is standing up a program to move companies from prototype \
+                    to production without a new competition, and here is the rest.".into(),
+                date: "today".into(),
+            }).collect(),
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn the_brief_tab_says_why_it_is_empty_and_lists_the_items_when_it_has_them() {
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let rows = |surf: &Surface| (HEADER_H as usize + 16..SCREEN_H - 80).step_by(4)
+            .any(|y| (PAD..PANEL_W - PAD).step_by(4).any(|x| surf.luma(x as i32, y as i32) < 128));
+
+        // Unconfigured: the tab says so and names the knob, and no row is a target.
+        let store = None;
+        draw_brief(&mut surf, &font, &crate::brief::Brief::default(), false, 0);
+        assert!(rows(&surf), "an unconfigured tab must explain itself on the page");
+        let mut d = Drawer::open(&surf, DrawerKind::Brief, None, 0, None);
+        crate::brief::replace(crate::brief::Brief::default());
+        assert_eq!(d.tap(200, HEADER_H + 30, &store), Action::None);
+
+        // Configured, nothing yet, and a failed poll: both say so.
+        surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+        draw_brief(&mut surf, &font, &crate::brief::Brief { stale: true, ..Default::default() }, true, 0);
+        assert!(rows(&surf), "a stale empty brief must say it was not refreshed");
+
+        // Held items draw as rows, and a tick on any row opens the page.
+        crate::brief::replace(brief_with(3));
+        surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+        draw_brief(&mut surf, &font, &crate::brief::held(), true, 0);
+        assert!(rows(&surf));
+        let top = HEADER_H + 16;
+        assert_eq!(d.tap(200, top + 10, &store), Action::OpenBrief);
+        assert_eq!(d.tap(200, top + 2 * CONV_ROW_H as i32 + 10, &store), Action::OpenBrief);
+        // Below the last drawn row is nothing.
+        assert_eq!(d.tap(200, top + 3 * CONV_ROW_H as i32 + 10, &store), Action::None);
+        crate::brief::replace(crate::brief::Brief::default());
+    }
+
+    #[test]
+    fn the_brief_page_draws_full_width_through_the_layout_and_its_header_maps() {
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let brief = brief_with(40);
+        let layout = crate::brief::layout_page(&font, &brief);
+        assert!(layout.remaining > 0, "40 items cannot fit one page");
+        draw_brief_page(&mut surf, &font, &brief);
+        // The body paints past the drawer boundary — a page, not a panel.
+        let dark_right = (PANEL_W..SCREEN_W).step_by(3).any(|x| {
+            (0..SCREEN_H).step_by(5).any(|y| surf.luma(x as i32, y as i32) < 200)
+        });
+        assert!(dark_right, "no ink right of PANEL_W — the brief page is clipped to the drawer");
+        // The footer says what was left out.
+        let footer_ink = (crate::page::PAD..SCREEN_W / 2).step_by(3)
+            .any(|x| (SCREEN_H - 70..SCREEN_H - 30).step_by(3).any(|y| surf.luma(x as i32, y as i32) < 200));
+        assert!(footer_ink, "a page that left items out must say so at the foot");
+        // A stale brief still draws, and an empty one does not panic.
+        draw_brief_page(&mut surf, &font, &crate::brief::Brief { stale: true, ..brief_with(2) });
+        draw_brief_page(&mut surf, &font, &crate::brief::Brief::default());
+        // The header targets: left returns to the drawer, right closes, the
+        // middle of the page is inert.
+        assert_eq!(brief_page_action(50, 40), Action::Brief);
+        assert_eq!(brief_page_action(SCREEN_W as i32 - 50, 40), Action::Close);
+        assert_eq!(brief_page_action(700, 900), Action::None);
     }
 
     #[test]
