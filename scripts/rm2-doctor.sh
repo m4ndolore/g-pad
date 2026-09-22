@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# g-pad rM2 doctor — why AppLoad (or g-pad inside it) is missing.
+# Anthink rM2 doctor — why the pad is not on the screen.
 #
 #   Usage:  ./scripts/rm2-doctor.sh                      # finds the tablet itself
 #           RM_HOST=192.168.1.42 ./scripts/rm2-doctor.sh # or tell it where to look
@@ -7,14 +7,10 @@
 # Read-only: it looks, reports, and prints the exact command that fixes each
 # thing it finds. It never changes the tablet.
 #
-# AppLoad is not a stock app. It exists only while xovi is loaded into a
-# running xochitl, so "AppLoad is missing" is always one of four states, and
-# this tells you which:
-#   1. xovi was never installed
-#   2. xovi is installed but not running (the usual one after a reboot or an
-#      OS update, which restarts xochitl without the loader)
-#   3. xovi is running but appload.so is absent or failed to load
-#   4. AppLoad is there and it is the g-pad bundle that is missing
+# It checks, in order: the bundle and its release stamp against the OS
+# version, the boot unit (present, enabled, running), the Anthink shutdown
+# images (an OS update puts the stock ones back), and, only if they are
+# installed, xovi and AppLoad.
 set -euo pipefail
 
 RM_HOST="${RM_HOST:-}"          # empty = go and find it
@@ -127,7 +123,7 @@ if ! rm_ssh true 2>/dev/null; then
   installer does that for you, and the password is on the tablet under
   Settings > General > Help > Copyrights and licenses (GPLv3 Compliance):
 
-    RM_HOST=$RM_HOST ./scripts/install-rm2.sh
+    curl -fsSL https://github.com/m4ndolore/g-pad/releases/latest/download/install.sh | RM_HOST=$RM_HOST bash
 
   If it hung up on you, clear a stale host key and retry:
     ssh-keygen -R $RM_HOST
@@ -141,101 +137,79 @@ OSVER="$(rm_ssh 'sed -n "s/^REMARKABLE_RELEASE_VERSION=//p" /usr/share/remarkabl
 [ "$MACHINE" = "reMarkable 2.0" ] && ok "device: $MACHINE" || warn "device reports '${MACHINE:-unknown}' — this doctor is written for the rM2"
 [ -n "$OSVER" ] && ok "reMarkable OS $OSVER"
 
-# --- 1. is xovi installed? ---------------------------------------------------
-say "xovi (the loader AppLoad rides on)"
-if rm_ssh 'test -x /home/root/xovi/start'; then
-    ok "/home/root/xovi is installed"
-else
-    bad "xovi is not installed"
-    fix "./scripts/install-rm2.sh   # with RM_HOST=$RM_HOST — installs xovi, AppLoad, and g-pad"
-    # Nothing below can be true without it; report and stop.
-    printf '\n\033[1mVerdict\033[0m\n  AppLoad is missing because xovi was never installed.\n\n'
-    printf '  %s\n' "${FIXES[@]}"
-    exit 0
-fi
+INSTALL="curl -fsSL https://github.com/m4ndolore/g-pad/releases/latest/download/install.sh | RM_HOST=$RM_HOST bash"
+APP=/home/root/xovi/exthome/appload/g-pad
 
-# --- 2. is it actually loaded into the running xochitl? ----------------------
-# This is the state an OS update or a plain reboot leaves behind: every file is
-# on disk, and none of it is in the process.
-XPID="$(rm_ssh 'pidof xochitl 2>/dev/null' || true)"
-if [ -z "$XPID" ]; then
-    bad "xochitl is not running (no stock UI to host AppLoad)"
-    fix "ssh root@$RM_HOST 'systemctl start xochitl'   # then start xovi below"
-elif rm_ssh "grep -q xovi /proc/$XPID/maps 2>/dev/null"; then
-    ok "xovi is loaded into the running xochitl (pid $XPID)"
-else
-    bad "xochitl is running WITHOUT xovi — this is why AppLoad is gone"
-    fix "ssh root@$RM_HOST '/home/root/xovi/start'   # restarts xochitl with the loader"
-fi
-
-if rm_ssh 'systemctl is-enabled xovi-tripletap >/dev/null 2>&1'; then
-    ok "xovi-tripletap is installed (triple-press power toggles xovi)"
-else
-    warn "no xovi-tripletap: nothing re-loads xovi after a reboot, so AppLoad"
-    warn "      will keep vanishing. The installer sets this up."
-fi
-
-# --- 3. AppLoad itself -------------------------------------------------------
-say "AppLoad"
-if rm_ssh 'test -f /home/root/xovi/extensions.d/appload.so'; then
-    ok "extensions.d/appload.so is present"
-else
-    bad "appload.so is not in /home/root/xovi/extensions.d"
-    fix "./scripts/install-rm2.sh   # with RM_HOST=$RM_HOST — reinstalls the launcher"
-fi
-if rm_ssh 'test -d /home/root/xovi/exthome/appload/shims'; then
-    ok "qtfb shims are in exthome/appload/shims"
-else
-    warn "no exthome/appload/shims — windowed apps will fail with"
-    warn "      \"qtfb server rejected init\" even if the launcher appears"
-fi
-
-# AppLoad injects its launcher into xochitl's UI through qt-resource-rebuilder,
-# whose hashtable is built per OS version. After an OS update the old table no
-# longer matches and the entry can silently stop appearing.
-HASH="$(rm_ssh 'ls /home/root/xovi/exthome/qt-resource-rebuilder/*.dat /home/root/xovi/exthome/qt-resource-rebuilder/hashtab* 2>/dev/null | head -n 1' || true)"
-# The table names the OS it was built for; qmldiff refuses any other version
-# ("only valid for QML environment version X"), and AppLoad's hooks then
-# abort xochitl — on 3.28 twice in a row, which makes the OS reboot.
-HASHVER="$([ -n "$HASH" ] && rm_ssh "strings $HASH | grep -m1 -E '^3\\.[0-9]+\\.[0-9]+\\.[0-9]+\$'" || true)"
-if [ -n "$HASH" ] && [ -n "$OSVER" ] && [ -n "$HASHVER" ] && [ "$HASHVER" != "$OSVER" ]; then
-    bad "hashtable was built for OS $HASHVER, tablet runs $OSVER — starting xovi now"
-    bad "      aborts xochitl. Rebuild it first (the tablet must be awake):"
-    fix "ssh root@$RM_HOST '/home/root/xovi/rebuild_hashtable </dev/null'   # then check AppLoad supports $OSVER before /home/root/xovi/start"
-elif [ -n "$HASH" ]; then
-    ok "qt-resource-rebuilder hashtable present ($HASH${HASHVER:+, built for $HASHVER})"
-else
-    warn "no qt-resource-rebuilder hashtable — AppLoad's entry in the stock UI"
-    warn "      may not draw. Rebuild it (needs the tablet online):"
-    fix "ssh root@$RM_HOST '/home/root/xovi/rebuild_hashtable' && ssh root@$RM_HOST '/home/root/xovi/start'"
-fi
-
-if [ -n "$XPID" ] && rm_ssh "grep -q appload /proc/$XPID/maps 2>/dev/null"; then
-    ok "appload.so is mapped into xochitl — the launcher is live right now"
-fi
-
-# --- 4. the g-pad bundle inside AppLoad --------------------------------------
-say "g-pad bundle"
-FOUND=0
-for app in g-pad g-pad-windowed; do
-    if rm_ssh "test -x /home/root/xovi/exthome/appload/$app/g-pad"; then
-        ok "exthome/appload/$app is installed"
-        FOUND=1
-        if rm_ssh "test -f /home/root/xovi/exthome/appload/$app/oracle.env"; then
-            ok "  $app/oracle.env exists"
-        else
-            bad "  $app has no oracle.env — it will start but never reply"
-            fix "copy oracle.env.example to /home/root/xovi/exthome/appload/$app/oracle.env and set RIDDLE_OPENAI_KEY"
+# --- 1. the bundle ------------------------------------------------------------
+say "The pad"
+if rm_ssh "test -x $APP/g-pad"; then
+    ok "$APP is installed"
+    REL="$(rm_ssh "cat $APP/release.txt 2>/dev/null" || true)"
+    if [ -n "$REL" ]; then
+        VER="$(printf '%s\n' "$REL" | sed -n 's/^version=//p')"
+        BUILT_FOR="$(printf '%s\n' "$REL" | sed -n 's/^built_for=//p')"
+        ok "  release ${VER:-unknown}${BUILT_FOR:+, built for OS $BUILT_FOR}"
+        if [ -n "$BUILT_FOR" ] && [ -n "$OSVER" ] && [ "${OSVER%.*.*}" != "$BUILT_FOR" ]; then
+            bad "  the pad was built for OS $BUILT_FOR and the tablet runs $OSVER — the e-ink engine"
+            bad "      interface differs between them, so the pad can start and never draw"
+            fix "$INSTALL   # a release built for $OSVER, if one exists"
         fi
+    else
+        warn "  no release.txt — a bundle from before releases were stamped"
     fi
-done
-[ "$FOUND" -eq 1 ] || {
-    bad "no g-pad bundle under exthome/appload"
-    fix "./build-rm2.sh && RM_HOST=$RM_HOST ./scripts/install-rm2.sh"
-}
+    if rm_ssh "test -f $APP/libquill.so"; then
+        ok "  libquill.so is in the bundle"
+    else
+        bad "  libquill.so is missing from the bundle; the pad cannot open the panel"
+        fix "$INSTALL"
+    fi
+    if rm_ssh "test -f $APP/oracle.env"; then
+        ok "  oracle.env exists"
+    else
+        bad "  no oracle.env — the pad starts but never replies"
+        fix "ssh root@$RM_HOST 'cp $APP/oracle.env.example $APP/oracle.env'   # then set RIDDLE_OPENAI_KEY in it"
+    fi
+else
+    bad "no pad under $APP"
+    fix "$INSTALL"
+fi
+rm_ssh 'test -f /usr/lib/plugins/scenegraph/libqsgepaper.so' \
+    && ok "the OS's e-ink engine library is where the pad loads it from" \
+    || bad "no /usr/lib/plugins/scenegraph/libqsgepaper.so — not a stock reMarkable OS?"
 
-# --- 5. the Anthink shutdown images -------------------------------------------
-# install-boot-rm2.sh keeps the stock poweroff.png once under /home/root and
+# --- 2. the boot unit -----------------------------------------------------------
+# The product path: systemd starts the pad at boot, the stock UI is the
+# fallback underneath. An OS update swaps the root partition and takes the
+# unit with it; the bundle under /home/root survives.
+say "Boot unit"
+if rm_ssh 'test -f /etc/systemd/system/g-pad-takeover.service'; then
+    ok "g-pad-takeover.service is installed"
+    if rm_ssh 'systemctl is-enabled --quiet g-pad-takeover.service 2>/dev/null'; then
+        ok "  enabled at boot"
+    else
+        bad "  not enabled: the pad will not come up at boot"
+        fix "ssh root@$RM_HOST 'systemctl enable g-pad-takeover.service'"
+    fi
+    if rm_ssh 'test -e /home/root/g-pad-boot-off'; then
+        warn "  /home/root/g-pad-boot-off exists — the pad is deliberately off at boot"
+        warn "      (ssh root@$RM_HOST 'rm /home/root/g-pad-boot-off' to turn it back on)"
+    fi
+    STATE="$(rm_ssh 'systemctl is-active g-pad-takeover.service 2>/dev/null' || true)"
+    case "$STATE" in
+        active)   ok "  running now" ;;
+        inactive) warn "  not running right now (left with five fingers, the power button, or a stop);"
+                  warn "      it returns at the next boot, or: ssh root@$RM_HOST 'systemctl start g-pad-takeover'" ;;
+        failed)   bad "  the unit failed on its last run"
+                  fix "ssh root@$RM_HOST 'journalctl -u g-pad-takeover -b --no-pager | tail -n 40'" ;;
+        *)        warn "  state: ${STATE:-unknown}" ;;
+    esac
+else
+    bad "no boot unit — after an OS update this is expected: the unit lived on the old root partition"
+    fix "$INSTALL   # reinstalls the unit and the shutdown cards; the bundle and your pages are kept"
+fi
+
+# --- 3. the Anthink shutdown images ---------------------------------------------
+# The installer keeps the stock poweroff.png once under /home/root and
 # overwrites the OS copy. An OS update replaces the root partition, so the OS
 # copy being byte-identical to the kept stock file again means an update has
 # undone the install.
@@ -243,21 +217,55 @@ say "Anthink shutdown images"
 if rm_ssh 'test -e /home/root/g-pad-stock-images/poweroff.png'; then
     if rm_ssh 'cmp -s /usr/share/remarkable/poweroff.png /home/root/g-pad-stock-images/poweroff.png'; then
         bad "the OS shutdown images are back to stock — an OS update restored them"
-        fix "./scripts/install-boot-rm2.sh   # re-renders and re-installs the Anthink cards"
+        fix "$INSTALL   # re-installs the Anthink cards"
     else
         ok "power-off and reboot images are the Anthink cards"
     fi
 else
-    warn "Anthink shutdown images were never installed (install-boot-rm2.sh does it)"
+    warn "Anthink shutdown images were never installed (the installer does it)"
+fi
+
+# --- 4. xovi and AppLoad, only if they are there ----------------------------------
+# The pad does not need either: the boot unit starts it directly. They matter
+# only to someone launching from the stock UI's AppLoad entry, and on OS 3.28
+# AppLoad v0.5.3 aborts xochitl, so a stale install is worth knowing about.
+say "xovi and AppLoad (optional)"
+if ! rm_ssh 'test -x /home/root/xovi/start'; then
+    ok "xovi is not installed; the boot unit does not need it"
+else
+    ok "/home/root/xovi is installed"
+    XPID="$(rm_ssh 'pidof xochitl 2>/dev/null' || true)"
+    if [ -n "$XPID" ] && rm_ssh "grep -q xovi /proc/$XPID/maps 2>/dev/null"; then
+        ok "xovi is loaded into the running xochitl (pid $XPID)"
+    else
+        warn "xochitl is running without xovi (a reboot leaves it off); the pad does not mind"
+    fi
+    if rm_ssh 'test -f /home/root/xovi/extensions.d/appload.so'; then
+        ok "extensions.d/appload.so is present"
+    else
+        warn "appload.so is not in /home/root/xovi/extensions.d"
+    fi
+    # AppLoad injects its launcher through qt-resource-rebuilder, whose
+    # hashtable names the OS it was built for; qmldiff refuses any other
+    # version and AppLoad's hooks then abort xochitl — on 3.28 twice in a
+    # row, which makes the OS reboot.
+    HASH="$(rm_ssh 'ls /home/root/xovi/exthome/qt-resource-rebuilder/*.dat /home/root/xovi/exthome/qt-resource-rebuilder/hashtab* 2>/dev/null | head -n 1' || true)"
+    HASHVER="$([ -n "$HASH" ] && rm_ssh "strings $HASH | grep -m1 -E '^3\\.[0-9]+\\.[0-9]+\\.[0-9]+\$'" || true)"
+    if [ -n "$HASH" ] && [ -n "$OSVER" ] && [ -n "$HASHVER" ] && [ "$HASHVER" != "$OSVER" ]; then
+        bad "the xovi hashtable was built for OS $HASHVER, tablet runs $OSVER — starting xovi now aborts xochitl"
+        fix "ssh root@$RM_HOST '/home/root/xovi/rebuild_hashtable </dev/null'   # and check AppLoad supports $OSVER before /home/root/xovi/start"
+    elif [ -n "$HASH" ]; then
+        ok "qt-resource-rebuilder hashtable present${HASHVER:+, built for $HASHVER}"
+    fi
 fi
 
 # --- verdict -----------------------------------------------------------------
 printf '\n\033[1mVerdict\033[0m\n'
 if [ "${#VERDICT[@]}" -eq 0 ]; then
-    echo "  Everything the pad needs is installed and loaded. If AppLoad still is"
-    echo "  not on screen, open it from xochitl's menu and tap Reload; if the entry"
-    echo "  itself is absent, rebuild the hashtable and restart xovi:"
-    echo "    ssh root@$RM_HOST '/home/root/xovi/rebuild_hashtable && /home/root/xovi/start'"
+    echo "  Everything the pad needs is installed. If the screen shows the stock UI,"
+    echo "  the pad was left with five fingers or the power button; it returns at the"
+    echo "  next boot, or now with:"
+    echo "    ssh root@$RM_HOST 'systemctl start g-pad-takeover'"
 else
     printf '  %s\n' "${VERDICT[@]}"
 fi

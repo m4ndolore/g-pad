@@ -1,10 +1,10 @@
 # g-pad on the reMarkable 2 — setup from zero
 
-This guide installs the windowed AppLoad build. The direct Quill **takeover**
-build is the one to want: it removes the qtfb latency floor and is the only
-mode with touch gestures (history, settings, five-finger exit) and power
-handling — windowed has none of those. See "Takeover build" below, and keep
-SSH available as a recovery path the first time you launch it.
+This guide installs the Quill **takeover** build: the pad stops the stock UI
+and drives the e-ink engine directly, which is what gives it instant ink, the
+touch gestures, and power handling. The stock UI stays installed underneath as
+the fallback. Keep SSH available as a recovery path the first time you launch
+it.
 
 The rM2 needs no "developer mode": SSH as root is built into every unit.
 You need: the tablet, its USB-C cable, and ~15 minutes.
@@ -15,29 +15,31 @@ You need: the tablet, its USB-C cable, and ~15 minutes.
    licenses → GPLv3 Compliance** (bottom of the page; the IP shown is
    `10.11.99.1`). Note the password somewhere safe.
 2. Plug the tablet in over USB.
-3. Build and install everything:
+3. On any machine with `ssh`:
 
 ```sh
-rustup target add armv7-unknown-linux-musleabihf   # once; needs zig + cargo-zigbuild
-cd g-pad && ./build-rm2.sh && cd ..
-./scripts/install-rm2.sh
+curl -fsSL https://github.com/m4ndolore/g-pad/releases/latest/download/install.sh | bash
 ```
 
-The installer connects over SSH (asking for that password once, then installing
-your key), confirms the device is an rM2, installs
-[xovi](https://github.com/asivery/xovi) +
-[AppLoad](https://github.com/asivery/rm-appload) from their official arm32
-releases, adds power-button persistence via
-[xovi-tripletap](https://github.com/rmitchellscott/xovi-tripletap)
-(triple-press = toggle xovi), copies the riddle bundle, prompts for your API
-key, and verifies the oracle end-to-end.
+The installer (`scripts/install.sh`, also attached to every release) finds the
+tablet over USB or an iPhone hotspot, installs your SSH key so the password is
+typed once, confirms the device is an rM2 and reads its OS version, downloads
+the release bundle and checks it against `SHA256SUMS`, copies it to
+`/home/root/xovi/exthome/appload/g-pad`, installs the boot unit and the Anthink
+shutdown cards, prompts for your API key, and starts the pad. It never installs
+xovi or AppLoad: the boot unit starts the pad directly, and on OS 3.28 AppLoad
+does not work anyway (see "After a reMarkable OS update").
 
-Then on the tablet: open **AppLoad → g-pad**, write, rest the pen ~3 s.
+Options: `RM_HOST=<ip>` for a tablet on your Wi-Fi, `ANTHINK_VERSION=vX.Y.Z` to
+pin a release, `ANTHINK_BUNDLE=dist/rm2-takeover/g-pad` to install a build of
+your own, and `--uninstall` to disable the boot unit and restore the stock
+shutdown images.
 
-> ⚠️ Everything here is reversible (`ssh root@10.11.99.1
-> /home/root/xovi/stock` or a reboot returns the stock UI), but reMarkable OS
-> updates can remove xovi/AppLoad/riddle — reinstallable by re-running the
-> installer. Keep the SSH password: it is your escape hatch.
+> ⚠️ Everything here is reversible (the five-finger hold, the power button in
+> the boot window, `ssh root@10.11.99.1 'systemctl stop g-pad-takeover'`, or
+> the installer's `--uninstall`), but a reMarkable OS update removes the boot
+> unit and the shutdown cards. Re-run the installer afterwards. Keep the SSH
+> password: it is your escape hatch.
 
 ### If SSH won't connect
 
@@ -90,14 +92,14 @@ Once `libquill.so` exists, the Rust side does not need the SDK at all —
 
 ```sh
 ./build-takeover-zig.sh                 # brew install zig cargo-zigbuild
-DEVICE=rm2 ./scripts/make-bundle.sh
-scp -O -r dist/rm2-takeover/g-pad root@10.11.99.1:/home/root/xovi/exthome/appload/
+DEVICE=rm2 ./scripts/make-bundle.sh     # stages dist/rm2-takeover/g-pad with the cards
+ANTHINK_BUNDLE=dist/rm2-takeover/g-pad ./scripts/install.sh
 ```
 
-The two bundles carry different AppLoad ids (`g-pad` for takeover,
-`g-pad-windowed` for qtfb) so both can be installed side by side. Leave
-takeover with a **five-finger hold**; if it ever exits badly,
-`ssh root@10.11.99.1 'systemctl start xochitl'` restores the stock UI.
+The installer with `ANTHINK_BUNDLE` does exactly what the release path does,
+from your build instead of a download. Leave takeover with a **five-finger
+hold**; if it ever exits badly, `ssh root@10.11.99.1 'systemctl start xochitl'`
+restores the stock UI.
 
 ## The oracle key
 
@@ -133,8 +135,8 @@ in Stealth, SETTINGS on the control strip in Guided) handles:
   (read-only facts)
 
 After REBOOT or POWER OFF (and the next power-on) the pad comes back by
-itself: the boot-persistent `g-pad-takeover.service` from
-`scripts/install-boot-rm2.sh` starts it in place of the stock UI. What does
+itself: the boot-persistent `g-pad-takeover.service` the installer enables
+starts it in place of the stock UI. What does
 not come back is AppLoad — xovi is not loaded at boot. That only matters if
 you LEAVE TO STOCK UI and want the AppLoad entries; then
 `ssh rm2 /home/root/xovi/start`.
@@ -164,21 +166,25 @@ overridden values in its environment.
 
 ## Manual path (what the installer does, step by step)
 
-If you prefer to run each step yourself:
+If you prefer to run each step yourself, with `APP=/home/root/xovi/exthome/appload/g-pad`:
 
-1. **xovi** — grab `xovi-arm32.tar.gz` from
-   [rm-xovi-extensions releases](https://github.com/asivery/rm-xovi-extensions/releases/latest)
-   (it contains the loader, start/stop scripts, and qt-resource-rebuilder), and
-   extract on the tablet: `tar -xzf xovi.tar.gz -C /home/root`.
-2. **AppLoad** — grab `appload-arm32.zip` from
-   [rm-appload releases](https://github.com/asivery/rm-appload/releases/latest).
-   `appload.so` goes to `/home/root/xovi/extensions.d/`; the `shims/` folder
-   goes to `/home/root/xovi/exthome/appload/shims/` (not extensions.d).
-3. **Persistence** — on the tablet:
-   `wget -qO- https://raw.githubusercontent.com/rmitchellscott/xovi-tripletap/main/install.sh | bash`
-4. **riddle** — `scp -O -r dist/rm2/riddle root@10.11.99.1:/home/root/xovi/exthome/appload/`,
-   then create `oracle.env` in that folder (see above).
-5. **Start** — `/home/root/xovi/start` on the tablet (or triple-press power).
+1. **The bundle** — unzip `anthink-rm2-<tag>.zip` from the
+   [latest release](https://github.com/m4ndolore/g-pad/releases/latest) and
+   `scp -O -r g-pad root@10.11.99.1:/home/root/xovi/exthome/appload/`. Or stage
+   your own with `DEVICE=rm2 ./scripts/make-bundle.sh` and copy
+   `dist/rm2-takeover/g-pad` the same way.
+2. **The boot unit** — on the tablet: `cp $APP/g-pad-takeover.service
+   /etc/systemd/system/ && systemctl daemon-reload && systemctl enable
+   g-pad-takeover`. The unit runs `$APP/g-pad-boot.sh`, which holds the
+   three-second escape window and then hands over to `g-pad-takeover.sh`.
+3. **The shutdown cards** — keep the stock images once, then copy the pad's:
+   `mkdir -p /home/root/g-pad-stock-images && cp /usr/share/remarkable/{poweroff,rebooting}.png /home/root/g-pad-stock-images/`
+   and `cp $APP/cards/{poweroff,rebooting}.png /usr/share/remarkable/`.
+4. **The key** — create `$APP/oracle.env` (see "The oracle key" above).
+5. **Start** — `systemctl start g-pad-takeover` on the tablet, or reboot.
+
+xovi and AppLoad are not part of this. If you already have them and want an
+AppLoad entry as well, the bundle's `appload-launch.sh` starts the same unit.
 
 ## After a reMarkable OS update
 
@@ -192,8 +198,9 @@ not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
   tunnel. Fix: `ssh-keygen -R 10.11.99.1` (and the Wi-Fi address), then
   connect once to accept the new key.
 - **The takeover unit is gone** (`/etc/systemd/system/g-pad-takeover.service`),
-  so the pad no longer owns the panel at boot. Re-run
-  `./scripts/install-boot-rm2.sh`. The bundle under AppLoad is untouched.
+  so the pad no longer owns the panel at boot. Re-run the installer
+  (`scripts/install.sh`). The bundle and your pages under `/home/root` are
+  untouched.
 - **The qt-resource-rebuilder hashtable is stale.** It names the OS it was
   built for, qmldiff skips it on any other version, and AppLoad's hooks then
   abort xochitl; on 3.28 the OS answers two aborts with a reboot. Rebuild it
@@ -206,8 +213,8 @@ not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
   does not need AppLoad: the boot unit starts g-pad directly.
 - **The shutdown images revert to stock** (`/usr/share/remarkable/poweroff.png`
   and `rebooting.png` live on the root partition). POWER OFF and REBOOT show
-  the reMarkable screens again instead of the Anthink cards. Re-run
-  `./scripts/install-boot-rm2.sh`, which re-renders and re-installs them
+  the reMarkable screens again instead of the Anthink cards. Re-run the
+  installer, which carries the cards in the bundle and re-installs them
   (`rm2-doctor.sh` reports it).
 - **3.28 dropped `timeout` and `pkill` from busybox.** Scripts that relied on
   them stop working silently. The boot escape window lives inside g-pad now;
@@ -220,16 +227,21 @@ not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
 
 ## Troubleshooting
 
-- **AppLoad is missing from the tablet** — AppLoad is not a stock app. It exists
-  only while xovi is loaded into a *running* xochitl, so the entry disappears
-  whenever the loader is not in the process: after a reboot without
-  xovi-tripletap, after a reMarkable OS update (which restarts xochitl and can
-  invalidate the per-version qt hashtable AppLoad's entry is drawn through), or
-  because xovi was never installed at all. Ask the tablet which one it is:
+- **The pad is not on the screen** — either it was left (five fingers, the
+  power button in the boot window, or a `systemctl stop`) and returns at the
+  next boot, or an OS update removed the boot unit, or the bundle was built
+  for a different OS than the tablet now runs. Ask the tablet which one it is:
 
   ```sh
   ./scripts/rm2-doctor.sh
   ```
+
+- **AppLoad is missing from the tablet** — only relevant if you launch from
+  the stock UI's AppLoad entry, which the pad does not need. AppLoad exists
+  only while xovi is loaded into a *running* xochitl, so the entry disappears
+  after a reboot without xovi-tripletap or after an OS update, which can also
+  invalidate the per-version qt hashtable its entry is drawn through. The
+  doctor reports the state when xovi is installed.
 
   It is read-only — it finds the tablet, reports what is installed, what is
   loaded into the running xochitl, and prints the one command that fixes what
@@ -247,7 +259,7 @@ not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
   is `.1` and clients get `.2` through `.14`, so it is thirteen addresses, not a
   search. On any other network the tablet will tell you: Settings → Wi-Fi, tap
   the connected network. Pass it as `RM_HOST` to the doctor and to
-  `install-rm2.sh`.
+  `install.sh`.
 
   Whatever the network, *this computer has to be on it too* — a hotspot only
   routes between its own clients, so sharing from a phone the laptop hasn't
@@ -284,14 +296,17 @@ not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
   the g-pad bundle itself has to be cross-compiled elsewhere.
 
 - **Ink lands in the wrong place / mirrored** — the raw digitizer transform is
-  off for your unit. The qtfb pen fallback (used automatically when the raw
-  device can't be opened) is always correctly mapped — compare against it and
-  open an issue with what you see.
-- **"qtfb server rejected init"** — AppLoad missing or old, or its `shims/`
-  never landed under `exthome/appload/`; run `scripts/rm2-doctor.sh` to see
-  which, re-run the installer, then Reload in AppLoad.
+  off for your unit. Open an issue with what you see and the OS version.
+- **The card comes up and nothing draws after it** — the bundle's
+  `libquill.so` was built for a different OS than the tablet runs (the e-ink
+  engine's interface changed at 3.28). `rm2-doctor.sh` compares the release
+  stamp with the OS; install a matching release or rebuild with
+  `./quill/build-zig.sh`.
 - **No reply, ink blot pulses forever** — oracle problem: re-run
-  `--oracle-test`; check Wi-Fi, key, and that the model supports images.
-- **Tablet acting up** — `ssh rm2 'systemctl restart xochitl'` restores the
-  stock UI; worst case hold power ~10 s to reboot. riddle in windowed mode
-  never stops xochitl, so the blast radius is small.
+  `--oracle-test`; check Wi-Fi, key, and that the model supports images. The
+  SYSTEM page shows the oracle state without ssh.
+- **Tablet acting up** — `ssh root@10.11.99.1 'systemctl stop g-pad-takeover'`
+  exits the pad and brings the stock UI back; worst case hold power ~10 s to
+  reboot, and press the power button once during the boot card to stay on
+  the stock UI for that boot. Never `systemctl restart` the pad's unit: stop,
+  wait for the stock UI, then start.

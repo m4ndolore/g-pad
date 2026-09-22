@@ -1,8 +1,8 @@
 {
   "id": "g-pad",
   "name": "g-pad",
-  "version": "0.1.0",
-  "description": "An e-ink writing pad. Ready with a vision key. Designed for gstack and gbrain.",
+  "version": "0.2.0",
+  "description": "A reMarkable 2 that writes back.",
   "application": "appload-launch.sh",
   "qtfb": false
 }

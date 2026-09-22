@@ -62,39 +62,44 @@ Offline means capture and queue, not unplugged and mute.
 
 ## Install on a reMarkable 2
 
-You need a reMarkable 2 with root SSH (the password is under Settings → Help →
-Copyrights and licenses → GPLv3 Compliance), [xovi](https://github.com/asivery/xovi)
-with [AppLoad](https://github.com/asivery/rm-appload), and a vision-capable API key.
-The build host needs Rust, `zig`, and `cargo-zigbuild`.
+Plug the tablet in over USB. On any machine with `ssh`:
+
+```sh
+curl -fsSL https://github.com/m4ndolore/g-pad/releases/latest/download/install.sh | bash
+```
+
+Two minutes. The installer finds the tablet, installs your SSH key so the root
+password is typed once, checks the OS version, downloads the prebuilt bundle and
+verifies its checksum, installs a boot unit so the pad owns the screen from
+power-on, asks for a vision-capable API key, and starts the pad. Nothing to
+build, no developer mode, no launcher to install. The tablet's root password is
+under Settings → Help → Copyrights and licenses → GPLv3 Compliance.
+
+```sh
+curl -fsSL https://github.com/m4ndolore/g-pad/releases/latest/download/install.sh | bash -s -- --uninstall
+```
+
+puts the stock UI back. Your pages stay on the tablet until you delete them.
+
+If anything looks wrong, `./scripts/rm2-doctor.sh` finds the tablet over USB or a
+phone hotspot, reads its state without changing anything, and prints the one
+command that fixes what it found. [docs/rm2-setup.md](docs/rm2-setup.md) covers
+the SSH quirks and what an OS update takes away.
+
+### Build it yourself
+
+The build host needs Rust, `zig`, and `cargo-zigbuild`. No reMarkable SDK.
 
 ```sh
 rustup target add armv7-unknown-linux-gnueabihf
 brew install zig cargo-zigbuild            # or: cargo install cargo-zigbuild
 
-# 1. The clean-room display adapter. Pulls Qt headers from a Debian armhf
-#    package and three libraries off *your* tablet. No reMarkable SDK.
-./quill/build-zig.sh
-
-# 2. The pad, linked against it.
-./build-takeover-zig.sh
+./quill/build-zig.sh          # the display adapter: Debian armhf Qt headers
+                              # plus three libraries copied off *your* tablet
+./build-takeover-zig.sh       # the pad, linked against it
 DEVICE=rm2 ./scripts/make-bundle.sh
-
-# 3. Onto the tablet.
-scp -O -r dist/rm2-takeover/g-pad root@10.11.99.1:/home/root/xovi/exthome/appload/
+ANTHINK_BUNDLE=dist/rm2-takeover/g-pad ./scripts/install.sh
 ```
-
-Then `cp oracle.env.example oracle.env` in that folder on the tablet and set
-`RIDDLE_OPENAI_KEY`. In AppLoad, tap **Reload**, then **g-pad**. Write, and rule a
-line beneath it.
-
-To own the panel from power-on instead of launching from AppLoad, run
-`./scripts/install-boot-rm2.sh`. It installs a systemd unit with an offline kill
-switch and replaces the OS shutdown screens with the Anthink cards.
-
-If anything looks wrong, `./scripts/rm2-doctor.sh` finds the tablet over USB or a
-phone hotspot, reads its state without changing anything, and prints the one
-command that fixes what it found. [docs/rm2-setup.md](docs/rm2-setup.md) covers
-the SSH quirks, the full build, and what an OS update takes away.
 
 > **This modifies your device.** Takeover stops the reMarkable UI and drives the
 > e-ink engine directly as root. Leave with a **five-finger hold**, and xochitl
