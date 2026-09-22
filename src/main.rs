@@ -888,11 +888,9 @@ fn run() -> std::io::Result<()> {
     let mut notebook = notebook::Notebook::new();
     let mut banner_saved: Option<Vec<u8>> = None;
     let mut banner_until: Option<Instant> = None;
-    // What the pen tip does, chosen from the tap-summoned palette. The
-    // marker's hardware eraser end always erases regardless of this.
+    // What the pen tip does, flipped from the strip's tip cell or the SYSTEM
+    // page. The marker's hardware eraser end always erases regardless.
     let mut selected_tool = pen::Tool::Pen;
-    let mut palette: Option<ui::Palette> = None;
-    let mut palette_until: Option<Instant> = None;
 
     // Reply draw speed: points drawn per animation frame. Higher = the answer
     // appears faster (fewer seconds of watching it scrawl). Was 26; the e-ink
@@ -993,7 +991,7 @@ fn run() -> std::io::Result<()> {
                 changed = true;
             }
             if changed && matches!(page.section, system::Section::Wifi | system::Section::Power) {
-                system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides), prefs);
+                system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides, selected_tool), prefs);
                 disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
             }
         }
@@ -1009,7 +1007,6 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::Tap(x, y)
                     if ui::corner_hit(x, y)
                         && controls_saved.is_none()
-                        && palette.is_none()
                         && matches!(state, State::Listening { .. } | State::Lingering { .. }) =>
                 {
                     touch::Gesture::OpenControls
@@ -1019,11 +1016,6 @@ fn run() -> std::io::Result<()> {
             match gesture {
                 touch::Gesture::OpenControls => {
                     if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
-                        if let Some(p) = palette.take() {
-                            let (px, py, pw, ph) = p.close(&mut surf).rect();
-                            disp.update(px, py, pw, ph, false);
-                            palette_until = None;
-                        }
                         // The banner lives inside the strip's saved region;
                         // interleaved save/restore patches would corrupt both.
                         if let Some(saved) = banner_saved.take() {
@@ -1032,13 +1024,14 @@ fn run() -> std::io::Result<()> {
                         }
                         if prefs.mode == preferences::Mode::Guided {
                             if controls_saved.is_none() {
-                                controls_saved = Some(ui::draw_controls(&mut surf, &ui_font, matches!(state, State::Lingering { .. })));
+                                controls_saved = Some(ui::draw_controls(&mut surf, &ui_font,
+                                    matches!(state, State::Lingering { .. }), learn_session.is_some(), selected_tool));
                                 disp.update(0, 0, SCREEN_W as i32, 82, false);
                             }
                             controls_until = Some(Instant::now() + Duration::from_secs(12));
                         } else {
                             open_system(&mut state, &mut surf, &disp, &ui_font, prefs,
-                                &system_view(&presets, &overrides), &mut learn_auto_at);
+                                &system_view(&presets, &overrides, selected_tool), &mut learn_auto_at);
                         }
                     }
                 }
@@ -1048,11 +1041,6 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::OpenDrawer if matches!(state,
                     State::Listening { .. } | State::Lingering { .. } | State::SessionPage { .. }
                     | State::NotePage { .. } | State::BriefPage { .. }) => {
-                    if let Some(p) = palette.take() {
-                        let (px, py, pw, ph) = p.close(&mut surf).rect();
-                        disp.update(px, py, pw, ph, false);
-                        palette_until = None;
-                    }
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
                     // A page's own drawer opens on its own tab.
                     let kind = if matches!(state, State::BriefPage { .. }) {
@@ -1085,11 +1073,6 @@ fn run() -> std::io::Result<()> {
                 touch::Gesture::Page(delta)
                     if matches!(state, State::Listening { .. }) && !pen_down && learn_session.is_none() => {
                     let mut came_down = false;
-                    if let Some(p) = palette.take() {
-                        p.close(&mut surf);
-                        palette_until = None;
-                        came_down = true;
-                    }
                     if let Some(saved) = controls_saved.take() {
                         ui::restore_controls(&mut surf, &saved);
                         controls_until = None;
@@ -1147,8 +1130,8 @@ fn run() -> std::io::Result<()> {
                         disp.update(0, 0, SCREEN_W as i32, 82, false);
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
                             &mut user_ink, &mut notebook, &mut send_mode, &mut sleep_requested,
-                            prefs, drawer_selection, drawer_scroll, &mut learn_session, &presets, &overrides,
-                            &mut learn_auto_at);
+                            &mut prefs, drawer_selection, drawer_scroll, &mut learn_session, &presets, &overrides,
+                            &mut learn_auto_at, &mut selected_tool);
                         // A control action closes the praise moment: a NEW
                         // PAGE from the strip must not be followed by a stale
                         // auto-deal or tap-deal on the fresh page.
@@ -1157,7 +1140,7 @@ fn run() -> std::io::Result<()> {
                         learn_tap_advance = false;
                     } else if matches!(state, State::System { .. }) {
                         let after = system_tap(x, y, &mut state, &mut surf, &disp, &ui_font, &font, &mut prefs,
-                            &mut idle_commit, &mut overrides, &presets, &mut oracle, &store,
+                            &mut idle_commit, &mut overrides, &presets, &mut oracle, &store, &mut selected_tool,
                             &mut palm_holdoff, &mut learn_next_dwell, &mut learn_model,
                             &mut sleep_requested, &mut learn_session, &mut user_ink,
                             &mut drawer_selection, &mut drawer_scroll, &mut learn_advance_pending,
@@ -1212,26 +1195,12 @@ fn run() -> std::io::Result<()> {
                             }
                             _ => {}
                         }
-                    } else if let Some(p) = palette.take() {
-                        // A tap on a row picks that tool; anywhere else just
-                        // puts the page back.
-                        let choice = p.tap(x, y);
-                        let (px, py, pw, ph) = p.close(&mut surf).rect();
-                        disp.update(px, py, pw, ph, false);
-                        palette_until = None;
-                        if let Some(tool) = choice {
-                            selected_tool = tool;
-                            eprintln!("g-pad: pen tip is now the {tool:?}");
-                        }
-                    } else if matches!(state, State::Listening { .. }) && !pen_down && learn_session.is_none() {
-                        // A bare finger tap on the open page summons the pen
-                        // palette where the finger landed. Not in Learn mode:
-                        // a child's stray finger must never grow chrome.
-                        let p = ui::Palette::open(&mut surf, &ui_font, x, y, selected_tool);
-                        let (px, py, pw, ph) = p.region().rect();
-                        disp.update(px, py, pw, ph, false);
-                        palette = Some(p);
-                        palette_until = Some(Instant::now() + Duration::from_secs(10));
+                    } else if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
+                        // A bare finger on the open page grows no chrome: a
+                        // resting hand used to summon a pen palette here, and
+                        // it read as a prompt that would not go away. The
+                        // corner button and the edges are the only finger
+                        // targets on a page.
                     } else {
                         let action = match &mut state {
                             State::Drawer { panel: Some(p), .. } | State::ExpandedConversation { panel: Some(p), .. } => p.tap(x, y, &store),
@@ -1251,13 +1220,6 @@ fn run() -> std::io::Result<()> {
                 disp.update(0, 0, SCREEN_W as i32, 82, false);
             }
             controls_until = None;
-        }
-        if palette_until.is_some_and(|t| Instant::now() >= t) {
-            if let Some(p) = palette.take() {
-                let (px, py, pw, ph) = p.close(&mut surf).rect();
-                disp.update(px, py, pw, ph, false);
-            }
-            palette_until = None;
         }
         if banner_until.is_some_and(|t| Instant::now() >= t) {
             if let Some(saved) = banner_saved.take() {
@@ -1347,7 +1309,7 @@ fn run() -> std::io::Result<()> {
                 if let State::System { page, .. } = &mut state {
                     if page.section == system::Section::Wifi && page.wifi.begin("READING") {
                         system::wifi::spawn(system::wifi::Cmd::Refresh, page.wifi_tx.clone());
-                        system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides), prefs);
+                        system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides, selected_tool), prefs);
                         disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
                     }
                 }
@@ -1417,13 +1379,6 @@ fn run() -> std::io::Result<()> {
                     continue;
                 }
                 if controls_saved.is_some() && s.y < 82 {
-                    if !control_pen_latched {
-                        queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
-                        control_pen_latched = true;
-                    }
-                    continue;
-                }
-                if palette.as_ref().is_some_and(|p| p.contains(s.x, s.y)) {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
                         control_pen_latched = true;
@@ -1501,13 +1456,6 @@ fn run() -> std::io::Result<()> {
                     stylus_on = true;
                     stylus_tapped = true;
                     if controls_saved.is_some() && ev.y < 82 {
-                        if !control_pen_latched {
-                            queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
-                            control_pen_latched = true;
-                        }
-                        continue;
-                    }
-                    if palette.as_ref().is_some_and(|p| p.contains(ev.x, ev.y)) {
                         if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
                             control_pen_latched = true;
@@ -1748,11 +1696,6 @@ fn run() -> std::io::Result<()> {
                     // Overlays must not outlive the page they were opened
                     // over: the drink and the reply repaint beneath them, and
                     // their saved patches would restore stale pixels.
-                    if let Some(p) = palette.take() {
-                        let (px, py, pw, ph) = p.close(&mut surf).rect();
-                        disp.update(px, py, pw, ph, false);
-                        palette_until = None;
-                    }
                     if let Some(saved) = banner_saved.take() {
                         ui::restore_page_banner(&mut surf, &saved);
                         let (bx, by) = ui::banner_origin();
@@ -2347,10 +2290,36 @@ fn reply_below_writing(wrote: BBox) -> (i32, bool) {
     }
 }
 
+/// Flip between the pad and the kids' tutor and land on the chosen page,
+/// clean: the ink goes, the sheet is wiped, and a fresh tutor session is
+/// dealt when the tutor is what was chosen. The caller settles its own
+/// state and any Learn timers it holds.
+fn toggle_learn(prefs: &mut preferences::Preferences, surf: &mut Surface, disp: &display::Display,
+    ui_font: &FontRef, user_ink: &mut ink::Ink, learn_session: &mut Option<learn::Session>) {
+    prefs.page = match prefs.page {
+        preferences::Page::Learn => preferences::Page::Pad,
+        preferences::Page::Pad => preferences::Page::Learn,
+    };
+    let _ = prefs.save();
+    user_ink.clear();
+    surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
+    ui::draw_corner(surf);
+    *learn_session = match prefs.page {
+        preferences::Page::Learn => {
+            let mut s = learn::Session::start();
+            s.draw(surf, ui_font);
+            Some(s)
+        }
+        preferences::Page::Pad => None,
+    };
+    disp.full_refresh(surf.w, surf.h);
+}
+
 /// Open the drawer over whatever is on screen — the canvas, an open turn
-/// page, or a note page. What was open rides in `return_to`, so closing the
-/// drawer puts it back. The swipe lands on the AGENTS board; ← VAULT from a
-/// note page lands on the vault listing; the other tabs stay one tap away.
+/// page, a note page, or the SYSTEM page. What was open rides in
+/// `return_to`, so closing the drawer puts it back. The swipe lands on the
+/// AGENTS board; ← VAULT from a note page lands on the vault listing; the
+/// other tabs stay one tap away. CORPUS opens here from the SYSTEM page.
 fn open_drawer(state: &mut State, surf: &mut Surface, disp: &display::Display,
     ui_font: &FontRef, store: &Option<memory::MemoryStore>, selection: Option<usize>,
     kind: ui::DrawerKind) {
@@ -2378,7 +2347,7 @@ fn open_system(state: &mut State, surf: &mut Surface, disp: &display::Display, u
 
 /// What the SYSTEM page shows, gathered fresh from the environment, the
 /// presets and the device for one draw.
-fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides) -> system::draw::View {
+fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides, tool: pen::Tool) -> system::draw::View {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     system::draw::View {
         presets: presets.to_vec(),
@@ -2391,6 +2360,7 @@ fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides) ->
         key_set: std::env::var("RIDDLE_OPENAI_KEY").is_ok_and(|k| !k.is_empty()),
         overrides_count: overrides.len(),
         palm_ms: env_u64("RIDDLE_PALM_MS", 500),
+        tool,
         tutor_model: env("RIDDLE_LEARN_MODEL"),
         dwell_ms: env_u64("RIDDLE_LEARN_NEXT_MS", 5000),
         facts: system::device::gather(),
@@ -2433,7 +2403,7 @@ enum After {
 fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &display::Display,
     ui_font: &FontRef, hand: &FontRef, prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
     overrides: &mut overrides::Overrides, presets: &[presets::Preset],
-    oracle: &mut Option<oracle::Oracle>, store: &Option<memory::MemoryStore>,
+    oracle: &mut Option<oracle::Oracle>, store: &Option<memory::MemoryStore>, selected_tool: &mut pen::Tool,
     palm_holdoff: &mut Duration, learn_next_dwell: &mut Option<Duration>, learn_model: &mut Option<String>,
     sleep_requested: &mut bool,
     learn_session: &mut Option<learn::Session>, user_ink: &mut ink::Ink,
@@ -2452,7 +2422,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
     }
     let Some(act) = act else {
         if disarmed {
-            system::draw::draw(surf, ui_font, page, &system_view(presets, overrides), *prefs);
+            system::draw::draw(surf, ui_font, page, &system_view(presets, overrides, *selected_tool), *prefs);
             disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
         }
         return After::Stay;
@@ -2522,29 +2492,25 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
                 reread = true;
             }
         }
-        Act::ToggleLearn => {
-            prefs.page = match prefs.page {
-                preferences::Page::Learn => preferences::Page::Pad,
-                preferences::Page::Pad => preferences::Page::Learn,
+        Act::Corpus => {
+            // The drawer opens over the page and puts it back on close, so
+            // the reader lands where they were: on DEVICE.
+            open_drawer(state, surf, disp, ui_font, store, None, ui::DrawerKind::Corpus);
+            return After::Closed;
+        }
+        Act::ToggleTool => {
+            *selected_tool = match *selected_tool {
+                pen::Tool::Pen => pen::Tool::Eraser,
+                pen::Tool::Eraser => pen::Tool::Pen,
             };
-            let _ = prefs.save();
+        }
+        Act::ToggleLearn => {
             // Land directly on the chosen page, clean.
             close_overlay(state, surf, disp, drawer_selection, drawer_scroll);
-            user_ink.clear();
             *learn_advance_pending = false;
             *learn_auto_at = None;
             *learn_tap_advance = false;
-            surf.fill_rect(0, 0, SCREEN_W, SCREEN_H, WHITE);
-            ui::draw_corner(surf);
-            *learn_session = match prefs.page {
-                preferences::Page::Learn => {
-                    let mut s = learn::Session::start();
-                    s.draw(surf, ui_font);
-                    Some(s)
-                }
-                preferences::Page::Pad => None,
-            };
-            disp.full_refresh(surf.w, surf.h);
+            toggle_learn(prefs, surf, disp, ui_font, user_ink, learn_session);
             *state = State::Listening { last_pen: None };
             return After::Closed;
         }
@@ -2645,7 +2611,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
         *learn_next_dwell = learn_dwell_from_env();
         *learn_model = learn_model_from_env();
     }
-    system::draw::draw(surf, ui_font, page, &system_view(presets, overrides), *prefs);
+    system::draw::draw(surf, ui_font, page, &system_view(presets, overrides, *selected_tool), *prefs);
     disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
     After::Stay
 }
@@ -3103,9 +3069,9 @@ fn classify_mark(stroke: &[(i32, i32, i32)], sb: &BBox, b: &ui::DecisionBox) -> 
 fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp: &display::Display,
     ui_font: &FontRef, store: &Option<memory::MemoryStore>, user_ink: &mut ink::Ink,
     notebook: &mut notebook::Notebook, send_mode: &mut Option<CommitMode>, sleep_requested: &mut bool,
-    prefs: preferences::Preferences, selection: Option<usize>, scroll: i32,
+    prefs: &mut preferences::Preferences, selection: Option<usize>, scroll: i32,
     learn: &mut Option<learn::Session>, presets: &[presets::Preset], overrides: &overrides::Overrides,
-    learn_auto_at: &mut Option<Instant>) {
+    learn_auto_at: &mut Option<Instant>, selected_tool: &mut pen::Tool) {
     // Learn mode repurposes the strip: committing is the DONE box, so SEND and
     // DISMISS do nothing; ERASE re-deals the same sheet clean; NEW PAGE deals
     // a fresh problem. Everything else behaves as on the pad.
@@ -3151,13 +3117,25 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
                 *state = State::FadingReply { stage: 0, next: Instant::now(), region };
             }
         }
-        ui::Action::History | ui::Action::Corpus | ui::Action::Sessions => {
+        ui::Action::Kids => {
+            if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
+                toggle_learn(prefs, surf, disp, ui_font, user_ink, learn);
+                *state = State::Listening { last_pen: None };
+            }
+        }
+        ui::Action::Tool => {
+            *selected_tool = match *selected_tool {
+                pen::Tool::Pen => pen::Tool::Eraser,
+                pen::Tool::Eraser => pen::Tool::Pen,
+            };
+            eprintln!("g-pad: pen tip is now the {selected_tool:?}");
+        }
+        ui::Action::History | ui::Action::Sessions => {
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
                 let old = std::mem::replace(state, State::Listening { last_pen: None });
                 let kind = match action {
                     ui::Action::History => ui::DrawerKind::History,
-                    ui::Action::Sessions => ui::DrawerKind::Sessions,
-                    _ => ui::DrawerKind::Corpus,
+                    _ => ui::DrawerKind::Sessions,
                 };
                 let thread = if kind == ui::DrawerKind::History {
                     store.as_ref().and_then(|s| s.conversations().len().checked_sub(1))
@@ -3171,7 +3149,7 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
         }
         ui::Action::Settings => {
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
-                open_system(state, surf, disp, ui_font, prefs, &system_view(presets, overrides), learn_auto_at);
+                open_system(state, surf, disp, ui_font, *prefs, &system_view(presets, overrides, *selected_tool), learn_auto_at);
             }
         }
         ui::Action::Sleep => *sleep_requested = true,
@@ -3284,7 +3262,6 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             }
             ui::Action::Threads => { p.thread = None; p.scroll = 0; p.selection = None; redraw = true; }
             ui::Action::OpenThread(i) => { p.thread = Some(i); p.scroll = 0; p.selection = None; redraw = true; }
-            ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.scroll = 0; redraw = true; }
             ui::Action::Sessions => { p.kind = ui::DrawerKind::Sessions; p.scroll = 0; redraw = true; }
             ui::Action::Vault => { p.kind = ui::DrawerKind::Vault; p.scroll = 0; redraw = true; }
             ui::Action::Brief => { p.kind = ui::DrawerKind::Brief; p.scroll = 0; redraw = true; }

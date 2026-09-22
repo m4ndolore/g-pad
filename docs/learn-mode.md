@@ -26,8 +26,8 @@ sheet returned when it was drawn; nothing is shape recognition:
 A child cannot commit by accident: an empty blank answers locally ("Write
 your answer first" — "Answer every box" on a worksheet page), and the
 whole-page commit paths of Pad mode — the send
-rule, idle-send, page flips, the finger-tap pen palette — are all disabled
-while Learn is open. Fingers navigate nothing here; the pen does everything.
+rule, idle-send, page flips — are all disabled while Learn is open. Fingers
+navigate nothing here; the pen does everything.
 
 ## The pedagogy
 
@@ -193,7 +193,8 @@ anchored to the child's ink, and it can write.
 
 ## Entry and exit
 
-Settings gains a **KIDS LEARN MODE** row. The page choice persists
+Settings gains a **KIDS LEARN MODE** row, and the control strip a **KIDS
+ON/OFF** cell that flips the same switch. The page choice persists
 (`page=learn` in the preferences file) — Anthink remembers the last mode per
 boot — and `RIDDLE_PAGE=learn` dedicates a boot to the tutor regardless, for
 a tablet handed to a child. `RIDDLE_LEARN_LEVEL` seeds the starting level

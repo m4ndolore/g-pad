@@ -60,9 +60,9 @@ turning the pad itself into a chat app.
 
 ## Corpus explorer
 
-`CORPUS` lives beside `HISTORY`, but opens a distinct read-only surface. It
-answers “what can the pad currently see?” without exposing implementation details
-on the writing page.
+`CORPUS` is a row on the SYSTEM page's DEVICE tab, off the strip and the drawer
+tabs, and opens a distinct read-only surface. It answers “what can the pad
+currently see?” without exposing implementation details on the writing page.
 
 - Overview: number of stored turns, oldest/newest dates, memory capacity, and
   whether memory is enabled.

@@ -7,6 +7,7 @@
 use ab_glyph::FontRef;
 
 use crate::fb::{SCREEN_H, SCREEN_W};
+use crate::pen::Tool;
 use crate::preferences::{self, Mode, Preferences};
 use crate::presets::Preset;
 use crate::script;
@@ -66,6 +67,8 @@ pub struct View {
     pub key_set: bool,
     pub overrides_count: usize,
     pub palm_ms: u64,
+    /// What the pen tip does right now; the strip's tip cell shows the same.
+    pub tool: Tool,
     pub tutor_model: String,
     pub dwell_ms: u64,
     pub facts: device::Facts,
@@ -85,6 +88,7 @@ impl View {
             key_set: true,
             overrides_count: 2,
             palm_ms: 500,
+            tool: Tool::Pen,
             tutor_model: String::new(),
             dwell_ms: 3000,
             facts: device::Facts {
@@ -310,6 +314,8 @@ fn input(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View, prefs
         rows.stepper(surf, font, "IDLE DELAY", &ms(prefs.idle_send_ms), Act::StepIdle);
     }
     rows.stepper(surf, font, "PALM HOLDOFF", &ms(view.palm_ms), Act::StepPalm);
+    let eraser = view.tool == Tool::Eraser;
+    rows.row(surf, font, "PEN TIP", if eraser { "ERASER" } else { "PEN" }, eraser, Some(Act::ToggleTool));
 }
 
 fn learn(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View, prefs: Preferences) {
@@ -468,6 +474,9 @@ fn device_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, facts: &d
     for line in [&facts.battery, &facts.storage, &clock, &facts.os, &build, &facts.hub] {
         rows.line(surf, font, line);
     }
+    // The corpus lives here, off the strip and the drawer tabs: a check on
+    // what the next request carries, not something reached for every page.
+    rows.row(surf, font, "CORPUS", "WHAT THE NEXT REQUEST CARRIES", false, Some(Act::Corpus));
 }
 
 fn power(surf: &mut Surface, font: &FontRef, rows: &mut Rows) {
@@ -556,6 +565,10 @@ mod tests {
         draw(&mut surf, &font, &mut input, &view, prefs);
         assert!(input.hits.region(Act::StepIdle(1)).is_some(), "idle-send on shows its delay");
         assert!(input.hits.region(Act::StepIdle(-1)).is_some());
+        assert!(input.hits.region(Act::ToggleTool).is_some(), "the pen tip is reachable with idle-send on");
+        let mut device = page(Section::Device);
+        draw(&mut surf, &font, &mut device, &View::sample(), Preferences::default());
+        assert!(device.hits.region(Act::Corpus).is_some(), "the corpus opens from DEVICE");
 
         let mut power = page(Section::Power);
         draw(&mut surf, &font, &mut power, &view, Preferences::default());

@@ -20,18 +20,18 @@ const THREAD_Y0: i32 = 148;
 const CONV_ROW_H: usize = 168;
 const THREAD_FOOTER: i32 = 150;
 const SCROLL_STEP: i32 = 80;
-/// Five tabs across the drawer header. The labels are drawn at these same
+/// Four tabs across the drawer header. The labels are drawn at these same
 /// x positions, so a tap always lands on the word it looks like it hit.
-/// Five words do not fit the half-width panel at the label size the rows
-/// use, so the header wears a slightly smaller face; a test measures the
-/// labels against these positions so a sixth tab cannot sneak in blind.
+/// The header wears a slightly smaller face than the rows; a test measures
+/// the labels against these positions so a fifth tab cannot sneak in
+/// blind. CORPUS is not a tab: it opens from the SYSTEM page, and the
+/// header then shows only its name.
 const TAB_PX: f32 = 28.0;
 const TAB_GAP: i32 = 18;
 const TAB_HISTORY_X: usize = 94;
-const TAB_CORPUS_X: i32 = 226;
-const TAB_SESSIONS_X: i32 = 354;
-const TAB_VAULT_X: i32 = 478;
-const TAB_BRIEF_X: i32 = 576;
+const TAB_SESSIONS_X: i32 = 254;
+const TAB_VAULT_X: i32 = 404;
+const TAB_BRIEF_X: i32 = 530;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawerKind { History, Corpus, Sessions, Vault, Brief }
@@ -50,7 +50,6 @@ pub enum Action {
     None,
     Close,
     History,
-    Corpus,
     Sessions,
     /// Open one agent session as a full page. The index is a row on the
     /// board, in `bridge::readable` order.
@@ -79,6 +78,10 @@ pub enum Action {
     Sleep,
     Settings,
     Dismiss,
+    /// The strip's KIDS cell: flip between the pad and the tutor.
+    Kids,
+    /// The strip's tip cell: flip what the pen tip does, pen or eraser.
+    Tool,
 }
 
 impl Drawer {
@@ -111,8 +114,9 @@ impl Drawer {
                 }
                 return Action::Close;
             }
-            if x < TAB_CORPUS_X { return Action::History; }
-            if x < TAB_SESSIONS_X { return Action::Corpus; }
+            // The corpus header carries no tabs; its only target is the corner.
+            if self.kind == DrawerKind::Corpus { return Action::None; }
+            if x < TAB_SESSIONS_X { return Action::History; }
             if x < TAB_VAULT_X { return Action::Sessions; }
             if x < TAB_BRIEF_X { return Action::Vault; }
             return Action::Brief;
@@ -183,16 +187,19 @@ pub fn draw_drawer(surf: &mut Surface, font: &FontRef, store: &Option<MemoryStor
         || (drawer.kind == DrawerKind::Vault && !crate::vault::held().prefix.is_empty())
     { "←" } else { "×" };
     text(surf, font, close, TAB_PX, PAD, 36, BLACK);
-    text(surf, font, "HISTORY", TAB_PX, TAB_HISTORY_X, 36,
-        if drawer.kind == DrawerKind::History { BLUE } else { BLACK });
-    text(surf, font, "CORPUS", TAB_PX, TAB_CORPUS_X as usize, 36,
-        if drawer.kind == DrawerKind::Corpus { BLUE } else { BLACK });
-    text(surf, font, "AGENTS", TAB_PX, TAB_SESSIONS_X as usize, 36,
-        if drawer.kind == DrawerKind::Sessions { BLUE } else { BLACK });
-    text(surf, font, "VAULT", TAB_PX, TAB_VAULT_X as usize, 36,
-        if drawer.kind == DrawerKind::Vault { BLUE } else { BLACK });
-    text(surf, font, "BRIEF", TAB_PX, TAB_BRIEF_X as usize, 36,
-        if drawer.kind == DrawerKind::Brief { BLUE } else { BLACK });
+    if drawer.kind == DrawerKind::Corpus {
+        // A leaf reached from the SYSTEM page, not a sibling of the tabs.
+        text(surf, font, "CORPUS", TAB_PX, TAB_HISTORY_X, 36, BLUE);
+    } else {
+        text(surf, font, "HISTORY", TAB_PX, TAB_HISTORY_X, 36,
+            if drawer.kind == DrawerKind::History { BLUE } else { BLACK });
+        text(surf, font, "AGENTS", TAB_PX, TAB_SESSIONS_X as usize, 36,
+            if drawer.kind == DrawerKind::Sessions { BLUE } else { BLACK });
+        text(surf, font, "VAULT", TAB_PX, TAB_VAULT_X as usize, 36,
+            if drawer.kind == DrawerKind::Vault { BLUE } else { BLACK });
+        text(surf, font, "BRIEF", TAB_PX, TAB_BRIEF_X as usize, 36,
+            if drawer.kind == DrawerKind::Brief { BLUE } else { BLACK });
+    }
     rule(surf, 0, 104, PANEL_W, 2);
     match drawer.kind {
         DrawerKind::History => draw_history(surf, font, store, drawer),
@@ -959,24 +966,49 @@ pub fn corner_hit(x: i32, y: i32) -> bool {
     x >= 0 && y >= 0 && x < CORNER as i32 && y < CORNER as i32
 }
 
-/// The strip: a close cell where the corner button was, then seven equal
-/// cells across the rest of the width.
-pub fn draw_controls(surf: &mut Surface, font: &FontRef, reply_visible: bool) -> Vec<u8> {
+/// The strip: a close cell where the corner button was, then eight equal
+/// cells across the rest of the width. Two cells show state rather than
+/// name an act: KIDS reads ON or OFF and the tip cell reads PEN or ERASER,
+/// and a tap on either flips it. Blue marks the state that is not the
+/// default. Eight words do not fit at the row size, so the strip wears the
+/// drawer header's smaller face; a test measures every label against the
+/// cell width on the tablet, so a longer word cannot run into its
+/// neighbour unseen.
+const STRIP_CELLS: usize = 8;
+const STRIP_INSET: usize = 12;
+const STRIP_PX: f32 = TAB_PX;
+const STRIP_LABEL_Y: usize = 27;
+
+fn strip_cell_w(screen_w: usize) -> usize {
+    (screen_w - CORNER) / STRIP_CELLS
+}
+
+fn strip_labels(reply_visible: bool, kids: bool, tool: crate::pen::Tool) -> [(&'static str, bool); STRIP_CELLS] {
+    let eraser = tool == crate::pen::Tool::Eraser;
+    [
+        (if reply_visible { "DISMISS" } else { "SEND" }, false),
+        ("ERASE", false),
+        ("NEW PAGE", false),
+        ("HISTORY", false),
+        (if kids { "KIDS ON" } else { "KIDS OFF" }, kids),
+        (if eraser { "ERASER" } else { "PEN" }, eraser),
+        ("SLEEP", false),
+        ("SETTINGS", false),
+    ]
+}
+
+pub fn draw_controls(surf: &mut Surface, font: &FontRef, reply_visible: bool, kids: bool,
+    tool: crate::pen::Tool) -> Vec<u8> {
     let h = CORNER;
     let saved = surf.copy_rect(0, 0, SCREEN_W, h);
     surf.fill_rect(0, 0, SCREEN_W, h, WHITE);
     full_text(surf, font, "×", LABEL_PX, 30, 25, BLACK);
     surf.fill_rect(CORNER, 0, 1, h, BLACK);
-    let labels = if reply_visible {
-        ["DISMISS", "ERASE", "NEW PAGE", "HISTORY", "CORPUS", "SLEEP", "SETTINGS"]
-    } else {
-        ["SEND", "ERASE", "NEW PAGE", "HISTORY", "CORPUS", "SLEEP", "SETTINGS"]
-    };
-    let w = (SCREEN_W - CORNER) / labels.len();
-    for (i, label) in labels.iter().enumerate() {
+    let w = strip_cell_w(SCREEN_W);
+    for (i, (label, lit)) in strip_labels(reply_visible, kids, tool).iter().enumerate() {
         let x = CORNER + i * w;
         if i > 0 { surf.fill_rect(x, 0, 1, h, BLACK); }
-        full_text(surf, font, label, LABEL_PX, x + 12, 25, if i == 3 || i == 4 { BLUE } else { BLACK });
+        full_text(surf, font, label, STRIP_PX, x + STRIP_INSET, STRIP_LABEL_Y, if *lit { BLUE } else { BLACK });
     }
     rule(surf, 0, h - 2, SCREEN_W, 2);
     saved
@@ -985,91 +1017,21 @@ pub fn draw_controls(surf: &mut Surface, font: &FontRef, reply_visible: bool) ->
 pub fn control_action(x: i32, y: i32, reply_visible: bool) -> Action {
     if y < 0 || y >= CORNER as i32 || x < 0 || x >= SCREEN_W as i32 { return Action::None; }
     if corner_hit(x, y) { return Action::Close; }
-    match (x as usize - CORNER) / ((SCREEN_W - CORNER) / 7) {
+    match (x as usize - CORNER) / strip_cell_w(SCREEN_W) {
         0 if reply_visible => Action::Dismiss,
         0 => Action::Send,
         1 => Action::Erase,
         2 => Action::NewPage,
         3 => Action::History,
-        4 => Action::Corpus,
-        5 => Action::Sleep,
+        4 => Action::Kids,
+        5 => Action::Tool,
+        6 => Action::Sleep,
         _ => Action::Settings,
     }
 }
 
 pub fn restore_controls(surf: &mut Surface, saved: &[u8]) {
     surf.paste_rect(0, 0, SCREEN_W, 82, saved);
-}
-
-/// The pen palette — a transient tool menu summoned by a one-finger tap on
-/// the open page. It picks what the pen *tip* does; the marker's hardware
-/// eraser end always erases regardless. One entry per row so a new tool is
-/// one line here and one arm at the pen.
-const PALETTE_TOOLS: [(&str, crate::pen::Tool); 2] =
-    [("PEN", crate::pen::Tool::Pen), ("ERASER", crate::pen::Tool::Eraser)];
-const PALETTE_W: i32 = 300;
-const PALETTE_ROW_H: i32 = 96;
-
-fn palette_h() -> i32 {
-    PALETTE_TOOLS.len() as i32 * PALETTE_ROW_H
-}
-
-pub struct Palette {
-    x: i32,
-    y: i32,
-    saved: Vec<u8>,
-}
-
-impl Palette {
-    /// Paint the palette near the tap, clamped fully on screen, and remember
-    /// what it covers. The caller flushes the returned region.
-    pub fn open(surf: &mut Surface, font: &FontRef, tap_x: i32, tap_y: i32, current: crate::pen::Tool) -> Self {
-        let x = (tap_x - PALETTE_W / 2).clamp(0, SCREEN_W as i32 - PALETTE_W);
-        let y = (tap_y + 30).clamp(0, SCREEN_H as i32 - palette_h());
-        let saved = surf.copy_rect(x as usize, y as usize, PALETTE_W as usize, palette_h() as usize);
-        surf.fill_rect(x as usize, y as usize, PALETTE_W as usize, palette_h() as usize, WHITE);
-        for (i, (label, tool)) in PALETTE_TOOLS.iter().enumerate() {
-            let row_y = y + i as i32 * PALETTE_ROW_H;
-            if i > 0 {
-                surf.fill_rect(x as usize, row_y as usize, PALETTE_W as usize, 1, BLACK);
-            }
-            render_text(surf, font, label, LABEL_PX, x as usize + 28, row_y as usize + 30,
-                if *tool == current { BLUE } else { BLACK }, SCREEN_W);
-        }
-        // Border last, so a row rule cannot overpaint it.
-        surf.fill_rect(x as usize, y as usize, PALETTE_W as usize, 2, BLACK);
-        surf.fill_rect(x as usize, (y + palette_h() - 2) as usize, PALETTE_W as usize, 2, BLACK);
-        surf.fill_rect(x as usize, y as usize, 2, palette_h() as usize, BLACK);
-        surf.fill_rect((x + PALETTE_W - 2) as usize, y as usize, 2, palette_h() as usize, BLACK);
-        Self { x, y, saved }
-    }
-
-    pub fn region(&self) -> BBox {
-        let mut b = BBox::empty();
-        b.add(self.x, self.y, 0);
-        b.add(self.x + PALETTE_W - 1, self.y + palette_h() - 1, 0);
-        b
-    }
-
-    pub fn contains(&self, x: i32, y: i32) -> bool {
-        x >= self.x && x < self.x + PALETTE_W && y >= self.y && y < self.y + palette_h()
-    }
-
-    /// The tool under a tap, or None for a tap outside (which closes it).
-    pub fn tap(&self, x: i32, y: i32) -> Option<crate::pen::Tool> {
-        if !self.contains(x, y) {
-            return None;
-        }
-        let row = ((y - self.y) / PALETTE_ROW_H) as usize;
-        PALETTE_TOOLS.get(row).map(|&(_, tool)| tool)
-    }
-
-    /// Put back what the palette covered. The caller flushes the region.
-    pub fn close(self, surf: &mut Surface) -> BBox {
-        let region = self.region();
-        surf.paste_rect(self.x as usize, self.y as usize, PALETTE_W as usize, palette_h() as usize, &self.saved);
-        region
-    }
 }
 
 /// Where the flip banner sits, and what it covers: a small top-right chip
@@ -1132,61 +1094,61 @@ mod tests {
     use super::*;
     use crate::surface::PixFmt;
     #[test]
-    fn the_palette_selects_by_row_and_closes_outside() {
-        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
-        let ptr = bytes.as_mut_ptr();
-        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
-        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
-        let p = Palette::open(&mut surf, &font, 700, 900, crate::pen::Tool::Pen);
-        let (rx, ry, _, _) = p.region().rect();
-        assert_eq!(p.tap(rx + 10, ry + 10), Some(crate::pen::Tool::Pen));
-        assert_eq!(p.tap(rx + 10, ry + PALETTE_ROW_H + 10), Some(crate::pen::Tool::Eraser));
-        assert_eq!(p.tap(rx - 5, ry), None, "a tap outside closes the palette");
-        assert!(p.contains(rx + 1, ry + 1));
-
-        // Closing restores what the palette covered.
-        let before = surf.luma(rx + 20, ry + 40);
-        assert!(before < 250 || before == 255); // painted either way
-        p.close(&mut surf);
-        assert_eq!(surf.luma(rx + 20, ry + 40), 255, "the page under the palette returns");
-    }
-
-    #[test]
-    fn the_palette_stays_on_screen_at_the_edges() {
-        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
-        let ptr = bytes.as_mut_ptr();
-        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
-        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
-        for (tx, ty) in [(0, 0), (SCREEN_W as i32 - 1, SCREEN_H as i32 - 1)] {
-            let p = Palette::open(&mut surf, &font, tx, ty, crate::pen::Tool::Pen);
-            let (x, y, w, h) = p.region().rect();
-            assert!(x >= 0 && y >= 0);
-            assert!(x + w <= SCREEN_W as i32 && y + h <= SCREEN_H as i32);
-            p.close(&mut surf);
-        }
-    }
-
-    #[test]
     fn controls_use_fixed_hit_regions() {
         assert_eq!(control_action(10, 20, false), Action::Close, "the corner cell closes the strip");
         assert_eq!(control_action(CORNER as i32 + 8, 20, false), Action::Send);
         assert_eq!(control_action(CORNER as i32 + 8, 20, true), Action::Dismiss);
-        let cell = ((SCREEN_W - CORNER) / 7) as i32;
+        let cell = strip_cell_w(SCREEN_W) as i32;
         assert_eq!(control_action(CORNER as i32 + cell * 3 + 2, 20, false), Action::History);
+        assert_eq!(control_action(CORNER as i32 + cell * 4 + 2, 20, false), Action::Kids);
+        assert_eq!(control_action(CORNER as i32 + cell * 5 + 2, 20, false), Action::Tool);
+        assert_eq!(control_action(CORNER as i32 + cell * 6 + 2, 20, false), Action::Sleep);
         assert_eq!(control_action(SCREEN_W as i32 - 2, 20, false), Action::Settings);
         assert_eq!(control_action(10, 100, false), Action::None);
         assert!(corner_hit(0, 0) && corner_hit(81, 81) && !corner_hit(82, 10) && !corner_hit(10, 82));
     }
 
     #[test]
-    fn the_header_splits_five_ways_and_each_tab_is_reachable() {
+    fn every_strip_label_fits_its_cell_on_the_tablet() {
+        // The tablet is the narrower screen, so measure against its width
+        // whichever screen this test build compiled for. Every variant of
+        // the state cells is measured: the longer word is the one that would
+        // run into the rule.
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        let cell = strip_cell_w(1404) as f32;
+        for reply in [false, true] {
+            for kids in [false, true] {
+                for tool in [crate::pen::Tool::Pen, crate::pen::Tool::Eraser] {
+                    for (label, _) in strip_labels(reply, kids, tool) {
+                        let end = STRIP_INSET as f32 + script::measure(&font, label, STRIP_PX);
+                        assert!(end + STRIP_INSET as f32 <= cell, "{label} runs to {end} in a {cell} cell");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_corpus_header_has_no_tabs() {
+        let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        let mut d = Drawer::open(&surf, DrawerKind::Corpus, None, 0, None);
+        assert_eq!(d.tap(20, 36, &None), Action::Close, "the corner still closes");
+        for x in [TAB_HISTORY_X as i32 + 4, TAB_SESSIONS_X + 4, TAB_VAULT_X + 4, TAB_BRIEF_X + 4] {
+            assert_eq!(d.tap(x, 36, &None), Action::None, "no tab lives at {x} on the corpus page");
+        }
+        assert_eq!(d.tap(PAD as i32, HEADER_H + 40, &None), Action::None, "the corpus body is read-only");
+    }
+
+    #[test]
+    fn the_header_splits_four_ways_and_each_tab_is_reachable() {
         let mut bytes = vec![0xff; SCREEN_W * SCREEN_H * 4];
         let ptr = bytes.as_mut_ptr();
         let surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
         let mut d = Drawer::open(&surf, DrawerKind::History, None, 0, None);
         // A tap on each label reaches its own tab, and the close box still closes.
         assert_eq!(d.tap(TAB_HISTORY_X as i32 + 4, 36, &None), Action::History);
-        assert_eq!(d.tap(TAB_CORPUS_X + 4, 36, &None), Action::Corpus);
         assert_eq!(d.tap(TAB_SESSIONS_X + 4, 36, &None), Action::Sessions);
         assert_eq!(d.tap(TAB_VAULT_X + 4, 36, &None), Action::Vault);
         assert_eq!(d.tap(TAB_BRIEF_X + 4, 36, &None), Action::Brief);
@@ -1194,13 +1156,13 @@ mod tests {
     }
 
     #[test]
-    fn five_tab_labels_fit_the_header_without_touching() {
+    fn four_tab_labels_fit_the_header_without_touching() {
         // The labels are drawn at the tab x positions the taps are read
         // against, so a label that runs into its neighbour is also a tap
         // that lands on the wrong word. Measure, do not eyeball.
         let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
         let tabs = [
-            (TAB_HISTORY_X as i32, "HISTORY"), (TAB_CORPUS_X, "CORPUS"), (TAB_SESSIONS_X, "AGENTS"),
+            (TAB_HISTORY_X as i32, "HISTORY"), (TAB_SESSIONS_X, "AGENTS"),
             (TAB_VAULT_X, "VAULT"), (TAB_BRIEF_X, "BRIEF"),
         ];
         for w in tabs.windows(2) {
@@ -1208,9 +1170,11 @@ mod tests {
             assert!(end + TAB_GAP <= w[1].0,
                 "{} runs to {end} but {} starts at {}", w[0].1, w[1].1, w[1].0);
         }
-        let (x, label) = tabs[4];
+        let (x, label) = tabs[3];
         let end = x + script::measure(&font, label, TAB_PX).ceil() as i32;
         assert!(end + PAD as i32 <= PANEL_W as i32 - 2, "BRIEF runs to {end}, past the panel's margin");
+        // The corpus title sits where HISTORY does, so it fits by the same measure.
+        assert!(script::measure(&font, "CORPUS", TAB_PX) <= script::measure(&font, "HISTORY", TAB_PX));
         // The close glyph keeps its own room before the first tab.
         let close_end = PAD as i32 + script::measure(&font, "×", TAB_PX).ceil() as i32;
         assert!(close_end + TAB_GAP <= TAB_HISTORY_X as i32);

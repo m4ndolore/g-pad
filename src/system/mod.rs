@@ -63,6 +63,10 @@ pub enum Act {
     StepReasoning(i8),
     StepMaxTokens(i8),
     ResetOverrides,
+    /// Open the corpus drawer over the page: what the next request carries.
+    Corpus,
+    /// Flip what the pen tip does, pen or eraser.
+    ToggleTool,
     ToggleLearn,
     StepTutorModel(i8),
     StepDwell(i8),

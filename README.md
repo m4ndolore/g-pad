@@ -130,21 +130,27 @@ cargo build --release --features rm2
 | Write *"show me what I wrote about…"* | The remembered page returns in your own strokes |
 | Flip the marker | Erase |
 | Swipe up or down | Next or previous notebook page, or page through a long reply |
-| Tap with a bare finger | A pen palette where the finger landed |
+| Tap with a bare finger | Nothing. A resting hand grows no chrome |
 | Two-finger tap, three-finger tap | Undo, redo |
-| Swipe in from the left edge | The drawer: HISTORY, CORPUS, AGENTS, VAULT, BRIEF |
-| Swipe down from the top, or tap a corner | Controls, or the SYSTEM page |
+| Swipe in from the left edge | The drawer: HISTORY, AGENTS, VAULT, BRIEF |
+| Swipe down from the top, or tap the corner button | The control strip (Guided), or the SYSTEM page (Stealth) |
 | Hold five fingers | Leave; the stock UI comes back |
 | Power button | Sleep card; press again and you are exactly where you were |
 
 A palm resting on the sheet does not count as a finger, and touch is ignored for
 half a second whenever the marker is near the glass.
 
+The control strip has eight cells: SEND (DISMISS while a reply is up), ERASE,
+NEW PAGE, HISTORY, KIDS ON/OFF, PEN/ERASER, SLEEP, SETTINGS. KIDS and the pen
+tip show their state and flip on a tap; the marker's hardware eraser end always
+erases regardless. In Stealth both also live on the SYSTEM page under INPUT and
+LEARN.
+
 ## The modes
 
 **Pad** is the writing surface above. HISTORY splits sittings after six hours of
-silence. CORPUS shows exactly what the next request will carry, so nothing goes to
-the model that you have not seen.
+silence. CORPUS, a row on the SYSTEM page's DEVICE tab, shows exactly what the
+next request will carry, so nothing goes to the model that you have not seen.
 
 **Learn** is the tutor. See [docs/learn-mode.md](docs/learn-mode.md) for the
 skill ladder, the marking contract, and why a child can never send a page by
