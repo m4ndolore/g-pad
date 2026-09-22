@@ -173,6 +173,23 @@ Stealth and Guided. Anthink remembers the last mode per boot.
 No launcher, no home screen, no persistent chrome. The pad should open where the
 writer left it.
 
+SETTINGS became the full-page SYSTEM surface, reached the same way: the top
+or bottom edge swipe in Stealth, the SETTINGS cell of the control strip in
+Guided. Its six sections are ORACLE (preset, model, ask model, reasoning, max
+tokens, key status, reset), INPUT (Stealth or Guided, idle-send and its delay,
+palm holdoff), LEARN (Kids mode, tutor model, next-page dwell), WI-FI (status,
+rescan, saved networks), DEVICE (battery, storage, clock, OS, build, hub age)
+and POWER (sleep, leave to stock UI, reboot, power off). A config change
+writes `/home/root/g-pad-data/overrides`, which beats `oracle.env`, and takes
+effect at once: the oracle re-spawns from the new environment, no restart.
+Wi-Fi joins happen among saved networks in-app; a new network is still added
+over ssh. REBOOT and POWER OFF are the first use of the vermilion
+arm-then-confirm that `docs/ux-vignelli.md` reserves for destructive actions:
+one tap fills the row in vermilion, a second tap within five seconds acts.
+One owner per setting: the page's LEARN section sets the tutor model and the
+next-page dwell, while LEVEL and the skills picker stay on the Learn menu. The
+design record is `docs/plans/2026-09-15-system-page-design.md`.
+
 ## What this owes the existing system
 
 The vocabulary is deliberately built from what is already proven in this tree:

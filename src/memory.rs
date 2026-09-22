@@ -357,7 +357,7 @@ pub fn spoken_date(id: u64) -> String {
 }
 
 /// Days-since-epoch to civil date (Howard Hinnant's algorithm) + hour of day.
-fn civil(secs: i64) -> (i64, i64, i64, i64) {
+pub(crate) fn civil(secs: i64) -> (i64, i64, i64, i64) {
     let days = secs.div_euclid(86400);
     let hour = secs.rem_euclid(86400) / 3600;
     let z = days + 719468;

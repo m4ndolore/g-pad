@@ -22,6 +22,18 @@ for reMarkable 2, unless the matching target cache already exists under
 `quill/vendor/`. Override the host with `QUILL_DEVICE_HOST`. The caches are
 architecture-specific. Never commit or redistribute that library.
 
+Without the SDK (reMarkable 2 only), `quill/build-zig.sh` builds the same
+adapter with zig: Qt headers come from a Debian armhf `qt6-base-dev` package
+and the tablet's own `libQt6Core`, `libQt6Gui` and `libqsgepaper.so` are the
+link inputs, pulled over ssh into `quill/vendor/` on first run. It is what
+built the library shipped since OS 3.28.
+
+`EPFramebuffer::swapBuffers(QRect, ...)` lost its `EPContentType` argument
+in reMarkable OS 3.28. `vendor_probe.cpp` resolves the pre-3.28 signature
+first and falls back to the 3.28 one, so one build serves both; a library
+built before that change fails `quill_init` on 3.28 with
+"swapBuffers unavailable" and draws nothing.
+
 The original clean-room provenance statement is retained in `CLEANROOM.md`.
 The ARM32 extension is a portability change to that MIT implementation based
 on Qt's public platform types and ELF ABI names.

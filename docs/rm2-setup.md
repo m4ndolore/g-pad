@@ -79,13 +79,13 @@ scp -O root@10.11.99.1:/usr/lib/plugins/scenegraph/libqsgepaper.so \
     quill/vendor/armv7-unknown-linux-gnueabihf/
 ```
 
-Compiling `libquill.so` needs the reMarkable SDK for its Qt headers:
+Compiling `libquill.so` needs Qt headers and the tablet's libraries. With the
+reMarkable SDK installed, `DEVICE=rm2 ./build-takeover.sh` (SDK at
+`~/rm-sdk-rm2`) does everything; without it, `./quill/build-zig.sh` builds
+the adapter with zig alone (see `quill/README.md`), pulling what it needs from
+the tablet over ssh.
 
-```sh
-DEVICE=rm2 ./build-takeover.sh          # SDK at ~/rm-sdk-rm2
-```
-
-Once `libquill.so` exists, later builds do not need the SDK at all —
+Once `libquill.so` exists, the Rust side does not need the SDK at all —
 `cargo-zigbuild` supplies the cross-linker:
 
 ```sh
@@ -119,6 +119,49 @@ ssh rm2 'cd /home/root/xovi/exthome/appload/g-pad && \
   set -a && . ./oracle.env && set +a && ./g-pad --oracle-test icon.png'
 ```
 
+## In-app SYSTEM page
+
+Routine changes no longer need ssh. The SYSTEM page (top or bottom edge swipe
+in Stealth, SETTINGS on the control strip in Guided) handles:
+
+- oracle preset, model, ask model, reasoning effort, max tokens
+- palm holdoff; idle-send and its delay
+- tutor model and next-page dwell for Learn
+- Wi-Fi status, rescan, and joining a saved network
+- sleep, reboot, power off, leave to stock UI
+- battery, storage, clock, OS version, running build, hub reachability
+  (read-only facts)
+
+After REBOOT or POWER OFF (and the next power-on) the pad comes back by
+itself: the boot-persistent `g-pad-takeover.service` from
+`scripts/install-boot-rm2.sh` starts it in place of the stock UI. What does
+not come back is AppLoad — xovi is not loaded at boot. That only matters if
+you LEAVE TO STOCK UI and want the AppLoad entries; then
+`ssh rm2 /home/root/xovi/start`.
+
+Still over ssh:
+
+- a new API key: `RIDDLE_OPENAI_KEY` in `oracle.env`. The page shows SET or
+  MISSING and never writes the key.
+- a new Wi-Fi network and its password. The page selects among networks the
+  tablet already knows; an unsaved network in the scan list is inert.
+- new presets: edit `settings.schema.json` beside the binary. It is read at
+  start, so a new preset appears after the next stop → settle → start; no
+  rebuild.
+
+Page changes are written to `/home/root/g-pad-data/overrides` and beat
+`oracle.env` until removed. The file lives under `g-pad-data`, not the app
+folder, so a rebuild or redeploy keeps it. RESET OVERRIDES on the page removes
+every override and re-spawns the oracle from `oracle.env` at once; the ssh
+equivalent is
+
+```sh
+ssh rm2 rm -f /home/root/g-pad-data/overrides
+```
+
+which takes effect at the next start, since a running pad already holds the
+overridden values in its environment.
+
 ## Manual path (what the installer does, step by step)
 
 If you prefer to run each step yourself:
@@ -136,6 +179,44 @@ If you prefer to run each step yourself:
 4. **riddle** — `scp -O -r dist/rm2/riddle root@10.11.99.1:/home/root/xovi/exthome/appload/`,
    then create `oracle.env` in that folder (see above).
 5. **Start** — `/home/root/xovi/start` on the tablet (or triple-press power).
+
+## After a reMarkable OS update
+
+An update installs the new OS on the other root partition and boots it. Your
+files under `/home/root` survive; everything that lived in the old root does
+not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
+
+- **The SSH host key changes** (dropbear regenerates it on the fresh root).
+  Your client refuses to connect with "REMOTE HOST IDENTIFICATION HAS
+  CHANGED", and so does anything scripted on top of ssh, such as the hub
+  tunnel. Fix: `ssh-keygen -R 10.11.99.1` (and the Wi-Fi address), then
+  connect once to accept the new key.
+- **The takeover unit is gone** (`/etc/systemd/system/g-pad-takeover.service`),
+  so the pad no longer owns the panel at boot. Re-run
+  `./scripts/install-boot-rm2.sh`. The bundle under AppLoad is untouched.
+- **The qt-resource-rebuilder hashtable is stale.** It names the OS it was
+  built for, qmldiff skips it on any other version, and AppLoad's hooks then
+  abort xochitl; on 3.28 the OS answers two aborts with a reboot. Rebuild it
+  before starting xovi: `ssh root@10.11.99.1 '/home/root/xovi/rebuild_hashtable </dev/null'`
+  (`rm2-doctor.sh` reports the mismatch).
+- **AppLoad itself may lag the OS.** 3.28 changed the QML the launcher hooks;
+  the fix is merged upstream but, as of 2026-09-15, not in an AppLoad release,
+  and AppLoad v0.5.3 aborts xochitl on 3.28 even with a fresh hashtable. Until
+  a release ships, do not run `/home/root/xovi/start` on 3.28. The takeover
+  does not need AppLoad: the boot unit starts g-pad directly.
+- **The shutdown images revert to stock** (`/usr/share/remarkable/poweroff.png`
+  and `rebooting.png` live on the root partition). POWER OFF and REBOOT show
+  the reMarkable screens again instead of the Anthink cards. Re-run
+  `./scripts/install-boot-rm2.sh`, which re-renders and re-installs them
+  (`rm2-doctor.sh` reports it).
+- **3.28 dropped `timeout` and `pkill` from busybox.** Scripts that relied on
+  them stop working silently. The boot escape window lives inside g-pad now;
+  `g-pad-boot.sh` holds it itself only when the binary will not start, with
+  bash's own timed `read`.
+- **The e-ink engine ABI changed.** `libqsgepaper.so` on 3.28 exports a
+  different `EPFramebuffer::swapBuffers` signature, so a `libquill.so` built
+  for 3.27 initializes but never updates the screen. Rebuild it with
+  `./quill/build-zig.sh` (no SDK needed) and ship it with the bundle.
 
 ## Troubleshooting
 

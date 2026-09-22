@@ -194,8 +194,16 @@ fi
 # whose hashtable is built per OS version. After an OS update the old table no
 # longer matches and the entry can silently stop appearing.
 HASH="$(rm_ssh 'ls /home/root/xovi/exthome/qt-resource-rebuilder/*.dat /home/root/xovi/exthome/qt-resource-rebuilder/hashtab* 2>/dev/null | head -n 1' || true)"
-if [ -n "$HASH" ]; then
-    ok "qt-resource-rebuilder hashtable present ($HASH)"
+# The table names the OS it was built for; qmldiff refuses any other version
+# ("only valid for QML environment version X"), and AppLoad's hooks then
+# abort xochitl — on 3.28 twice in a row, which makes the OS reboot.
+HASHVER="$([ -n "$HASH" ] && rm_ssh "strings $HASH | grep -m1 -E '^3\\.[0-9]+\\.[0-9]+\\.[0-9]+\$'" || true)"
+if [ -n "$HASH" ] && [ -n "$OSVER" ] && [ -n "$HASHVER" ] && [ "$HASHVER" != "$OSVER" ]; then
+    bad "hashtable was built for OS $HASHVER, tablet runs $OSVER — starting xovi now"
+    bad "      aborts xochitl. Rebuild it first (the tablet must be awake):"
+    fix "ssh root@$RM_HOST '/home/root/xovi/rebuild_hashtable </dev/null'   # then check AppLoad supports $OSVER before /home/root/xovi/start"
+elif [ -n "$HASH" ]; then
+    ok "qt-resource-rebuilder hashtable present ($HASH${HASHVER:+, built for $HASHVER})"
 else
     warn "no qt-resource-rebuilder hashtable — AppLoad's entry in the stock UI"
     warn "      may not draw. Rebuild it (needs the tablet online):"
@@ -225,6 +233,23 @@ done
     bad "no g-pad bundle under exthome/appload"
     fix "./build-rm2.sh && RM_HOST=$RM_HOST ./scripts/install-rm2.sh"
 }
+
+# --- 5. the Anthink shutdown images -------------------------------------------
+# install-boot-rm2.sh keeps the stock poweroff.png once under /home/root and
+# overwrites the OS copy. An OS update replaces the root partition, so the OS
+# copy being byte-identical to the kept stock file again means an update has
+# undone the install.
+say "Anthink shutdown images"
+if rm_ssh 'test -e /home/root/g-pad-stock-images/poweroff.png'; then
+    if rm_ssh 'cmp -s /usr/share/remarkable/poweroff.png /home/root/g-pad-stock-images/poweroff.png'; then
+        bad "the OS shutdown images are back to stock — an OS update restored them"
+        fix "./scripts/install-boot-rm2.sh   # re-renders and re-installs the Anthink cards"
+    else
+        ok "power-off and reboot images are the Anthink cards"
+    fi
+else
+    warn "Anthink shutdown images were never installed (install-boot-rm2.sh does it)"
+fi
 
 # --- verdict -----------------------------------------------------------------
 printf '\n\033[1mVerdict\033[0m\n'

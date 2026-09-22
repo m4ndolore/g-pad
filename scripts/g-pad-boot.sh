@@ -3,9 +3,9 @@
 # for the offline escape hatch, then hand over to g-pad-takeover.sh.
 #
 # Escape hatches, none of which need wifi or USB:
-#   - press the power button within ~3s of the stock screen settling:
-#     this boot stays on the stock UI (works even if the g-pad binary is
-#     broken — only this script and busybox are involved)
+#   - press the power button within ~3s of the Anthink card appearing:
+#     this boot stays on the stock UI (if the binary is broken, the window
+#     is held on the frozen stock frame by this script alone)
 #   - inside g-pad: five-finger tap or the power button exit to the stock
 #     UI, which then keeps the panel until the next boot (Restart=no)
 #   - anything wedged: hold power to force off, boot, press power in the
@@ -17,17 +17,27 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 
 # Free the panel and the power button. logind ignores the power key on
 # this OS (/etc/systemd/logind.conf.d/powerkey.conf), so during the
-# window a press reaches only our read below.
+# window a press reaches only whoever is reading event0: g-pad, or the
+# fallback read below.
 systemctl stop xochitl
 
-# The e-ink panel still shows the stock UI's last frame — that frozen
-# frame IS the escape window. One input event on the power button
-# (16-byte struct) within 3s means: stay stock this boot.
-pressed=$(timeout 3 dd if=/dev/input/event0 bs=16 count=1 2>/dev/null | wc -c)
-if [ "${pressed:-0}" -gt 0 ]; then
-    echo "g-pad-boot: power press in the escape window — stock UI this boot"
-    systemctl start xochitl
-    exit 0
+# The escape window normally lives inside g-pad: it draws the Anthink card,
+# then watches the power key for 3s. That needs a binary that starts. If it
+# cannot even print its version, hold the window here on the frozen stock
+# frame instead, with bash's own timed read (OS 3.28 has no `timeout`).
+# event0 carries nothing but the power key, so one byte is a press. Not
+# `-N 16` for the whole struct: bash's read drops NUL bytes, and a 16-byte
+# input_event is mostly NULs, so a full-struct read misses the event.
+# The probe needs the same library path g-pad-takeover.sh gives the real
+# run: the binary links libquill.so, which links the vendor engine.
+probe_libs="$HERE:/home/root/quill:/usr/lib/plugins/scenegraph"
+if ! LD_LIBRARY_PATH="$probe_libs" "$HERE/g-pad" --version >/dev/null 2>&1; then
+    echo "g-pad-boot: binary does not start; escape window on the stock frame"
+    if IFS= read -r -t 3 -N 1 _ < /dev/input/event0; then
+        echo "g-pad-boot: power press in the escape window — stock UI this boot"
+        systemctl start xochitl
+        exit 0
+    fi
 fi
 
 exec bash "$HERE/g-pad-takeover.sh"
