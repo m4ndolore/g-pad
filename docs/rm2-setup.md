@@ -254,11 +254,13 @@ not. Seen on the 3.27.3 → 3.28.0.172 update (2026-09-15):
 
 - **You don't know the tablet's IP** — over Wi-Fi it is *not* `10.11.99.1`;
   that address is the USB link only. Two cases need no hunting, and
-  `rm2-doctor.sh` scans both before it asks you for anything: USB, and an
-  iPhone/iPad Personal Hotspot, which always uses `172.20.10.0/28` — the phone
-  is `.1` and clients get `.2` through `.14`, so it is thirteen addresses, not a
-  search. On any other network the tablet will tell you: Settings → Wi-Fi, tap
-  the connected network. Pass it as `RM_HOST` to the doctor and to
+  `rm2-doctor.sh` and `install.sh` try both before they ask you for anything:
+  USB first, and if USB is silent, an iPhone/iPad Personal Hotspot, which
+  always uses `172.20.10.0/28` — the phone is `.1` and clients get `.2` through
+  `.14`, so it is thirteen addresses, not a search. An answer on USB ends the
+  search, so a tablet that is plugged in and on a hotspot at once is found
+  once, not twice. On any other network the tablet will tell you: Settings →
+  Wi-Fi, tap the connected network. Pass it as `RM_HOST` to the doctor and to
   `install.sh`.
 
   Whatever the network, *this computer has to be on it too* — a hotspot only

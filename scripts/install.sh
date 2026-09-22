@@ -48,7 +48,7 @@ die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 # Prompts read the terminal, not stdin: under `curl | bash`, stdin is the script.
 ask()  { if [ -r /dev/tty ]; then printf '%s' "$1" >/dev/tty; IFS= read -r REPLY </dev/tty; else REPLY=""; fi; }
 
-for tool in ssh scp curl; do
+for tool in ssh tar curl; do
     command -v "$tool" >/dev/null || die "this machine has no '$tool'"
 done
 SHA256="$(command -v sha256sum || command -v shasum || true)"
@@ -64,16 +64,25 @@ SSH_OPTS=(-o HostKeyAlgorithms=ssh-ed25519,ssh-rsa -o PubkeyAcceptedAlgorithms=+
           -o ConnectTimeout=10)
 rm_ssh()       { ssh -n "${SSH_OPTS[@]}" "root@$RM_HOST" "$@"; }
 rm_ssh_stdin() { ssh "${SSH_OPTS[@]}" "root@$RM_HOST" "$@"; }
-rm_scp()       { scp -O -q "${SSH_OPTS[@]}" "$@"; }
 cleanup() { [ -n "$RM_HOST" ] && ssh "${SSH_OPTS[@]}" -O exit "root@$RM_HOST" 2>/dev/null || true; rm -rf "$WORK"; }
 trap cleanup EXIT
 
 # --- 1. find the tablet -------------------------------------------------------
-# Over USB the rM2 is always 10.11.99.1. On an iPhone or iPad Personal
-# Hotspot the clients are 172.20.10.2 through .14. Anything else needs RM_HOST.
+# Over USB the rM2 is always 10.11.99.1, and nothing else ever is, so an
+# answer there ends the search. Only when USB is silent do we try an iPhone
+# or iPad Personal Hotspot, whose clients are 172.20.10.2 through .14.
+# Anything else needs RM_HOST.
+#
+# macOS ships a netcat whose -w is an idle timeout: a probe of a dead address
+# waits the kernel's 75 s for the connect. Its -G flag caps the connect
+# instead. Every other netcat applies -w to the connect already.
+NC_PROBE=(-z -w 1)
+if command -v nc >/dev/null && { nc -h 2>&1 || true; } | grep -qE '(^|[[:space:]])-G[[:space:]]'; then
+    NC_PROBE=(-z -G 1 -w 1)
+fi
 port22() {
     if command -v nc >/dev/null; then
-        nc -z -w 1 "$1" 22 >/dev/null 2>&1
+        nc "${NC_PROBE[@]}" "$1" 22 >/dev/null 2>&1
     else
         out="$(ssh -n -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=no "root@$1" true 2>&1)" && return 0
         printf '%s' "$out" | grep -qiE 'denied|publickey|password'
@@ -81,18 +90,24 @@ port22() {
 }
 if [ -z "$RM_HOST" ]; then
     say "Looking for the tablet"
-    printf '   USB, then the iPhone hotspot range '
-    FOUND=()
-    for h in "$USB_HOST" $(seq 2 14 | sed "s|^|$HOTSPOT_NET.|"); do
-        printf '.'
-        port22 "$h" && FOUND+=("$h")
-    done
-    printf '\n'
-    case "${#FOUND[@]}" in
-        0) die "no tablet answered. Plug it in over USB and make sure it is awake, or run with RM_HOST=<ip> (Settings > Wi-Fi shows it)" ;;
-        1) RM_HOST="${FOUND[0]}" ;;
-        *) die "more than one host answered (${FOUND[*]}); re-run with RM_HOST=<the tablet>" ;;
-    esac
+    printf '   USB '
+    if port22 "$USB_HOST"; then
+        RM_HOST="$USB_HOST"
+        printf 'answered\n'
+    else
+        printf 'is silent; the iPhone hotspot range '
+        FOUND=()
+        for h in $(seq 2 14 | sed "s|^|$HOTSPOT_NET.|"); do
+            printf '.'
+            port22 "$h" && FOUND+=("$h")
+        done
+        printf '\n'
+        case "${#FOUND[@]}" in
+            0) die "no tablet answered. Plug it in over USB and make sure it is awake, or run with RM_HOST=<ip> (Settings > Wi-Fi shows it)" ;;
+            1) RM_HOST="${FOUND[0]}" ;;
+            *) die "more than one host answered (${FOUND[*]}); re-run with RM_HOST=<the tablet>" ;;
+        esac
+    fi
 fi
 note "using root@$RM_HOST"
 
@@ -183,7 +198,11 @@ if rm_ssh "systemctl is-active --quiet $UNIT"; then
     done
 fi
 rm_ssh "rm -rf /tmp/anthink-bundle && mkdir -p /tmp/anthink-bundle $APP"
-rm_scp -r "$BUNDLE/." "root@$RM_HOST:/tmp/anthink-bundle/"
+# A tar stream over the same connection. The tablet's dropbear has no
+# sftp-server, so scp would need its legacy mode, and macOS's scp then
+# rejects "dir/." as a source. COPYFILE_DISABLE keeps macOS from adding
+# AppleDouble ._ files; other tars ignore it.
+COPYFILE_DISABLE=1 tar -cf - -C "$BUNDLE" . | rm_ssh_stdin "tar -xf - -C /tmp/anthink-bundle"
 # oracle.env is not in the bundle, so an existing key survives the copy.
 rm_ssh "cp -Rf /tmp/anthink-bundle/. $APP/ && rm -rf /tmp/anthink-bundle && chmod +x $APP/g-pad $APP/*.sh"
 rm_ssh "cp -f $APP/$UNIT /etc/systemd/system/$UNIT && systemctl daemon-reload && systemctl enable --quiet $UNIT"
