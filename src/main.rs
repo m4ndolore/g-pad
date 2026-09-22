@@ -8,10 +8,9 @@
 //! built with --features takeover and launched with xochitl stopped.
 
 mod ask;
-// Laid out and tested, but not yet wired to a DrawerKind: the brief is a
-// reading surface waiting on a call site, not dead code. See
-// docs/daily-brief.md. Its JSON scanner is shared with the Claude bridge.
-#[allow(dead_code)]
+// The daily brief: the BRIEF tab lists the day's items, a tapped row opens
+// the one-page reader, and a poll thread feeds both when RIDDLE_BRIEF_URL
+// names a feed. See docs/daily-brief.md.
 mod brief;
 // Agent mode: the AGENTS tab is the board, a tapped row opens the full turn
 // page, and a poll thread feeds both when RIDDLE_BRIDGE_URL names a hub. See
@@ -204,6 +203,16 @@ enum State {
         annot: vault::Annot,
         status: Option<String>,
         boxr: Option<ui::DecisionBox>,
+        saved: Vec<u8>,
+        return_to: Box<State>,
+    },
+    /// The day's brief read full-page: one page, no navigation. ← BRIEF
+    /// returns to the drawer, × (or the leftward swipe) closes to the canvas,
+    /// and the pen acts as a finger — annotation is the brief's Tier 2 and
+    /// is not built (docs/daily-brief.md). The page draws from
+    /// `brief::held()` each time, so a poll landing while it is open shows
+    /// on the next open rather than tearing the page.
+    BriefPage {
         saved: Vec<u8>,
         return_to: Box<State>,
     },
@@ -707,6 +716,9 @@ fn run() -> std::io::Result<()> {
     // The vault listing likewise, when Vellum is configured. Dormant
     // without RIDDLE_VELLUM_BASE.
     vault::spawn_poll();
+    // And the daily brief, when a feed is configured. Dormant without
+    // RIDDLE_BRIEF_URL.
+    brief::spawn_poll();
 
     let (disp, mut surf) = display::Display::open()?;
     // Anything that isn't the qtfb window owns the panel, raw input devices,
@@ -1035,15 +1047,20 @@ fn run() -> std::io::Result<()> {
                 // the board. Whatever was open rides in `return_to`.
                 touch::Gesture::OpenDrawer if matches!(state,
                     State::Listening { .. } | State::Lingering { .. } | State::SessionPage { .. }
-                    | State::NotePage { .. }) => {
+                    | State::NotePage { .. } | State::BriefPage { .. }) => {
                     if let Some(p) = palette.take() {
                         let (px, py, pw, ph) = p.close(&mut surf).rect();
                         disp.update(px, py, pw, ph, false);
                         palette_until = None;
                     }
                     if let Some(saved) = controls_saved.take() { ui::restore_controls(&mut surf, &saved); }
-                    open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection,
-                        ui::DrawerKind::Sessions);
+                    // A page's own drawer opens on its own tab.
+                    let kind = if matches!(state, State::BriefPage { .. }) {
+                        ui::DrawerKind::Brief
+                    } else {
+                        ui::DrawerKind::Sessions
+                    };
+                    open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection, kind);
                 }
                 touch::Gesture::CloseDrawer => {
                     close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
@@ -1176,6 +1193,19 @@ fn run() -> std::io::Result<()> {
                             ui::Action::Vault => {
                                 open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection,
                                     ui::DrawerKind::Vault);
+                            }
+                            ui::Action::Close => {
+                                close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                            }
+                            _ => {}
+                        }
+                    } else if matches!(state, State::BriefPage { .. }) {
+                        // The brief page's targets: ← BRIEF back to the
+                        // drawer, × to the canvas, the rest of the page inert.
+                        match ui::brief_page_action(x, y) {
+                            ui::Action::Brief => {
+                                open_drawer(&mut state, &mut surf, &disp, &ui_font, &store, drawer_selection,
+                                    ui::DrawerKind::Brief);
                             }
                             ui::Action::Close => {
                                 close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
@@ -1400,7 +1430,8 @@ fn run() -> std::io::Result<()> {
                     }
                     continue;
                 }
-                if matches!(state, State::System { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }) {
+                if matches!(state, State::System { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }
+                    | State::BriefPage { .. }) {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
                         control_pen_latched = true;
@@ -1506,7 +1537,7 @@ fn run() -> std::io::Result<()> {
                         }
                     } else if matches!(state, State::System { .. } | State::Drawer { .. }
                         | State::ExpandedConversation { .. } | State::SessionPage { .. }
-                        | State::NotePage { .. }) {
+                        | State::NotePage { .. } | State::BriefPage { .. }) {
                         if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
                             control_pen_latched = true;
@@ -2245,6 +2276,7 @@ fn run() -> std::io::Result<()> {
                     page, saved, return_to, note, scribe }
             }
             s @ State::NotePage { .. } => s,
+            s @ State::BriefPage { .. } => s,
 
             State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
@@ -2628,7 +2660,7 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             *state = *return_to;
         }
         State::System { saved, return_to, .. } | State::SessionPage { saved, return_to, .. }
-        | State::NotePage { saved, return_to, .. } => {
+        | State::NotePage { saved, return_to, .. } | State::BriefPage { saved, return_to } => {
             surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
             disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }
@@ -3173,7 +3205,8 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
         // and hopping between sessions cannot pile up saved screens.
         let (saved, old) = match std::mem::replace(state, State::Listening { last_pen: None }) {
             State::SessionPage { saved, return_to, .. }
-            | State::NotePage { saved, return_to, .. } => (saved, *return_to),
+            | State::NotePage { saved, return_to, .. }
+            | State::BriefPage { saved, return_to } => (saved, *return_to),
             other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
         };
         let controls = ui::draw_session_page(surf, ui_font, &session, remaining, held.stale,
@@ -3205,7 +3238,8 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
         // like hopping between sessions: saved screens must not pile up.
         let (saved, old) = match std::mem::replace(state, State::Listening { last_pen: None }) {
             State::SessionPage { saved, return_to, .. }
-            | State::NotePage { saved, return_to, .. } => (saved, *return_to),
+            | State::NotePage { saved, return_to, .. }
+            | State::BriefPage { saved, return_to } => (saved, *return_to),
             other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
         };
         let boxr = ui::draw_note_page(surf, ui_font, &note, 0, &vault::Annot::Clean, None);
@@ -3214,6 +3248,25 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             note, page: 0, annot: vault::Annot::Clean, status: None, boxr,
             saved, return_to: Box::new(old),
         };
+        return;
+    }
+    if action == ui::Action::OpenBrief {
+        // The brief is what the poll last held — drawn from `held()` so the
+        // page and the row that opened it agree. Nothing to fetch: a brief
+        // that could not be reached is already marked stale on the page.
+        let brief = brief::held();
+        close_overlay(state, surf, disp, selection, scroll);
+        // Like a note or a session picked from a page's own drawer, the
+        // brief REPLACES an open page rather than stacking on it.
+        let (saved, old) = match std::mem::replace(state, State::Listening { last_pen: None }) {
+            State::SessionPage { saved, return_to, .. }
+            | State::NotePage { saved, return_to, .. }
+            | State::BriefPage { saved, return_to } => (saved, *return_to),
+            other => (surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), other),
+        };
+        ui::draw_brief_page(surf, ui_font, &brief);
+        disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
+        *state = State::BriefPage { saved, return_to: Box::new(old) };
         return;
     }
     let mut redraw = false;
@@ -3234,6 +3287,7 @@ fn handle_drawer_action(action: ui::Action, state: &mut State, surf: &mut Surfac
             ui::Action::Corpus => { p.kind = ui::DrawerKind::Corpus; p.scroll = 0; redraw = true; }
             ui::Action::Sessions => { p.kind = ui::DrawerKind::Sessions; p.scroll = 0; redraw = true; }
             ui::Action::Vault => { p.kind = ui::DrawerKind::Vault; p.scroll = 0; redraw = true; }
+            ui::Action::Brief => { p.kind = ui::DrawerKind::Brief; p.scroll = 0; redraw = true; }
             // Walking the vault is synchronous like opening a note: the tick
             // asked for that shelf, and the pause is the shelf loading. A
             // failed walk leaves the reader where they stood, marked stale.
