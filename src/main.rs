@@ -1712,6 +1712,13 @@ fn run() -> std::io::Result<()> {
                         }
                         *last_pen = Some(Instant::now());
                     } else if let State::Listening { ref mut last_pen } = state {
+                        // As on the raw path: ink never lands under a
+                        // selection's marks.
+                        if selector.active() {
+                            let d = selector.drop(&mut surf);
+                            ink_dirty.add(d.x0, d.y0, 0);
+                            ink_dirty.add(d.x1, d.y1, 0);
+                        }
                         pen_down = true;
                         let d = if kit.tip == tools::Tip::Eraser {
                             user_ink.erase_point(&mut surf, ev.x, ev.y, 22)

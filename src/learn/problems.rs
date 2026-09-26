@@ -655,7 +655,7 @@ fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
                 [2, 3, 4, 5, 10][rng.range(0, 4) as usize]
             };
             // Start on a multiple of the step, low enough that the answer
-            // stays under 100.
+            // stays under 100. A step above 19 would underflow this bound.
             let k = rng.range(0, (99 / step - SKIP_SHOWN).min(6));
             Problem { kind: Kind::SkipCount { start: k * step, step }, prompt: "WHAT COMES NEXT?" }
         }
