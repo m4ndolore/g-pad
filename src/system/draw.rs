@@ -7,7 +7,7 @@
 use ab_glyph::FontRef;
 
 use crate::fb::{SCREEN_H, SCREEN_W};
-use crate::pen::Tool;
+use crate::tools::Tip;
 use crate::preferences::{self, Mode, Preferences};
 use crate::presets::Preset;
 use crate::script;
@@ -68,7 +68,7 @@ pub struct View {
     pub overrides_count: usize,
     pub palm_ms: u64,
     /// What the pen tip does right now; the strip's tip cell shows the same.
-    pub tool: Tool,
+    pub tool: Tip,
     pub tutor_model: String,
     pub dwell_ms: u64,
     pub facts: device::Facts,
@@ -88,7 +88,7 @@ impl View {
             key_set: true,
             overrides_count: 2,
             palm_ms: 500,
-            tool: Tool::Pen,
+            tool: Tip::Pen,
             tutor_model: String::new(),
             dwell_ms: 3000,
             facts: device::Facts {
@@ -314,8 +314,7 @@ fn input(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View, prefs
         rows.stepper(surf, font, "IDLE DELAY", &ms(prefs.idle_send_ms), Act::StepIdle);
     }
     rows.stepper(surf, font, "PALM HOLDOFF", &ms(view.palm_ms), Act::StepPalm);
-    let eraser = view.tool == Tool::Eraser;
-    rows.row(surf, font, "PEN TIP", if eraser { "ERASER" } else { "PEN" }, eraser, Some(Act::ToggleTool));
+    rows.row(surf, font, "PEN TIP", view.tool.label(), view.tool != Tip::Pen, Some(Act::ToggleTool));
 }
 
 fn learn(surf: &mut Surface, font: &FontRef, rows: &mut Rows, view: &View, prefs: Preferences) {

@@ -3,18 +3,29 @@
 
 use crate::fb::BBox;
 use crate::surface::{Surface, BLACK, WHITE};
+use crate::tools::{Brush, PenKind};
 
 pub struct Ink {
     /// Finished strokes as point lists (x, y, radius).
     strokes: Vec<Vec<(i32, i32, i32)>>,
+    /// The brush each finished stroke was drawn with, index for index.
+    brushes: Vec<Brush>,
     current: Vec<(i32, i32, i32)>,
+    current_brush: Brush,
     last_erase: Option<(i32, i32)>,
     pub bbox: BBox,
 }
 
 impl Ink {
     pub fn new() -> Self {
-        Self { strokes: Vec::new(), current: Vec::new(), last_erase: None, bbox: BBox::empty() }
+        Self {
+            strokes: Vec::new(),
+            brushes: Vec::new(),
+            current: Vec::new(),
+            current_brush: Brush::default(),
+            last_erase: None,
+            bbox: BBox::empty(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -28,6 +39,7 @@ impl Ink {
 
     pub fn clear(&mut self) {
         self.strokes.clear();
+        self.brushes.clear();
         self.current.clear();
         self.last_erase = None;
         self.bbox = BBox::empty();
@@ -37,31 +49,39 @@ impl Ink {
     /// its bounding box. The ink bbox is rebuilt from what remains.
     pub fn pop_stroke(&mut self) -> Option<BBox> {
         let s = self.strokes.pop()?;
-        let mut gone = BBox::empty();
-        for &(x, y, r) in &s {
-            gone.add(x, y, r + 2);
-        }
+        self.brushes.pop();
+        let gone = stroke_bounds(&s);
+        self.rebuild_bbox();
+        Some(gone)
+    }
+
+    fn rebuild_bbox(&mut self) {
         self.bbox = BBox::empty();
-        for st in &self.strokes {
+        for st in self.strokes.iter().chain(std::iter::once(&self.current)) {
             for &(x, y, r) in st {
                 self.bbox.add(x, y, r + 2);
             }
         }
-        for &(x, y, r) in &self.current {
-            self.bbox.add(x, y, r + 2);
-        }
-        Some(gone)
     }
 
     /// Pen touched down or moved while down, with brush radius already
-    /// resolved by the caller. Returns the dirty rect of what was drawn.
+    /// resolved by the caller: the default ballpoint. Returns the dirty rect
+    /// of what was drawn.
     pub fn pen_point(&mut self, surf: &mut Surface, x: i32, y: i32, r: i32) -> BBox {
+        self.pen_point_with(surf, x, y, r, Brush::default())
+    }
+
+    /// `pen_point` with a chosen brush. The brush is taken at the stroke's
+    /// first point and holds until pen-up.
+    pub fn pen_point_with(&mut self, surf: &mut Surface, x: i32, y: i32, r: i32, brush: Brush) -> BBox {
+        if self.current.is_empty() {
+            self.current_brush = brush;
+        }
         let mut dirty = BBox::empty();
-        if let Some(&(px, py, pr)) = self.current.last() {
-            surf.brush_line(px, py, x, y, r.min(pr + 1), BLACK);
+        let prev = self.current.last().copied();
+        self.current_brush.segment(surf, prev, (x, y, r));
+        if let Some((px, py, pr)) = prev {
             dirty.add(px, py, pr + 2);
-        } else {
-            surf.stamp(x, y, r, BLACK);
         }
         dirty.add(x, y, r + 2);
         self.current.push((x, y, r));
@@ -92,13 +112,15 @@ impl Ink {
     fn forget_near(&mut self, x: i32, y: i32, r: i32) {
         let r2 = (r + 2) * (r + 2);
         let mut kept: Vec<Vec<(i32, i32, i32)>> = Vec::new();
-        for stroke in self.strokes.drain(..) {
+        let mut kept_brushes: Vec<Brush> = Vec::new();
+        for (stroke, brush) in self.strokes.drain(..).zip(self.brushes.drain(..)) {
             let mut seg: Vec<(i32, i32, i32)> = Vec::new();
             for p in stroke {
                 let (dx, dy) = (p.0 - x, p.1 - y);
                 if dx * dx + dy * dy <= r2 {
                     if !seg.is_empty() {
                         kept.push(std::mem::take(&mut seg));
+                        kept_brushes.push(brush);
                     }
                 } else {
                     seg.push(p);
@@ -106,22 +128,130 @@ impl Ink {
             }
             if !seg.is_empty() {
                 kept.push(seg);
+                kept_brushes.push(brush);
             }
         }
         self.strokes = kept;
-        self.bbox = BBox::empty();
-        for stroke in &self.strokes {
-            for &(px, py, pr) in stroke {
-                self.bbox.add(px, py, pr + 2);
-            }
-        }
+        self.brushes = kept_brushes;
+        self.rebuild_bbox();
     }
 
     pub fn pen_up(&mut self) {
         if !self.current.is_empty() {
             self.strokes.push(std::mem::take(&mut self.current));
+            self.brushes.push(self.current_brush);
         }
         self.last_erase = None;
+    }
+
+    /// The finished strokes a lasso encloses: those with at least half their
+    /// points inside the polygon, so a loop drawn a little tight still takes
+    /// a word whose tails poke out.
+    pub fn strokes_in(&self, lasso: &[(i32, i32)]) -> Vec<usize> {
+        if lasso.len() < 3 {
+            return Vec::new();
+        }
+        self.strokes
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                let inside = s.iter().filter(|&&(x, y, _)| point_in_polygon(x, y, lasso)).count();
+                !s.is_empty() && inside * 2 >= s.len()
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The painted extent of strokes `idx`.
+    pub fn bounds(&self, idx: &[usize]) -> BBox {
+        let mut b = BBox::empty();
+        for s in idx.iter().filter_map(|&i| self.strokes.get(i)) {
+            let sb = stroke_bounds(s);
+            if !sb.is_empty() {
+                b.add(sb.x0, sb.y0, 0);
+                b.add(sb.x1, sb.y1, 0);
+            }
+        }
+        b
+    }
+
+    /// Lift strokes `idx` off the page and put them down `(dx, dy)` away.
+    /// The lifted ground is whited out, and every stroke touching either
+    /// place is repainted in order, so ink the move uncovered comes back.
+    /// Returns the dirty rect.
+    pub fn shift(&mut self, surf: &mut Surface, idx: &[usize], dx: i32, dy: i32) -> BBox {
+        let mut dirty = self.lift(surf, idx);
+        for &i in idx {
+            if let Some(s) = self.strokes.get_mut(i) {
+                for p in s.iter_mut() {
+                    p.0 += dx;
+                    p.1 += dy;
+                }
+            }
+        }
+        let moved = self.bounds(idx);
+        if !moved.is_empty() {
+            dirty.add(moved.x0, moved.y0, 0);
+            dirty.add(moved.x1, moved.y1, 0);
+        }
+        self.repaint_within(surf, &dirty);
+        self.rebuild_bbox();
+        dirty
+    }
+
+    /// Take strokes `idx` off the page and out of the model. Returns the
+    /// dirty rect.
+    pub fn remove(&mut self, surf: &mut Surface, idx: &[usize]) -> BBox {
+        let dirty = self.lift(surf, idx);
+        let mut sorted = idx.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        for &i in sorted.iter().rev() {
+            if i < self.strokes.len() {
+                self.strokes.remove(i);
+                self.brushes.remove(i);
+            }
+        }
+        self.repaint_within(surf, &dirty);
+        self.rebuild_bbox();
+        dirty
+    }
+
+    /// White out strokes `idx` where they lie; returns the area whitened.
+    fn lift(&self, surf: &mut Surface, idx: &[usize]) -> BBox {
+        let mut gone = BBox::empty();
+        for s in idx.iter().filter_map(|&i| self.strokes.get(i)) {
+            let mut prev: Option<(i32, i32, i32)> = None;
+            for &(x, y, r) in s {
+                match prev {
+                    Some((px, py, pr)) => surf.brush_line(px, py, x, y, r.max(pr) + 1, WHITE),
+                    None => surf.stamp(x, y, r + 1, WHITE),
+                }
+                gone.add(x, y, r + 3);
+                prev = Some((x, y, r));
+            }
+        }
+        gone
+    }
+
+    /// Repaint, in order, every finished stroke that reaches into `region`.
+    fn repaint_within(&self, surf: &mut Surface, region: &BBox) {
+        if region.is_empty() {
+            return;
+        }
+        for (s, brush) in self.strokes.iter().zip(&self.brushes) {
+            let b = stroke_bounds(s);
+            let touches = !b.is_empty()
+                && b.x0 <= region.x1 && b.x1 >= region.x0 && b.y0 <= region.y1 && b.y1 >= region.y0;
+            if !touches {
+                continue;
+            }
+            let mut prev = None;
+            for &p in s {
+                brush.segment(surf, prev, p);
+                prev = Some(p);
+            }
+        }
     }
 
     /// True if any finished stroke has a point inside `region` — the "did the
@@ -228,7 +358,11 @@ impl Ink {
         let ptr = buf.as_mut_ptr();
         let mut tmp = Surface::new(ptr, buf.len(), w, h, w * 4, crate::surface::PixFmt::Rgb32);
         let (ox, oy) = (crop.x0 - 20, crop.y0 - 20);
-        for stroke in &self.strokes {
+        // A highlighter band is emphasis, not writing: the tutor reads the
+        // strokes alone, and a band would read as a thick black bar.
+        for (stroke, _) in self.strokes.iter().zip(&self.brushes)
+            .filter(|(_, b)| b.kind != PenKind::Highlighter)
+        {
             let mut b = BBox::empty();
             for &(x, y, r) in stroke {
                 b.add(x, y, r + 2);
@@ -253,6 +387,31 @@ impl Ink {
         }
         region_png(&tmp, BBox { x0: 20, y0: 20, x1: w as i32 - 21, y1: h as i32 - 21 }, path).map(|_| ())
     }
+}
+
+fn stroke_bounds(s: &[(i32, i32, i32)]) -> BBox {
+    let mut b = BBox::empty();
+    for &(x, y, r) in s {
+        b.add(x, y, r + 2);
+    }
+    b
+}
+
+/// Even-odd ray cast: is (x, y) inside the closed polygon `poly`?
+fn point_in_polygon(x: i32, y: i32, poly: &[(i32, i32)]) -> bool {
+    let mut inside = false;
+    let mut j = poly.len() - 1;
+    for i in 0..poly.len() {
+        let ((xi, yi), (xj, yj)) = (poly[i], poly[j]);
+        if (yi > y) != (yj > y) {
+            let cross = xi as i64 + (xj - xi) as i64 * (y - yi) as i64 / (yj - yi) as i64;
+            if (x as i64) < cross {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 /// Rasterize any page region to the oracle's grayscale PNG. Learn mode sends
@@ -471,6 +630,102 @@ mod tests {
         ink.pen_point(&mut s, 350, 350, 3);
         ink.pen_up();
         assert!(ink.last_stroke_clear_of_rest(100));
+    }
+
+    fn dark(s: &Surface, x0: i32, y0: i32, x1: i32, y1: i32) -> usize {
+        let mut n = 0;
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if s.luma(x, y) < 128 {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// Two short horizontal strokes, one at y=100 and one at y=300.
+    fn two_strokes(s: &mut Surface) -> Ink {
+        let mut ink = Ink::new();
+        for x in (50..=150).step_by(5) {
+            ink.pen_point(s, x, 100, 3);
+        }
+        ink.pen_up();
+        for x in (50..=150).step_by(5) {
+            ink.pen_point(s, x, 300, 3);
+        }
+        ink.pen_up();
+        ink
+    }
+
+    #[test]
+    fn a_lasso_takes_the_strokes_it_encloses_and_leaves_the_rest() {
+        let (_buf, mut s) = surf();
+        let ink = two_strokes(&mut s);
+        let lasso = [(30, 70), (180, 70), (180, 130), (30, 130)];
+        assert_eq!(ink.strokes_in(&lasso), vec![0]);
+        // Tails poking out of a tight loop still count.
+        let tight = [(70, 80), (180, 80), (180, 120), (70, 120)];
+        assert_eq!(ink.strokes_in(&tight), vec![0]);
+        assert!(ink.strokes_in(&[(0, 0), (10, 10)]).is_empty(), "two points enclose nothing");
+    }
+
+    #[test]
+    fn moving_a_stroke_repaints_it_and_clears_where_it_was() {
+        let (_buf, mut s) = surf();
+        let mut ink = two_strokes(&mut s);
+        ink.shift(&mut s, &[0], 100, 100);
+        assert_eq!(dark(&s, 40, 90, 160, 110), 0, "the old place is paper again");
+        assert!(dark(&s, 150, 190, 250, 210) > 100, "the stroke landed");
+        assert!(dark(&s, 50, 290, 150, 310) > 100, "the other stroke is untouched");
+        let b = ink.bounds(&[0]);
+        assert!(b.x0 >= 140 && b.y0 >= 190, "the model moved with the pixels: {b:?}");
+        assert!(ink.bbox.y1 >= 300, "the page bbox still holds both strokes");
+    }
+
+    #[test]
+    fn a_move_across_another_stroke_leaves_it_whole() {
+        let (_buf, mut s) = surf();
+        let mut ink = two_strokes(&mut s);
+        // A vertical stroke crossing the top one, then moved away.
+        for y in (60..=140).step_by(5) {
+            ink.pen_point(&mut s, 100, y, 3);
+        }
+        ink.pen_up();
+        ink.shift(&mut s, &[2], 150, 0);
+        assert!(dark(&s, 95, 97, 105, 103) > 20, "the crossing point of the top stroke came back");
+    }
+
+    #[test]
+    fn deleting_strokes_removes_pixels_and_model_together() {
+        let (_buf, mut s) = surf();
+        let mut ink = two_strokes(&mut s);
+        ink.remove(&mut s, &[1]);
+        assert_eq!(ink.stroke_list().len(), 1);
+        assert_eq!(dark(&s, 40, 290, 160, 310), 0);
+        assert!(dark(&s, 50, 90, 150, 110) > 100);
+        ink.remove(&mut s, &[0]);
+        assert!(ink.is_empty() && ink.bbox.is_empty());
+    }
+
+    #[test]
+    fn brushes_follow_their_strokes_through_an_erase() {
+        let (_buf, mut s) = surf();
+        let mut ink = Ink::new();
+        let hl = Brush { kind: PenKind::Highlighter, size: crate::tools::Size::Fine };
+        for x in (20..=200).step_by(10) {
+            ink.pen_point_with(&mut s, x, 100, 9, hl);
+        }
+        ink.pen_up();
+        for x in (20..=200).step_by(10) {
+            ink.pen_point(&mut s, x, 300, 3);
+        }
+        ink.pen_up();
+        ink.erase_point(&mut s, 110, 100, 20);
+        assert_eq!(ink.stroke_list().len(), 3);
+        assert_eq!(ink.brushes.len(), 3);
+        assert!(ink.brushes[..2].iter().all(|b| b.kind == PenKind::Highlighter));
+        assert_eq!(ink.brushes[2], Brush::default());
     }
 
     #[test]

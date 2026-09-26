@@ -36,9 +36,11 @@ mod qtfb;
 #[cfg(all(feature = "rm2", not(feature = "takeover")))]
 mod rm2fb;
 mod script;
+mod select;
 mod splash;
 mod surface;
 mod system;
+mod tools;
 mod touch;
 mod ui;
 mod vault;
@@ -63,6 +65,8 @@ const FONT_TTF: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 const PNG_PATH: &str = "/tmp/g-pad-page.png";
 /// The marked-up note page as Vellum sees it: print and ink together.
 const ANNOTATE_PNG: &str = "/tmp/g-pad-annotate.png";
+/// How long the tool menu stays down untouched.
+const TOOL_MENU_FOR: Duration = Duration::from_secs(15);
 
 /// How long the diary waits on a silent oracle before giving up on the turn.
 /// Generous: thinking models can lead with a long silence.
@@ -87,6 +91,9 @@ usage:
   g-pad --render-cards [DIR]  render the Anthink boot, power-off and restart
                               cards into DIR (default /tmp/g-pad-cards) in
                               the OS's grayscale PNG format; no display needed
+  g-pad --render-tools [DIR]  render the tool menu, every pen, and a moved
+                              selection into DIR (default /tmp/g-pad-tools)
+                              as PNGs; no display needed
   g-pad --learn-test [ANS]    one Learn-mode tutor round trip with a simulated
                               child answer (default: the correct one); prints
                               the verdict; verifies key + endpoint + model
@@ -360,6 +367,12 @@ fn main() {
                     1
                 }
             });
+        }
+        // Diagnostic: render the tool menu and a live selection to PNGs, so
+        // the writing tools can be reviewed without a tablet in hand.
+        Some("--render-tools") => {
+            let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/g-pad-tools");
+            std::process::exit(render_tools(dir));
         }
         // Diagnostic: one full tutor round trip with a simulated child answer
         // — draws a number bond, writes ANSWER into the blank in the reply
@@ -675,6 +688,87 @@ fn learn_test(answer: Option<&str>) -> i32 {
 }
 
 /// Write the whole page as an 8-bit grayscale PNG (full resolution).
+/// Render the writing tools into `dir`: a page with one line per pen, the
+/// tool menu over it (as set, and as kids mode shows it), a selection, and
+/// the same selection dragged.
+fn render_tools(dir: &str) -> i32 {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("g-pad: cannot create {dir}: {e}");
+        return 1;
+    }
+    let Ok(ui_font) = FontRef::try_from_slice(ui::UI_FONT_TTF) else {
+        eprintln!("g-pad: bundled UI font unreadable");
+        return 1;
+    };
+    let mut buf = vec![0xFFu8; SCREEN_W * SCREEN_H * 4];
+    let ptr = buf.as_mut_ptr();
+    let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
+    ui::draw_corner(&mut surf);
+    let mut ink = ink::Ink::new();
+    // A printed word under every line, so the highlighter shows what it
+    // leaves alone.
+    for (i, kind) in tools::PenKind::ALL.into_iter().enumerate() {
+        let y = 1000 + i as i32 * 150;
+        ui::full_text(&mut surf, &ui_font, kind.label(), 40.0, 560, y as usize - 22, BLACK);
+        for (j, size) in tools::Size::ALL.into_iter().enumerate() {
+            let brush = tools::Brush { kind, size };
+            let x0 = 540 + j as i32 * 280;
+            for step in 0..=60 {
+                let t = step as f32 / 60.0;
+                let x = x0 + (t * 240.0) as i32;
+                let wy = y + ((t * std::f32::consts::TAU).sin() * 30.0) as i32;
+                let pressure = (pen::MAX_PRESSURE as f32 * (0.2 + 0.8 * t)) as i32;
+                ink.pen_point_with(&mut surf, x, wy, brush.radius(pressure), brush);
+            }
+            ink.pen_up();
+        }
+    }
+    let shots: [(&str, tools::Kit, bool); 2] = [
+        ("tools-menu", tools::Kit {
+            tip: tools::Tip::Pen,
+            brush: tools::Brush { kind: tools::PenKind::Marker, size: tools::Size::Bold },
+        }, false),
+        ("tools-menu-kids", tools::Kit::default(), true),
+    ];
+    for (name, kit, kids) in shots {
+        let menu = ui::ToolMenu::open(&mut surf, &ui_font, kit, kids);
+        let path = format!("{dir}/{name}.png");
+        if let Err(e) = dump_page(&surf, &path) {
+            eprintln!("g-pad: write {path}: {e}");
+            return 1;
+        }
+        println!("{path}");
+        menu.close(&mut surf);
+    }
+    // Lasso the fineliner line, then drag it up the page.
+    let mut selector = select::Selector::default();
+    let lasso = [(520, 930), (1380, 930), (1380, 1070), (520, 1070), (520, 930)];
+    for w in lasso.windows(2) {
+        let ((ax, ay), (bx, by)) = (w[0], w[1]);
+        for k in 0..=20 {
+            selector.pen(&mut surf, &mut ink, ax + (bx - ax) * k / 20, ay + (by - ay) * k / 20);
+        }
+    }
+    selector.pen_up(&mut surf, &mut ink, &ui_font);
+    let path = format!("{dir}/tools-select.png");
+    if let Err(e) = dump_page(&surf, &path) {
+        eprintln!("g-pad: write {path}: {e}");
+        return 1;
+    }
+    println!("{path}");
+    for step in 0..=30 {
+        selector.pen(&mut surf, &mut ink, 900, 1000 - step * 20);
+    }
+    selector.pen_up(&mut surf, &mut ink, &ui_font);
+    let path = format!("{dir}/tools-moved.png");
+    if let Err(e) = dump_page(&surf, &path) {
+        eprintln!("g-pad: write {path}: {e}");
+        return 1;
+    }
+    println!("{path}");
+    0
+}
+
 pub(crate) fn dump_page(surf: &Surface, path: &str) -> std::io::Result<()> {
     let mut gray = vec![0u8; surf.w * surf.h];
     for y in 0..surf.h {
@@ -903,9 +997,17 @@ fn run() -> std::io::Result<()> {
     let mut notebook = notebook::Notebook::new();
     let mut banner_saved: Option<Vec<u8>> = None;
     let mut banner_until: Option<Instant> = None;
-    // What the pen tip does, flipped from the strip's tip cell or the SYSTEM
-    // page. The marker's hardware eraser end always erases regardless.
-    let mut selected_tool = pen::Tool::Pen;
+    // What the pen tip does and with which pen: set from the tool menu under
+    // the corner button; the strip's tip cell and the SYSTEM page flip pen
+    // and eraser. The marker's hardware eraser end always erases regardless.
+    let mut kit = tools::Kit::default();
+    // The tool menu while it is down, and when it goes up by itself.
+    let mut tool_menu: Option<ui::ToolMenu> = None;
+    let mut tool_menu_until: Option<Instant> = None;
+    // A pen press that began while the menu was down: none of it is ink.
+    let mut menu_press = false;
+    // The select tip's lasso and selection.
+    let mut selector = select::Selector::default();
 
     // Reply draw speed: points drawn per animation frame. Higher = the answer
     // appears faster (fewer seconds of watching it scrawl). Was 26; the e-ink
@@ -1006,7 +1108,7 @@ fn run() -> std::io::Result<()> {
                 changed = true;
             }
             if changed && matches!(page.section, system::Section::Wifi | system::Section::Power) {
-                system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides, selected_tool), prefs);
+                system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides, kit.tip), prefs);
                 disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
             }
         }
@@ -1014,20 +1116,74 @@ fn run() -> std::io::Result<()> {
         // Touch belongs to overlays while they are visible. Edge gestures are
         // consumed here and never reach page navigation or page ink.
         for gesture in gestures {
-            // A tap on the corner button is the top-edge swipe by another
-            // name: it opens the controls on a page with none open. Once the
-            // strip is up the corner is its close cell and the tap reaches
-            // control_action below like any other.
-            let gesture = match gesture {
-                touch::Gesture::Tap(x, y)
-                    if ui::corner_hit(x, y)
-                        && controls_saved.is_none()
-                        && matches!(state, State::Listening { .. } | State::Lingering { .. }) =>
-                {
-                    touch::Gesture::OpenControls
+            // A finger takes a selection down before anything else: every
+            // overlay and page turn below paints over the page, and the
+            // selection's marks must not be saved under one.
+            if selector.active() {
+                let d = selector.drop(&mut surf);
+                ink_dirty.add(d.x0, d.y0, 0);
+                ink_dirty.add(d.x1, d.y1, 0);
+                idle_from_now(&mut state);
+            }
+            // An open tool menu answers taps inside it. Anything else closes
+            // it: a tap outside is spent closing, and any other gesture goes
+            // on to do what it does.
+            if let Some(menu) = tool_menu.as_ref() {
+                let pick = match gesture {
+                    touch::Gesture::Tap(x, y) => menu.pick(x, y),
+                    _ => None,
+                };
+                // A pen or a size keeps the menu open for the other choice,
+                // and choosing either means writing.
+                let restyle = match pick {
+                    Some(ui::MenuPick::Kind(kind)) => Some(tools::Brush { kind, ..kit.brush }),
+                    Some(ui::MenuPick::Size(size)) => Some(tools::Brush { size, ..kit.brush }),
+                    _ => None,
+                };
+                if let Some(brush) = restyle {
+                    kit = tools::Kit { tip: tools::Tip::Pen, brush };
+                    eprintln!("g-pad: pen is now {brush:?}");
+                    menu.draw(&mut surf, &ui_font, kit);
+                    let (x, y, w, h) = menu.region().rect();
+                    disp.update(x, y, w, h, false);
+                    tool_menu_until = Some(Instant::now() + TOOL_MENU_FOR);
+                } else {
+                    if let Some(menu) = tool_menu.take() {
+                        let (x, y, w, h) = menu.close(&mut surf).rect();
+                        disp.update(x, y, w, h, false);
+                    }
+                    tool_menu_until = None;
+                    idle_from_now(&mut state);
+                    match pick {
+                        Some(ui::MenuPick::Tip(t)) => {
+                            kit.tip = t;
+                            eprintln!("g-pad: pen tip is now the {t:?}");
+                        }
+                        Some(ui::MenuPick::More) => queued_gestures.push(touch::Gesture::OpenControls),
+                        _ => {}
+                    }
                 }
-                other => other,
-            };
+                if matches!(gesture, touch::Gesture::Tap(..)) {
+                    continue;
+                }
+            }
+            // A tap on the corner button drops the tool menu on a page with
+            // no controls open. Once the strip is up the corner is its close
+            // cell and the tap reaches control_action below like any other.
+            if let touch::Gesture::Tap(x, y) = gesture {
+                if ui::corner_hit(x, y)
+                    && controls_saved.is_none()
+                    && tool_menu.is_none()
+                    && matches!(state, State::Listening { .. } | State::Lingering { .. })
+                {
+                    let menu = ui::ToolMenu::open(&mut surf, &ui_font, kit, learn_session.is_some());
+                    let (x, y, w, h) = menu.region().rect();
+                    disp.update(x, y, w, h, false);
+                    tool_menu = Some(menu);
+                    tool_menu_until = Some(Instant::now() + TOOL_MENU_FOR);
+                    continue;
+                }
+            }
             match gesture {
                 touch::Gesture::OpenControls => {
                     if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
@@ -1040,13 +1196,13 @@ fn run() -> std::io::Result<()> {
                         if prefs.mode == preferences::Mode::Guided {
                             if controls_saved.is_none() {
                                 controls_saved = Some(ui::draw_controls(&mut surf, &ui_font,
-                                    matches!(state, State::Lingering { .. }), learn_session.is_some(), selected_tool));
+                                    matches!(state, State::Lingering { .. }), learn_session.is_some(), kit.tip));
                                 disp.update(0, 0, SCREEN_W as i32, 82, false);
                             }
                             controls_until = Some(Instant::now() + Duration::from_secs(12));
                         } else {
                             open_system(&mut state, &mut surf, &disp, &ui_font, prefs,
-                                &system_view(&presets, &overrides, selected_tool), &mut learn_auto_at);
+                                &system_view(&presets, &overrides, kit.tip), &mut learn_auto_at);
                         }
                     }
                 }
@@ -1146,7 +1302,7 @@ fn run() -> std::io::Result<()> {
                         apply_control(action, &mut state, &mut surf, &disp, &ui_font, &store,
                             &mut user_ink, &mut notebook, &mut send_mode, &mut sleep_requested,
                             &mut prefs, drawer_selection, drawer_scroll, &mut learn_session, &presets, &overrides,
-                            &mut learn_auto_at, &mut selected_tool);
+                            &mut learn_auto_at, &mut kit.tip);
                         // A control action closes the praise moment: a NEW
                         // PAGE from the strip must not be followed by a stale
                         // auto-deal or tap-deal on the fresh page.
@@ -1155,7 +1311,7 @@ fn run() -> std::io::Result<()> {
                         learn_tap_advance = false;
                     } else if matches!(state, State::System { .. }) {
                         let after = system_tap(x, y, &mut state, &mut surf, &disp, &ui_font, &font, &mut prefs,
-                            &mut idle_commit, &mut overrides, &presets, &mut oracle, &store, &mut selected_tool,
+                            &mut idle_commit, &mut overrides, &presets, &mut oracle, &store, &mut kit.tip,
                             &mut palm_holdoff, &mut learn_next_dwell, &mut learn_model,
                             &mut sleep_requested, &mut learn_session, &mut user_ink,
                             &mut drawer_selection, &mut drawer_scroll, &mut learn_advance_pending,
@@ -1229,6 +1385,14 @@ fn run() -> std::io::Result<()> {
             }
         }
 
+        if tool_menu_until.is_some_and(|t| Instant::now() >= t) {
+            if let Some(menu) = tool_menu.take() {
+                let (x, y, w, h) = menu.close(&mut surf).rect();
+                disp.update(x, y, w, h, false);
+                idle_from_now(&mut state);
+            }
+            tool_menu_until = None;
+        }
         if controls_until.is_some_and(|t| Instant::now() >= t) {
             if let Some(saved) = controls_saved.take() {
                 ui::restore_controls(&mut surf, &saved);
@@ -1324,7 +1488,7 @@ fn run() -> std::io::Result<()> {
                 if let State::System { page, .. } = &mut state {
                     if page.section == system::Section::Wifi && page.wifi.begin("READING") {
                         system::wifi::spawn(system::wifi::Cmd::Refresh, page.wifi_tx.clone());
-                        system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides, selected_tool), prefs);
+                        system::draw::draw(&mut surf, &ui_font, page, &system_view(&presets, &overrides, kit.tip), prefs);
                         disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
                     }
                 }
@@ -1356,6 +1520,13 @@ fn run() -> std::io::Result<()> {
                 stylus_tapped |= writing;
                 if !writing {
                     control_pen_latched = false;
+                    menu_press = false;
+                    if selector.pressing() {
+                        let d = selector.pen_up(&mut surf, &mut user_ink, &ui_font);
+                        ink_dirty.add(d.x0, d.y0, 0);
+                        ink_dirty.add(d.x1, d.y1, 0);
+                        idle_from_now(&mut state);
+                    }
                     if pen_down {
                         pen_down = false;
                         user_ink.pen_up();
@@ -1393,6 +1564,23 @@ fn run() -> std::io::Result<()> {
                     }
                     continue;
                 }
+                // A press that starts while the tool menu is down is a tap
+                // on it, or else it closes it; either way none of it is ink.
+                if menu_press {
+                    continue;
+                }
+                if let Some(menu) = tool_menu.as_ref() {
+                    menu_press = true;
+                    if menu.contains(s.x, s.y) {
+                        queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
+                    } else if let Some(menu) = tool_menu.take() {
+                        let (x, y, w, h) = menu.close(&mut surf).rect();
+                        disp.update(x, y, w, h, false);
+                        tool_menu_until = None;
+                        idle_from_now(&mut state);
+                    }
+                    continue;
+                }
                 if controls_saved.is_some() && s.y < 82 {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
@@ -1409,17 +1597,39 @@ fn run() -> std::io::Result<()> {
                     continue;
                 }
                 match state {
+                    // The select tip lassos and moves; learn sheets have no
+                    // use for it, so there it writes like the pen.
+                    State::Listening { ref mut last_pen }
+                        if selector.pressing()
+                            || (kit.tip == tools::Tip::Select && s.tool == pen::Tool::Pen
+                                && learn_session.is_none()) =>
+                    {
+                        let d = selector.pen(&mut surf, &mut user_ink, s.x, s.y);
+                        if !d.is_empty() {
+                            ink_dirty.add(d.x0, d.y0, 0);
+                            ink_dirty.add(d.x1, d.y1, 0);
+                        }
+                        *last_pen = Some(Instant::now());
+                    }
                     State::Listening { ref mut last_pen } => {
+                        // Ink must not land under a selection's marks: the
+                        // eraser end, or a tip changed from the SYSTEM page,
+                        // takes the selection down first.
+                        if selector.active() {
+                            let d = selector.drop(&mut surf);
+                            ink_dirty.add(d.x0, d.y0, 0);
+                            ink_dirty.add(d.x1, d.y1, 0);
+                        }
                         pen_down = true;
                         // The hardware eraser end always erases; the tip does
-                        // whatever the palette last chose.
-                        let d = match (s.tool, selected_tool) {
-                            (pen::Tool::Eraser, _) | (_, pen::Tool::Eraser) => {
+                        // whatever the tool menu last chose.
+                        let d = match (s.tool, kit.tip) {
+                            (pen::Tool::Eraser, _) | (_, tools::Tip::Eraser) => {
                                 user_ink.erase_point(&mut surf, s.x, s.y, 22)
                             }
                             _ => {
-                                let r = 2 + s.pressure * 3 / pen::MAX_PRESSURE;
-                                user_ink.pen_point(&mut surf, s.x, s.y, r)
+                                let r = kit.brush.radius(s.pressure);
+                                user_ink.pen_point_with(&mut surf, s.x, s.y, r, kit.brush)
                             }
                         };
                         if !d.is_empty() {
@@ -1470,6 +1680,21 @@ fn run() -> std::io::Result<()> {
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE => {
                     stylus_on = true;
                     stylus_tapped = true;
+                    if menu_press {
+                        continue;
+                    }
+                    if let Some(menu) = tool_menu.as_ref() {
+                        menu_press = true;
+                        if menu.contains(ev.x, ev.y) {
+                            queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
+                        } else if let Some(menu) = tool_menu.take() {
+                            let (x, y, w, h) = menu.close(&mut surf).rect();
+                            disp.update(x, y, w, h, false);
+                            tool_menu_until = None;
+                            idle_from_now(&mut state);
+                        }
+                        continue;
+                    }
                     if controls_saved.is_some() && ev.y < 82 {
                         if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
@@ -1477,13 +1702,22 @@ fn run() -> std::io::Result<()> {
                         }
                         continue;
                     }
-                    if let State::Listening { ref mut last_pen } = state {
+                    let selecting = selector.pressing()
+                        || (kit.tip == tools::Tip::Select && learn_session.is_none());
+                    if let (State::Listening { ref mut last_pen }, true) = (&mut state, selecting) {
+                        let d = selector.pen(&mut surf, &mut user_ink, ev.x, ev.y);
+                        if !d.is_empty() {
+                            ink_dirty.add(d.x0, d.y0, 0);
+                            ink_dirty.add(d.x1, d.y1, 0);
+                        }
+                        *last_pen = Some(Instant::now());
+                    } else if let State::Listening { ref mut last_pen } = state {
                         pen_down = true;
-                        let d = if selected_tool == pen::Tool::Eraser {
+                        let d = if kit.tip == tools::Tip::Eraser {
                             user_ink.erase_point(&mut surf, ev.x, ev.y, 22)
                         } else {
-                            let r = 2 + ev.d.clamp(0, 100) / 45;
-                            user_ink.pen_point(&mut surf, ev.x, ev.y, r)
+                            let pressure = ev.d.clamp(0, 100) * pen::MAX_PRESSURE / 100;
+                            user_ink.pen_point_with(&mut surf, ev.x, ev.y, kit.brush.radius(pressure), kit.brush)
                         };
                         if !d.is_empty() {
                             ink_dirty.add(d.x0, d.y0, 0);
@@ -1510,6 +1744,13 @@ fn run() -> std::io::Result<()> {
                 qtfb::INPUT_PEN_RELEASE => {
                     stylus_on = false;
                     control_pen_latched = false;
+                    menu_press = false;
+                    if selector.pressing() {
+                        let d = selector.pen_up(&mut surf, &mut user_ink, &ui_font);
+                        ink_dirty.add(d.x0, d.y0, 0);
+                        ink_dirty.add(d.x1, d.y1, 0);
+                        idle_from_now(&mut state);
+                    }
                     if pen_down {
                         pen_down = false;
                         user_ink.pen_up();
@@ -1685,7 +1926,7 @@ fn run() -> std::io::Result<()> {
             if pen_down {
                 // The child went back to the page: let them.
                 learn_auto_at = None;
-            } else if at <= Instant::now() && matches!(state, State::Listening { .. }) {
+            } else if at <= Instant::now() && matches!(state, State::Listening { .. }) && tool_menu.is_none() {
                 learn_auto_at = None;
                 learn_tap_advance = false;
                 if let Some(ref mut session) = learn_session {
@@ -1703,6 +1944,10 @@ fn run() -> std::io::Result<()> {
                 Some(t)
                     if learn_session.is_none()
                         && !pen_down
+                        // The page is rasterized as it shows: the menu and
+                        // a selection's marks must be off it first.
+                        && tool_menu.is_none()
+                        && !selector.active()
                         && (send_mode.is_some()
                             || (!idle_commit.is_zero() && t.elapsed() >= idle_commit))
                         && !user_ink.is_empty() =>
@@ -2362,7 +2607,7 @@ fn open_system(state: &mut State, surf: &mut Surface, disp: &display::Display, u
 
 /// What the SYSTEM page shows, gathered fresh from the environment, the
 /// presets and the device for one draw.
-fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides, tool: pen::Tool) -> system::draw::View {
+fn system_view(presets: &[presets::Preset], overrides: &overrides::Overrides, tool: tools::Tip) -> system::draw::View {
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     system::draw::View {
         presets: presets.to_vec(),
@@ -2418,7 +2663,7 @@ enum After {
 fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &display::Display,
     ui_font: &FontRef, hand: &FontRef, prefs: &mut preferences::Preferences, idle_commit: &mut Duration,
     overrides: &mut overrides::Overrides, presets: &[presets::Preset],
-    oracle: &mut Option<oracle::Oracle>, store: &Option<memory::MemoryStore>, selected_tool: &mut pen::Tool,
+    oracle: &mut Option<oracle::Oracle>, store: &Option<memory::MemoryStore>, tip: &mut tools::Tip,
     palm_holdoff: &mut Duration, learn_next_dwell: &mut Option<Duration>, learn_model: &mut Option<String>,
     sleep_requested: &mut bool,
     learn_session: &mut Option<learn::Session>, user_ink: &mut ink::Ink,
@@ -2437,7 +2682,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
     }
     let Some(act) = act else {
         if disarmed {
-            system::draw::draw(surf, ui_font, page, &system_view(presets, overrides, *selected_tool), *prefs);
+            system::draw::draw(surf, ui_font, page, &system_view(presets, overrides, *tip), *prefs);
             disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
         }
         return After::Stay;
@@ -2513,12 +2758,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
             open_drawer(state, surf, disp, ui_font, store, None, ui::DrawerKind::Corpus);
             return After::Closed;
         }
-        Act::ToggleTool => {
-            *selected_tool = match *selected_tool {
-                pen::Tool::Pen => pen::Tool::Eraser,
-                pen::Tool::Eraser => pen::Tool::Pen,
-            };
-        }
+        Act::ToggleTool => *tip = tip.flipped(),
         Act::ToggleLearn => {
             // Land directly on the chosen page, clean.
             close_overlay(state, surf, disp, drawer_selection, drawer_scroll);
@@ -2626,7 +2866,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
         *learn_next_dwell = learn_dwell_from_env();
         *learn_model = learn_model_from_env();
     }
-    system::draw::draw(surf, ui_font, page, &system_view(presets, overrides, *selected_tool), *prefs);
+    system::draw::draw(surf, ui_font, page, &system_view(presets, overrides, *tip), *prefs);
     disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false);
     After::Stay
 }
@@ -3086,7 +3326,7 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
     notebook: &mut notebook::Notebook, send_mode: &mut Option<CommitMode>, sleep_requested: &mut bool,
     prefs: &mut preferences::Preferences, selection: Option<usize>, scroll: i32,
     learn: &mut Option<learn::Session>, presets: &[presets::Preset], overrides: &overrides::Overrides,
-    learn_auto_at: &mut Option<Instant>, selected_tool: &mut pen::Tool) {
+    learn_auto_at: &mut Option<Instant>, tip: &mut tools::Tip) {
     // Learn mode repurposes the strip: committing is the DONE box, so SEND and
     // DISMISS do nothing; ERASE re-deals the same sheet clean; NEW PAGE deals
     // a fresh problem. Everything else behaves as on the pad.
@@ -3139,11 +3379,8 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
             }
         }
         ui::Action::Tool => {
-            *selected_tool = match *selected_tool {
-                pen::Tool::Pen => pen::Tool::Eraser,
-                pen::Tool::Eraser => pen::Tool::Pen,
-            };
-            eprintln!("g-pad: pen tip is now the {selected_tool:?}");
+            *tip = tip.flipped();
+            eprintln!("g-pad: pen tip is now the {tip:?}");
         }
         ui::Action::History | ui::Action::Sessions => {
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
@@ -3164,7 +3401,7 @@ fn apply_control(action: ui::Action, state: &mut State, surf: &mut Surface, disp
         }
         ui::Action::Settings => {
             if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
-                open_system(state, surf, disp, ui_font, *prefs, &system_view(presets, overrides, *selected_tool), learn_auto_at);
+                open_system(state, surf, disp, ui_font, *prefs, &system_view(presets, overrides, *tip), learn_auto_at);
             }
         }
         ui::Action::Sleep => *sleep_requested = true,
@@ -3422,6 +3659,15 @@ fn absorb_send_rule(ink: &mut ink::Ink, surf: &mut Surface, disp: &display::Disp
         return mode;
     }
     None
+}
+
+/// Restart the idle-send clock on a page that has one running. Closing the
+/// tool menu or dropping a selection is activity, not a pause, and must not
+/// be the moment the page sends.
+fn idle_from_now(state: &mut State) {
+    if let State::Listening { last_pen: Some(t) } = state {
+        *t = Instant::now();
+    }
 }
 
 /// True if the region no longer holds any dark pixels (fully erased).

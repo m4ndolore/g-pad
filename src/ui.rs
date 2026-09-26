@@ -8,6 +8,7 @@ use crate::memory::MemoryStore;
 use crate::oracle::ContextSnapshot;
 use crate::script;
 use crate::surface::{Surface, BLACK, WHITE};
+use crate::tools::{Brush, Kit, PenKind, Size, Tip};
 
 pub const UI_FONT_TTF: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 pub const PANEL_W: usize = SCREEN_W * 50 / 100;
@@ -946,11 +947,12 @@ fn context_text(surf: &mut Surface, font: &FontRef, value: &str, y: &mut i32) {
 }
 
 /// The corner button: an 82 px square at the page's top-left, the strip's
-/// height, that a finger tap opens the controls with (the strip in Guided,
-/// the SYSTEM page in Stealth) — the same as the top-edge swipe, without a
-/// palm being able to do it. Painted with every writing page; pen strokes
-/// over it are ink like anywhere else. Three short bars, drawn as rules so
-/// no glyph coverage is assumed of the font.
+/// height, that a finger tap drops the tool menu from. The menu's MORE
+/// CONTROLS row goes where the top-edge swipe goes (the strip in Guided,
+/// the SYSTEM page in Stealth), so a palm-proof path to both remains.
+/// Painted with every writing page; pen strokes over it are ink like
+/// anywhere else. Three short bars, drawn as rules so no glyph coverage is
+/// assumed of the font.
 pub const CORNER: usize = 82;
 const CORNER_BAR_W: usize = 30;
 const CORNER_BAR_H: usize = 3;
@@ -983,22 +985,21 @@ fn strip_cell_w(screen_w: usize) -> usize {
     (screen_w - CORNER) / STRIP_CELLS
 }
 
-fn strip_labels(reply_visible: bool, kids: bool, tool: crate::pen::Tool) -> [(&'static str, bool); STRIP_CELLS] {
-    let eraser = tool == crate::pen::Tool::Eraser;
+fn strip_labels(reply_visible: bool, kids: bool, tip: Tip) -> [(&'static str, bool); STRIP_CELLS] {
     [
         (if reply_visible { "DISMISS" } else { "SEND" }, false),
         ("ERASE", false),
         ("NEW PAGE", false),
         ("HISTORY", false),
         (if kids { "KIDS ON" } else { "KIDS OFF" }, kids),
-        (if eraser { "ERASER" } else { "PEN" }, eraser),
+        (tip.label(), tip != Tip::Pen),
         ("SLEEP", false),
         ("SETTINGS", false),
     ]
 }
 
 pub fn draw_controls(surf: &mut Surface, font: &FontRef, reply_visible: bool, kids: bool,
-    tool: crate::pen::Tool) -> Vec<u8> {
+    tool: Tip) -> Vec<u8> {
     let h = CORNER;
     let saved = surf.copy_rect(0, 0, SCREEN_W, h);
     surf.fill_rect(0, 0, SCREEN_W, h, WHITE);
@@ -1032,6 +1033,186 @@ pub fn control_action(x: i32, y: i32, reply_visible: bool) -> Action {
 
 pub fn restore_controls(surf: &mut Surface, saved: &[u8]) {
     surf.paste_rect(0, 0, SCREEN_W, 82, saved);
+}
+
+/// The tool menu: a column that drops from the corner button, for writing.
+/// What the tip does (pen, eraser, select), which pen, and how wide, then
+/// MORE CONTROLS for everything else: the strip in Guided, the SYSTEM page
+/// in Stealth, the same place the top-edge swipe goes. The layout is one
+/// list that both drawing and hit-testing read, so a tap always lands on
+/// the row it looks like it hit.
+pub const MENU_W: usize = 460;
+const MENU_ROW: usize = 84;
+const MENU_HEAD: usize = 50;
+const MENU_HEAD_PX: f32 = 22.0;
+const MENU_LABEL_X: usize = 72;
+const MENU_SIZE_PX: f32 = 24.0;
+const MENU_BORDER: usize = 3;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuPick {
+    Tip(Tip),
+    Kind(PenKind),
+    Size(Size),
+    /// The strip in Guided, the SYSTEM page in Stealth.
+    More,
+    Close,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuPiece {
+    Head(&'static str),
+    Rule,
+    Pick(MenuPick),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Placed {
+    piece: MenuPiece,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+}
+
+/// Kids mode leaves SELECT out: the learn sheet reads every stroke as an
+/// answer or a command, and a lasso is neither.
+fn menu_layout(kids: bool) -> Vec<Placed> {
+    let mut out = vec![Placed { piece: MenuPiece::Pick(MenuPick::Close), x: 0, y: 0, w: CORNER, h: CORNER }];
+    let mut y = CORNER;
+    let section = |out: &mut Vec<Placed>, y: &mut usize, label, picks: &[MenuPick]| {
+        out.push(Placed { piece: MenuPiece::Head(label), x: 0, y: *y, w: MENU_W, h: MENU_HEAD });
+        *y += MENU_HEAD;
+        for &p in picks {
+            out.push(Placed { piece: MenuPiece::Pick(p), x: 0, y: *y, w: MENU_W, h: MENU_ROW });
+            *y += MENU_ROW;
+        }
+    };
+    let tips: Vec<MenuPick> = [Tip::Pen, Tip::Eraser, Tip::Select].into_iter()
+        .filter(|t| !(kids && *t == Tip::Select))
+        .map(MenuPick::Tip)
+        .collect();
+    section(&mut out, &mut y, "TOOL", &tips);
+    let kinds: Vec<MenuPick> = PenKind::ALL.into_iter().map(MenuPick::Kind).collect();
+    section(&mut out, &mut y, "PEN", &kinds);
+    section(&mut out, &mut y, "SIZE", &[]);
+    let cell = MENU_W / Size::ALL.len();
+    for (i, s) in Size::ALL.into_iter().enumerate() {
+        out.push(Placed { piece: MenuPiece::Pick(MenuPick::Size(s)), x: i * cell, y, w: cell, h: MENU_ROW });
+    }
+    y += MENU_ROW + 12;
+    out.push(Placed { piece: MenuPiece::Rule, x: 0, y, w: MENU_W, h: 2 });
+    y += 2;
+    out.push(Placed { piece: MenuPiece::Pick(MenuPick::More), x: 0, y, w: MENU_W, h: MENU_ROW });
+    out
+}
+
+fn menu_height(kids: bool) -> usize {
+    menu_layout(kids).iter().map(|p| p.y + p.h).max().unwrap_or(CORNER) + MENU_BORDER
+}
+
+pub struct ToolMenu {
+    saved: Vec<u8>,
+    h: usize,
+    kids: bool,
+}
+
+impl ToolMenu {
+    pub fn open(surf: &mut Surface, font: &FontRef, kit: Kit, kids: bool) -> Self {
+        let h = menu_height(kids);
+        let menu = ToolMenu { saved: surf.copy_rect(0, 0, MENU_W, h), h, kids };
+        menu.draw(surf, font, kit);
+        menu
+    }
+
+    /// Paint the menu for `kit`: a dot marks the tip and the pen, a box
+    /// marks the size.
+    pub fn draw(&self, surf: &mut Surface, font: &FontRef, kit: Kit) {
+        surf.fill_rect(0, 0, MENU_W, self.h, WHITE);
+        for p in menu_layout(self.kids) {
+            match p.piece {
+                MenuPiece::Head(label) => {
+                    rule(surf, 0, p.y, MENU_W, 1);
+                    full_text(surf, font, label, MENU_HEAD_PX, 36, p.y + 16, crate::surface::FADED);
+                }
+                MenuPiece::Rule => rule(surf, p.x, p.y, p.w, p.h),
+                MenuPiece::Pick(MenuPick::Close) => {
+                    full_text(surf, font, "×", LABEL_PX, 30, 25, BLACK);
+                    rule(surf, CORNER, 0, 1, CORNER);
+                    full_text(surf, font, "TOOLS", STRIP_PX, CORNER + 24, STRIP_LABEL_Y, BLACK);
+                    rule(surf, 0, CORNER - 2, MENU_W, 2);
+                }
+                MenuPiece::Pick(MenuPick::Tip(t)) => menu_row(surf, font, &p, t.label(), kit.tip == t),
+                MenuPiece::Pick(MenuPick::Kind(k)) => {
+                    menu_row(surf, font, &p, k.label(), kit.brush.kind == k);
+                    sample_stroke(surf, Brush { kind: k, size: kit.brush.size },
+                        MENU_W - 150, MENU_W - 30, p.y + p.h / 2);
+                }
+                MenuPiece::Pick(MenuPick::Size(s)) => {
+                    let cx = (p.x + p.w / 2) as i32;
+                    let r = Brush { kind: kit.brush.kind, size: s }.radius(crate::pen::MAX_PRESSURE / 2).max(2);
+                    surf.stamp(cx, (p.y + 28) as i32, r.min(18), BLACK);
+                    let tw = script::measure(font, s.label(), MENU_SIZE_PX) as usize;
+                    full_text(surf, font, s.label(), MENU_SIZE_PX, p.x + (p.w - tw) / 2, p.y + 50, BLACK);
+                    if kit.brush.size == s {
+                        let (x, y, w, h) = (p.x + 8, p.y + 4, p.w - 16, p.h - 8);
+                        for (rx, ry, rw, rh) in [(x, y, w, 3), (x, y + h - 3, w, 3), (x, y, 3, h), (x + w - 3, y, 3, h)] {
+                            rule(surf, rx, ry, rw, rh);
+                        }
+                    }
+                }
+                MenuPiece::Pick(MenuPick::More) => menu_row(surf, font, &p, "MORE CONTROLS", false),
+            }
+        }
+        rule(surf, MENU_W - MENU_BORDER, 0, MENU_BORDER, self.h);
+        rule(surf, 0, self.h - MENU_BORDER, MENU_W, MENU_BORDER);
+    }
+
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= 0 && y >= 0 && (x as usize) < MENU_W && (y as usize) < self.h
+    }
+
+    pub fn pick(&self, x: i32, y: i32) -> Option<MenuPick> {
+        if !self.contains(x, y) {
+            return None;
+        }
+        let (x, y) = (x as usize, y as usize);
+        menu_layout(self.kids).into_iter().find_map(|p| match p.piece {
+            MenuPiece::Pick(pick) if x >= p.x && x < p.x + p.w && y >= p.y && y < p.y + p.h => Some(pick),
+            _ => None,
+        })
+    }
+
+    pub fn region(&self) -> BBox {
+        BBox { x0: 0, y0: 0, x1: MENU_W as i32 - 1, y1: self.h as i32 - 1 }
+    }
+
+    /// Put back what the menu covered; returns the rect to refresh.
+    pub fn close(self, surf: &mut Surface) -> BBox {
+        surf.paste_rect(0, 0, MENU_W, self.h, &self.saved);
+        self.region()
+    }
+}
+
+fn menu_row(surf: &mut Surface, font: &FontRef, p: &Placed, label: &str, on: bool) {
+    if on {
+        surf.stamp(44, (p.y + p.h / 2) as i32, 9, BLACK);
+    }
+    full_text(surf, font, label, LABEL_PX, MENU_LABEL_X, p.y + 24, BLACK);
+}
+
+/// A short wave drawn with `brush`, pressure rising left to right, so the
+/// row shows what the pen lays down.
+fn sample_stroke(surf: &mut Surface, brush: Brush, x0: usize, x1: usize, cy: usize) {
+    let mut prev = None;
+    for x in (x0..=x1).step_by(3) {
+        let t = (x - x0) as f32 / (x1 - x0) as f32;
+        let y = cy as f32 - (t * std::f32::consts::TAU).sin() * 14.0;
+        let pressure = (crate::pen::MAX_PRESSURE as f32 * (0.3 + 0.7 * t)) as i32;
+        let point = (x as i32, y as i32, brush.radius(pressure));
+        brush.segment(surf, prev, point);
+        prev = Some(point);
+    }
 }
 
 /// Where the flip banner sits, and what it covers: a small top-right chip
@@ -1118,7 +1299,7 @@ mod tests {
         let cell = strip_cell_w(1404) as f32;
         for reply in [false, true] {
             for kids in [false, true] {
-                for tool in [crate::pen::Tool::Pen, crate::pen::Tool::Eraser] {
+                for tool in [Tip::Pen, Tip::Eraser, Tip::Select] {
                     for (label, _) in strip_labels(reply, kids, tool) {
                         let end = STRIP_INSET as f32 + script::measure(&font, label, STRIP_PX);
                         assert!(end + STRIP_INSET as f32 <= cell, "{label} runs to {end} in a {cell} cell");
@@ -1126,6 +1307,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn every_tool_menu_pick_answers_at_its_own_place() {
+        for kids in [false, true] {
+            let menu = ToolMenu { saved: Vec::new(), h: menu_height(kids), kids };
+            assert!(menu.h < SCREEN_H / 2 + 200, "the menu must leave most of the page showing");
+            let mut seen = Vec::new();
+            for p in menu_layout(kids) {
+                let MenuPiece::Pick(pick) = p.piece else { continue };
+                let (cx, cy) = ((p.x + p.w / 2) as i32, (p.y + p.h / 2) as i32);
+                assert_eq!(menu.pick(cx, cy), Some(pick));
+                assert!(!seen.contains(&pick), "{pick:?} listed twice");
+                seen.push(pick);
+            }
+            assert_eq!(seen.contains(&MenuPick::Tip(Tip::Select)), !kids, "kids mode leaves SELECT out");
+            for k in PenKind::ALL {
+                assert!(seen.contains(&MenuPick::Kind(k)));
+            }
+            for s in Size::ALL {
+                assert!(seen.contains(&MenuPick::Size(s)));
+            }
+            assert!(seen.contains(&MenuPick::More));
+            assert_eq!(menu.pick(10, 10), Some(MenuPick::Close), "the corner closes the menu");
+            assert_eq!(menu.pick(MENU_W as i32 + 5, 200), None);
+        }
+    }
+
+    #[test]
+    fn tool_menu_labels_fit_and_the_menu_restores_the_page() {
+        let font = FontRef::try_from_slice(UI_FONT_TTF).unwrap();
+        for p in menu_layout(false) {
+            let label = match p.piece {
+                MenuPiece::Pick(MenuPick::Tip(t)) => t.label(),
+                MenuPiece::Pick(MenuPick::Kind(k)) => k.label(),
+                MenuPiece::Pick(MenuPick::More) => "MORE CONTROLS",
+                _ => continue,
+            };
+            let end = MENU_LABEL_X as f32 + script::measure(&font, label, LABEL_PX);
+            // Pen rows share the width with their sample stroke.
+            let limit = if matches!(p.piece, MenuPiece::Pick(MenuPick::Kind(_))) { MENU_W - 160 } else { MENU_W - 12 };
+            assert!(end <= limit as f32, "{label} runs to {end}, past {limit}");
+        }
+        for s in Size::ALL {
+            let w = script::measure(&font, s.label(), MENU_SIZE_PX);
+            assert!(w + 20.0 <= (MENU_W / 3) as f32, "{} does not fit its cell", s.label());
+        }
+
+        let mut bytes = vec![0xffu8; SCREEN_W * SCREEN_H * 4];
+        let ptr = bytes.as_mut_ptr();
+        let mut surf = Surface::new(ptr, bytes.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, PixFmt::Rgb32);
+        surf.fill_rect(100, 300, 600, 40, BLACK);
+        let before = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
+        let menu = ToolMenu::open(&mut surf, &font, Kit::default(), false);
+        assert_ne!(surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), before);
+        menu.close(&mut surf);
+        assert_eq!(surf.copy_rect(0, 0, SCREEN_W, SCREEN_H), before, "closing must restore the page");
     }
 
     #[test]
