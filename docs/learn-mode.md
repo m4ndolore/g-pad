@@ -36,16 +36,23 @@ Singapore Math's concrete → pictorial → abstract ladder, four levels:
 | Level | Activities |
 |---|---|
 | 1 | count the ten-frame dots (≤5), number bonds to 5, compare to 5 (<, =, >), trace single letters |
-| 2 | bonds to 10, make-ten, + and − within 10, compare to 10, number-line hops, bar models to 10, trace CVC words |
-| 3 | bonds to 20, + and − within 20, number lines to 20, bar models to 20, place value (teens), sight words |
-| 4 | multiplication as dot arrays, division as sharing, ×/÷ equations, place value to 99, hundred-chart windows, bar models, longer words |
+| 2 | bonds to 10, bond chains to 10, make-ten, adding 8 or 9 by making ten, + and − within 10, compare to 10, number-line hops, bar models to 10, trace CVC words |
+| 3 | bonds to 20, bond chains to 20, adding 6–9 by making ten, + and − within 20, number lines to 20, bar models and comparison bars to 20, skip counting by 2, 5, 10, place value (teens), sight words |
+| 4 | multiplication as dot arrays, division as sharing, ×/÷ equations, bond chains, place value to 99, hundred-chart windows, bar models, comparison bars, skip counting by 2, 3, 4, 5, 10, longer words |
 
 The full Singapore Math toolbox is on the page: part-whole **bar models**
 (one bar split proportionally, the whole bracketed beneath, one number
-blank), **number lines** with one arc per unit hop under the printed
-equation, **place-value charts** (ten-discs and one-dots in labeled
-columns), **hundred-chart windows** (the 3×3 neighborhood of a blank middle
-cell), and **comparison boxes** (write <, =, or >).
+blank), **comparison bar models** (a long bar over a short one on a shared
+unit, the gap dashed and bracketed; the child writes how many more),
+**chained number bonds** (a whole splits into two parts and one part splits
+again; any of the five circles can be the blank, so the child works one or
+two links), **adding by making ten** (`8 + 5 = ☐` with a printed bond under
+the 5 splitting it into 2 and 3: the strategy is shown and the sum is
+asked), **skip counting** (four terms and a box for the fifth), **number
+lines** with one arc per unit hop under the printed equation,
+**place-value charts** (ten-discs and one-dots in labeled columns),
+**hundred-chart windows** (the 3×3 neighborhood of a blank middle cell), and
+**comparison boxes** (write <, =, or >).
 
 Difficulty adapts locally: three right in a row steps up, two wrong steps
 down, silently. Activities rotate rather than sample, so a math page is
@@ -103,9 +110,9 @@ A mark in a LEVEL box re-seats the adaptive ladder there and keeps the menu
 open, redrawn with the pick filled, so a topic can still be chosen.
 
 **Math Skills** opens a second picker listing every math activity by its own
-name — Count Dots, Number Bonds, Make Ten, Number Sentences, Times Tables,
-Sharing, Bar Models, Number Line, Tens & Ones, Hundred Chart, Bigger or
-Smaller. A mark latches that one skill: every page deals it (at the current
+name — Count Dots, Number Bonds, Bond Chains, Make Ten, Add by Making Ten,
+Number Sentences, Times Tables, Sharing, Bar Models, How Many More, Number
+Line, Skip Counting, Tens & Ones, Hundred Chart, Bigger or Smaller. A mark latches that one skill: every page deals it (at the current
 level, still adapting) until the menu says otherwise — and like any named
 pick, a latched skill is never interrupted by earned play pages.
 

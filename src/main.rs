@@ -483,6 +483,21 @@ fn learn_sheets(dir: &str) -> i32 {
         return 1;
     }
     println!("{path}");
+    // One page per math skill at level 3, latched the way the skills page
+    // latches it, so every figure can be checked on its own.
+    for i in 0..learn::problems::MATH_SKILLS.len() {
+        let mut session = learn::Session::start_at(3, 7 + i as u32);
+        session.open_menu();
+        session.choose_menu(3);
+        session.choose_menu(i);
+        session.draw(&mut surf, &ui_font);
+        let path = format!("{dir}/learn-skill-{i:02}.png");
+        if let Err(e) = dump_page(&surf, &path) {
+            eprintln!("g-pad: write {path}: {e}");
+            return 1;
+        }
+        println!("{path}");
+    }
     // The play pages: each game's opening sheet, plus a story mid-beat.
     let mut session = learn::Session::start_at(1, 99);
     let pages: [(&str, learn::Page); 4] = [

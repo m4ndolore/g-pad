@@ -12,7 +12,7 @@ use crate::fb::{BBox, SCREEN_H, SCREEN_W};
 use crate::script;
 use crate::surface::{Surface, BLACK, FADED, WHITE};
 
-use super::problems::{Blank, Kind, Op, Set};
+use super::problems::{Blank, Kind, Op, Set, Slot, SKIP_SHOWN};
 
 const W: usize = SCREEN_W;
 const H: usize = SCREEN_H;
@@ -164,6 +164,9 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
             Kind::Array { rows, cols } => draw_array(surf, ui_font, *rows, *cols),
             Kind::Share { total, groups } => draw_share(surf, ui_font, *total, *groups),
             Kind::Trace { word } => draw_trace(surf, ui_font, word),
+            Kind::BondChain { whole, parts, split, sub, blank } =>
+                draw_bond_chain(surf, ui_font, *whole, *parts, *split, *sub, *blank),
+            Kind::BridgeTen { a, b } => draw_bridge_ten(surf, ui_font, *a, *b),
             // The band figures: scale to their slice of the page.
             Kind::Equation { a, op, b } => draw_equation(surf, ui_font, *a, *op, *b, band),
             Kind::Bar { whole, parts, blank } => draw_bar(surf, ui_font, *whole, *parts, *blank, band),
@@ -171,6 +174,8 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
             Kind::PlaceValue { tens, ones } => draw_place_value(surf, ui_font, *tens, *ones, band),
             Kind::HundredWindow { center } => draw_hundred_window(surf, ui_font, *center, band),
             Kind::Compare { left, right } => draw_compare(surf, ui_font, *left, *right, band),
+            Kind::CompareBars { big, small } => draw_compare_bars(surf, ui_font, *big, *small, band),
+            Kind::SkipCount { start, step } => draw_skip_count(surf, ui_font, *start, *step, band),
         };
         blanks.push(blank);
     }
@@ -222,6 +227,129 @@ fn draw_bond(surf: &mut Surface, font: &FontRef, whole: u32, parts: [u32; 2], bl
         }
     }
     answer
+}
+
+/// Chained bonds: the whole on top, its two parts below it, and two more
+/// circles hanging from the part that splits. The single bond's rings and
+/// connectors, a size smaller so three rows fit above the feedback strip.
+fn draw_bond_chain(surf: &mut Surface, font: &FontRef, whole: u32, parts: [u32; 2], split: usize,
+    sub: [u32; 2], blank: Slot) -> BBox {
+    let r = (W * 8 / 100) as i32;
+    let cx = (W / 2) as i32;
+    let rows = [(H * 25 / 100) as i32, (H * 41 / 100) as i32, (H * 57 / 100) as i32];
+    let part_x = [cx - (W * 20 / 100) as i32, cx + (W * 20 / 100) as i32];
+    let px = part_x[split.min(1)];
+    let sdx = (W * 11 / 100) as i32;
+    let nodes = [
+        (cx, rows[0], whole, Slot::Whole),
+        (part_x[0], rows[1], parts[0], Slot::Part(0)),
+        (part_x[1], rows[1], parts[1], Slot::Part(1)),
+        (px - sdx, rows[2], sub[0], Slot::Sub(0)),
+        (px + sdx, rows[2], sub[1], Slot::Sub(1)),
+    ];
+
+    // Connectors first so the rings sit on top of their ends.
+    for x in part_x {
+        line(surf, cx, rows[0], x, rows[1], 4, BLACK);
+    }
+    for x in [px - sdx, px + sdx] {
+        line(surf, px, rows[1], x, rows[2], 4, BLACK);
+    }
+
+    let mut answer = BBox::empty();
+    for &(x, y, value, slot) in &nodes {
+        surf.stamp(x, y, r - 3, WHITE);
+        let is_blank = slot == blank;
+        ring(surf, x, y, r, if is_blank { 9 } else { 5 }, BLACK);
+        if is_blank {
+            answer.add(x - r + 12, y - r + 12, 0);
+            answer.add(x + r - 12, y + r - 12, 0);
+        } else {
+            print_tight_centered(surf, font, &value.to_string(), 100.0, x, y, BLACK);
+        }
+    }
+    answer
+}
+
+/// Adding by making ten: `a + b = [ ]` with a bond hanging from `b` that
+/// splits it into what `a` needs to reach ten and the rest. The bond is
+/// printed in full; it is the strategy shown, and the sum is the question.
+fn draw_bridge_ten(surf: &mut Surface, font: &FontRef, a: u32, b: u32) -> BBox {
+    let px = 120.0;
+    let gap = 36;
+    let cy = (H * 30 / 100) as i32;
+    let (bw, bh) = box_size();
+    let tokens = [a.to_string(), "+".to_string(), b.to_string(), "=".to_string()];
+    let widths: Vec<i32> = tokens.iter().map(|t| tight_width(font, t, px)).collect();
+    let total = widths.iter().sum::<i32>() + gap * tokens.len() as i32 + bw;
+    let mut x = (W as i32 - total) / 2;
+    let mut b_cx = x;
+    for (i, (t, w)) in tokens.iter().zip(&widths).enumerate() {
+        print_tight_at(surf, font, t, px, x, cy, BLACK);
+        if i == 2 {
+            b_cx = x + w / 2;
+        }
+        x += w + gap;
+    }
+    let answer = answer_box(surf, x, cy - bh / 2, bw, bh);
+
+    let r = (W * 6 / 100) as i32;
+    let top = cy + tight_text_height(font, &b.to_string(), px) / 2 + 24;
+    let by = cy + (H * 17 / 100) as i32;
+    let dx = (W * 9 / 100) as i32;
+    let need = 10 - a;
+    for (x, value) in [(b_cx - dx, need), (b_cx + dx, b - need)] {
+        line(surf, b_cx, top, x, by, 4, BLACK);
+        surf.stamp(x, by, r - 3, WHITE);
+        ring(surf, x, by, r, 5, BLACK);
+        print_tight_centered(surf, font, &value.to_string(), 90.0, x, by, BLACK);
+    }
+    answer
+}
+
+/// The comparison bar model: the long bar over the short one on a shared
+/// unit, the short bar's missing length outlined dashed and bracketed, the
+/// box under the bracket.
+fn draw_compare_bars(surf: &mut Surface, font: &FontRef, big: u32, small: u32, band: Band) -> BBox {
+    let h = band.h();
+    let (x0, x1) = (MARGIN as i32, (W - MARGIN) as i32);
+    let bar_h = (h * 20 / 100).min(110);
+    let y_big = band.y0 + h * 6 / 100;
+    let y_small = y_big + bar_h + h * 8 / 100;
+    let unit = (x1 - x0) / big.max(1) as i32;
+    let (big_end, small_end) = (x0 + unit * big as i32, x0 + unit * small as i32);
+    rect_outline(surf, x0, y_big, big_end - x0, bar_h, 5, BLACK);
+    rect_outline(surf, x0, y_small, small_end - x0, bar_h, 5, BLACK);
+    let label_px = (bar_h as f32 * 0.6).min(72.0);
+    print_tight_centered(surf, font, &big.to_string(), label_px, (x0 + big_end) / 2, y_big + bar_h / 2, BLACK);
+    print_tight_centered(surf, font, &small.to_string(), label_px, (x0 + small_end) / 2, y_small + bar_h / 2, BLACK);
+
+    // The difference: where the short bar would have to grow to.
+    dashed_hline(surf, small_end, big_end, y_small + 1, 2, BLACK);
+    dashed_hline(surf, small_end, big_end, y_small + bar_h - 2, 2, BLACK);
+    dashed_vline(surf, big_end - 2, y_small, y_small + bar_h, 2, BLACK);
+
+    let brk_y = y_small + bar_h + h * 6 / 100;
+    line(surf, small_end, brk_y, big_end, brk_y, 3, BLACK);
+    line(surf, small_end, brk_y - 14, small_end, brk_y, 3, BLACK);
+    line(surf, big_end, brk_y - 14, big_end, brk_y, 3, BLACK);
+    let side = (h * 32 / 100).min(160);
+    let bx = ((small_end + big_end) / 2 - side / 2).clamp(x0, x1 - side);
+    answer_box(surf, bx, brk_y + 16, side, side)
+}
+
+/// Skip counting: four terms and a box for the fifth, shrunk to the
+/// content width when the numbers run long.
+fn draw_skip_count(surf: &mut Surface, font: &FontRef, start: u32, step: u32, band: Band) -> BBox {
+    let terms: Vec<String> = (0..SKIP_SHOWN).map(|k| (start + k * step).to_string()).collect();
+    let lead = format!("{},", terms.join(",  "));
+    let (mut px, bw, bh) = band_sizes(band);
+    let max_w = (W - 2 * MARGIN) as i32 - 24 - bw;
+    let lead_w = tight_width(font, &lead, px);
+    if lead_w > max_w {
+        px *= max_w as f32 / lead_w as f32;
+    }
+    equation_with_box_sized(surf, font, &lead, "", band.mid(), (px, bw, bh))
 }
 
 fn draw_ten_frame(surf: &mut Surface, font: &FontRef, shown: u32, make_ten: bool) -> BBox {
@@ -766,6 +894,16 @@ fn dashed_hline(surf: &mut Surface, x0: i32, x1: i32, y: i32, r: i32, c: u16) {
     }
 }
 
+fn dashed_vline(surf: &mut Surface, x: i32, y0: i32, y1: i32, r: i32, c: u16) {
+    let (dash, gap) = (18, 12);
+    let mut y = y0;
+    while y < y1 {
+        let e = (y + dash).min(y1);
+        surf.brush_line(x, y, x, e, r, c);
+        y = e + gap;
+    }
+}
+
 /// An outlined circle: every pixel whose distance to the center falls inside
 /// the band `[r - thick, r]`.
 fn ring(surf: &mut Surface, cx: i32, cy: i32, r: i32, thick: i32, c: u16) {
@@ -1152,6 +1290,35 @@ mod tests {
         let mut core = BBox::empty();
         core.add((map.answer.x0 + map.answer.x1) / 2, (map.answer.y0 + map.answer.y1) / 2, 40);
         assert_eq!(dark_in(&surf, &core), 0, "the answer blank must be empty paper");
+    }
+
+    #[test]
+    fn every_math_skill_draws_empty_blanks_clear_of_the_footer_at_every_level() {
+        let font = ui_font();
+        let (_buf, mut surf) = page();
+        let mut rng = Rng::new(59);
+        for &act in crate::learn::problems::MATH_SKILLS {
+            for level in 1..=4 {
+                for rot in 0..6 {
+                    let set = generate_set(level, Topic::Skill(act), rot, &mut rng);
+                    let map = draw(&mut surf, &font, &set, level, 0, 0);
+                    assert_eq!(map.blanks.len(), set.items.len());
+                    for (i, b) in map.blanks.iter().enumerate() {
+                        let kind = &set.items[i].kind;
+                        assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32, "{kind:?} blank off-page");
+                        assert!(b.y1 < feedback_y(), "{kind:?} blank runs into the feedback strip");
+                        let mut core = BBox::empty();
+                        core.add((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, 30);
+                        assert_eq!(dark_in(&surf, &core), 0, "{kind:?} blank is not empty paper");
+                        for other in &map.blanks[i + 1..] {
+                            let apart = b.x1 < other.x0 || other.x1 < b.x0
+                                || b.y1 < other.y0 || other.y1 < b.y0;
+                            assert!(apart, "blanks overlap for {kind:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
