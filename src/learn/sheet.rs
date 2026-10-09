@@ -237,7 +237,7 @@ fn draw_bond_chain(surf: &mut Surface, font: &FontRef, chain: &Chain) -> BBox {
     let r = (W * if small { 7 } else { 8 } / 100) as i32;
     let px = if small { 86.0 } else { 100.0 };
     let deep = chain.at.iter().any(|&(row, _)| row >= 3);
-    let rows: &[usize] = if deep { &[21, 34, 47, 60] } else { &[25, 41, 57] };
+    let rows: &[usize] = if deep { &[25, 37, 49, 61] } else { &[25, 41, 57] };
     let place = |i: usize| {
         let (row, x) = chain.at[i];
         ((W * x as usize / 1000) as i32, (H * rows[row as usize] / 100) as i32)

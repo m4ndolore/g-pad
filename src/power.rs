@@ -130,6 +130,29 @@ pub const TEARDOWN_HEADROOM: std::time::Duration = std::time::Duration::from_sec
 /// while the radio settles, and with xochitl stopped nobody asks
 /// NetworkManager to try again. Nudge it back, detached, best-effort:
 /// `dev connect` activates the best saved connection for the interface.
+/// Levels that raise a warning chip while discharging. The fuel gauge powers
+/// the tablet off near 8%, so the last warning leaves a few minutes.
+pub const BATTERY_WARN: [u8; 2] = [20, 12];
+
+/// The fuel gauge's charge in percent, and whether a charger is feeding it.
+/// None off the tablet. Two small sysfs reads; the loop polls once a minute.
+pub fn battery() -> Option<(u8, bool)> {
+    let dir = "/sys/class/power_supply/max77818_battery";
+    let pct: u8 = std::fs::read_to_string(format!("{dir}/capacity")).ok()?.trim().parse().ok()?;
+    let status = std::fs::read_to_string(format!("{dir}/status")).unwrap_or_default();
+    Some((pct.min(100), is_charging(&status)))
+}
+
+fn is_charging(status: &str) -> bool {
+    matches!(status.trim(), "Charging" | "Full")
+}
+
+/// The lowest warning level `pct` has reached, when it is below `warned`,
+/// the last level already shown.
+pub fn battery_warning(pct: u8, warned: u8) -> Option<u8> {
+    BATTERY_WARN.iter().copied().filter(|&l| pct <= l).min().filter(|&l| l < warned)
+}
+
 pub fn wifi_heal() {
     let script = "for i in 1 2 3 4 5 6 7 8 9 10; do \
         state=$(nmcli -t -f GENERAL.STATE dev show wlan0 2>/dev/null | cut -d: -f2); \
@@ -175,6 +198,18 @@ mod tests {
 
     /// The counter parses the kernel's trailing-newline format ("26\n").
     /// A parse failure would read as "never slept" and strand the wait.
+    #[test]
+    fn battery_warns_once_per_level_and_reads_charger_status() {
+        assert_eq!(battery_warning(54, 101), None);
+        assert_eq!(battery_warning(20, 101), Some(20));
+        assert_eq!(battery_warning(18, 20), None, "20% already warned");
+        assert_eq!(battery_warning(12, 20), Some(12));
+        assert_eq!(battery_warning(9, 101), Some(12), "booting low warns at the lowest level");
+        assert_eq!(battery_warning(9, 12), None);
+        assert!(is_charging("Charging\n") && is_charging("Full"));
+        assert!(!is_charging("Discharging") && !is_charging("Not charging"));
+    }
+
     #[test]
     fn suspend_count_parses_kernel_format() {
         assert_eq!("26\n".trim().parse::<u64>().ok(), Some(26));

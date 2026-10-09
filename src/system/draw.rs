@@ -479,6 +479,13 @@ fn device_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, facts: &d
 }
 
 fn power(surf: &mut Surface, font: &FontRef, rows: &mut Rows, prefs: Preferences) {
+    let battery = match crate::ui::battery() {
+        Some((pct, true)) => format!("{pct}% CHARGING"),
+        Some((pct, false)) => format!("{pct}%"),
+        None => "UNKNOWN".to_string(),
+    };
+    let low = crate::ui::battery().is_some_and(|(pct, charging)| !charging && pct <= 20);
+    rows.row(surf, font, "BATTERY", &battery, low, None);
     rows.row(surf, font, "SLEEP", "", false, Some(Act::Sleep));
     let after = match prefs.sleep_after_min {
         0 => "NEVER".to_string(),
