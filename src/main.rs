@@ -990,6 +990,8 @@ fn run() -> std::io::Result<()> {
     let mut controls_saved: Option<Vec<u8>> = None;
     let mut controls_until: Option<Instant> = None;
     let mut sleep_requested = false;
+    // The last pen, touch, or button input; AUTO-SLEEP counts from here.
+    let mut last_input = Instant::now();
     let mut queued_gestures: Vec<touch::Gesture> = Vec::new();
     let mut fallback_touch: Option<((i32, i32), (i32, i32))> = None;
     let mut control_pen_latched = false;
@@ -1082,6 +1084,9 @@ fn run() -> std::io::Result<()> {
                 | State::ExpandedConversation { .. });
         if let Some(t) = touch_dev.as_mut() {
             if pen_near { t.suppress(); } else { gestures.extend(t.drain()); }
+        }
+        if !gestures.is_empty() {
+            last_input = Instant::now();
         }
         if gestures.contains(&touch::Gesture::Quit) {
             eprintln!("g-pad: 5-finger quit");
@@ -1412,9 +1417,18 @@ fn run() -> std::io::Result<()> {
         // ---- power button: sleep page, suspend, restore on wake ----
         if let Some(ref mut p) = power_dev {
             let pressed = p.drain_pressed();
-            if (pressed || sleep_requested) && Instant::now() >= power_grace {
+            if pressed {
+                last_input = Instant::now();
+            }
+            let idle = prefs.sleep_after_min > 0
+                && last_input.elapsed() >= Duration::from_secs(60 * u64::from(prefs.sleep_after_min));
+            if (pressed || sleep_requested || idle) && Instant::now() >= power_grace {
                 sleep_requested = false;
-                eprintln!("g-pad: sleeping (power button)");
+                if idle && !pressed {
+                    eprintln!("g-pad: sleeping (idle {} min)", prefs.sleep_after_min);
+                } else {
+                    eprintln!("g-pad: sleeping (power button)");
+                }
                 let saved = gesture::show_sleep(&mut surf, &font, &ui_font);
                 disp.full_refresh(surf.w, surf.h);
                 // Let the flashing refresh finish before the panel loses power.
@@ -1483,6 +1497,7 @@ fn run() -> std::io::Result<()> {
                 }
                 p.drain_pressed();
                 power_grace = Instant::now() + Duration::from_secs(3);
+                last_input = Instant::now();
                 // The radio was healed above; a WI-FI section left open
                 // through the sleep shows the connection as it is now.
                 if let State::System { page, .. } = &mut state {
@@ -1498,6 +1513,7 @@ fn run() -> std::io::Result<()> {
         // ---- raw pen (preferred path) ----
         if let Some(ref mut pdev) = pen_dev {
             for s in pdev.drain() {
+                last_input = Instant::now();
                 // While the marker is in proximity, its user's palm may
                 // touch the capacitive sensor.  Never let that contact
                 // participate in touch gestures (especially five-finger
@@ -1671,6 +1687,9 @@ fn run() -> std::io::Result<()> {
             Ok(v) => v,
             Err(_) => break, // qtfb window closed
         };
+        if !events.is_empty() {
+            last_input = Instant::now();
+        }
         for ev in events {
             if pen_dev.is_some() && matches!(ev.input_type,
                 qtfb::INPUT_PEN_PRESS | qtfb::INPUT_PEN_UPDATE | qtfb::INPUT_PEN_RELEASE) {
@@ -2677,7 +2696,7 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
     drawer_selection: &mut Option<usize>, drawer_scroll: &mut i32,
     learn_advance_pending: &mut bool, learn_auto_at: &mut Option<Instant>, learn_tap_advance: &mut bool) -> After {
     use system::wifi::Cmd;
-    use system::{step, Act, Outcome, Section, DWELL_MS, IDLE_MS, MAX_TOKENS, PALM_MS, REASONING};
+    use system::{step, Act, Outcome, Section, DWELL_MS, IDLE_MS, MAX_TOKENS, PALM_MS, REASONING, SLEEP_MIN};
 
     let State::System { page, .. } = state else { return After::Stay };
     let act = page.hits.at(x, y);
@@ -2830,6 +2849,10 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
             *sleep_requested = true;
             close_overlay(state, surf, disp, drawer_selection, drawer_scroll);
             return After::Closed;
+        }
+        Act::StepAutoSleep(d) => {
+            prefs.sleep_after_min = step(&SLEEP_MIN, prefs.sleep_after_min, d);
+            let _ = prefs.save();
         }
         Act::Leave => {
             eprintln!("g-pad: leave from system");

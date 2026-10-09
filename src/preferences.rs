@@ -21,11 +21,15 @@ pub struct Preferences {
     pub mode: Mode,
     pub idle_send_ms: u64,
     pub page: Page,
+    /// Minutes without pen, touch, or button input before the pad sleeps on
+    /// its own; 0 never does. Untouched, the pad otherwise runs until the
+    /// fuel gauge powers it off.
+    pub sleep_after_min: u32,
 }
 
 impl Default for Preferences {
     fn default() -> Self {
-        Self { mode: Mode::Stealth, idle_send_ms: 0, page: Page::Pad }
+        Self { mode: Mode::Stealth, idle_send_ms: 0, page: Page::Pad, sleep_after_min: 10 }
     }
 }
 
@@ -53,8 +57,8 @@ impl Preferences {
                     .collect()
             })
             .unwrap_or_default();
-        std::fs::write(path, format!("mode={}\nidle_send_ms={}\npage={}\n{}",
-            self.mode.as_str(), self.idle_send_ms, self.page.as_str(), kept))
+        std::fs::write(path, format!("mode={}\nidle_send_ms={}\npage={}\nsleep_after_min={}\n{}",
+            self.mode.as_str(), self.idle_send_ms, self.page.as_str(), self.sleep_after_min, kept))
     }
 }
 
@@ -149,6 +153,9 @@ fn resolve(saved: Option<&str>, env_mode: Option<&str>, env_idle: Option<&str>, 
         // The environment wins for the page: RIDDLE_PAGE=learn dedicates a
         // boot to the tutor regardless of where the pad was left.
         page: page(env_page).or_else(|| page(saved_value(saved, "page"))).unwrap_or(defaults.page),
+        sleep_after_min: saved_value(saved, "sleep_after_min")
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(defaults.sleep_after_min),
     }
 }
 
@@ -159,14 +166,22 @@ mod tests {
     #[test]
     fn saved_values_win_over_environment() {
         assert_eq!(resolve(Some("mode=guided\nidle_send_ms=900\n"), Some("stealth"), Some("12"), None),
-            Preferences { mode: Mode::Guided, idle_send_ms: 900, page: Page::Pad });
+            Preferences { mode: Mode::Guided, idle_send_ms: 900, page: Page::Pad, sleep_after_min: 10 });
     }
 
     #[test]
     fn invalid_saved_values_fall_back_in_precedence_order() {
         assert_eq!(resolve(Some("mode=loud\nidle_send_ms=never"), Some("guided"), Some("42"), None),
-            Preferences { mode: Mode::Guided, idle_send_ms: 42, page: Page::Pad });
+            Preferences { mode: Mode::Guided, idle_send_ms: 42, page: Page::Pad, sleep_after_min: 10 });
         assert_eq!(resolve(None, Some("bad"), Some("bad"), Some("bad")), Preferences::default());
+    }
+
+    #[test]
+    fn auto_sleep_defaults_to_ten_minutes_and_zero_means_never() {
+        assert_eq!(resolve(None, None, None, None).sleep_after_min, 10);
+        assert_eq!(resolve(Some("sleep_after_min=30\n"), None, None, None).sleep_after_min, 30);
+        assert_eq!(resolve(Some("sleep_after_min=0\n"), None, None, None).sleep_after_min, 0);
+        assert_eq!(resolve(Some("sleep_after_min=soon\n"), None, None, None).sleep_after_min, 10);
     }
 
     #[test]
