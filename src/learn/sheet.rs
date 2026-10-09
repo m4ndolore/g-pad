@@ -12,7 +12,7 @@ use crate::fb::{BBox, SCREEN_H, SCREEN_W};
 use crate::script;
 use crate::surface::{Surface, BLACK, FADED, WHITE};
 
-use super::problems::{Blank, Kind, Op, Set, Slot, SKIP_SHOWN};
+use super::problems::{Blank, Chain, Kind, Op, Set, SKIP_SHOWN};
 
 const W: usize = SCREEN_W;
 const H: usize = SCREEN_H;
@@ -164,8 +164,7 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
             Kind::Array { rows, cols } => draw_array(surf, ui_font, *rows, *cols),
             Kind::Share { total, groups } => draw_share(surf, ui_font, *total, *groups),
             Kind::Trace { word } => draw_trace(surf, ui_font, word),
-            Kind::BondChain { whole, parts, split, sub, blank } =>
-                draw_bond_chain(surf, ui_font, *whole, *parts, *split, *sub, *blank),
+            Kind::BondChain(chain) => draw_bond_chain(surf, ui_font, chain),
             Kind::BridgeTen { a, b } => draw_bridge_ten(surf, ui_font, *a, *b),
             // The band figures: scale to their slice of the page.
             Kind::Equation { a, op, b } => draw_equation(surf, ui_font, *a, *op, *b, band),
@@ -229,43 +228,46 @@ fn draw_bond(surf: &mut Surface, font: &FontRef, whole: u32, parts: [u32; 2], bl
     answer
 }
 
-/// Chained bonds: the whole on top, its two parts below it, and two more
-/// circles hanging from the part that splits. The single bond's rings and
-/// connectors, a size smaller so three rows fit above the feedback strip.
-fn draw_bond_chain(surf: &mut Surface, font: &FontRef, whole: u32, parts: [u32; 2], split: usize,
-    sub: [u32; 2], blank: Slot) -> BBox {
-    let r = (W * 8 / 100) as i32;
-    let cx = (W / 2) as i32;
-    let rows = [(H * 25 / 100) as i32, (H * 41 / 100) as i32, (H * 57 / 100) as i32];
-    let part_x = [cx - (W * 20 / 100) as i32, cx + (W * 20 / 100) as i32];
-    let px = part_x[split.min(1)];
-    let sdx = (W * 11 / 100) as i32;
-    let nodes = [
-        (cx, rows[0], whole, Slot::Whole),
-        (part_x[0], rows[1], parts[0], Slot::Part(0)),
-        (part_x[1], rows[1], parts[1], Slot::Part(1)),
-        (px - sdx, rows[2], sub[0], Slot::Sub(0)),
-        (px + sdx, rows[2], sub[1], Slot::Sub(1)),
-    ];
+/// Chained bonds: each bond's whole above its two parts, rows down the page.
+/// Solved blanks print like the given numbers; the blank being filled now
+/// wears a heavy ring and an outer halo; blanks still to come are empty
+/// rings. Seven circles draw a size smaller than five.
+fn draw_bond_chain(surf: &mut Surface, font: &FontRef, chain: &Chain) -> BBox {
+    let small = chain.values.len() > 5;
+    let r = (W * if small { 7 } else { 8 } / 100) as i32;
+    let px = if small { 86.0 } else { 100.0 };
+    let deep = chain.at.iter().any(|&(row, _)| row >= 3);
+    let rows: &[usize] = if deep { &[21, 34, 47, 60] } else { &[25, 41, 57] };
+    let place = |i: usize| {
+        let (row, x) = chain.at[i];
+        ((W * x as usize / 1000) as i32, (H * rows[row as usize] / 100) as i32)
+    };
 
     // Connectors first so the rings sit on top of their ends.
-    for x in part_x {
-        line(surf, cx, rows[0], x, rows[1], 4, BLACK);
-    }
-    for x in [px - sdx, px + sdx] {
-        line(surf, px, rows[1], x, rows[2], 4, BLACK);
+    for &(w, parts) in &chain.bonds {
+        let (wx, wy) = place(w);
+        for p in parts {
+            let (x, y) = place(p);
+            line(surf, wx, wy, x, y, 4, BLACK);
+        }
     }
 
     let mut answer = BBox::empty();
-    for &(x, y, value, slot) in &nodes {
-        surf.stamp(x, y, r - 3, WHITE);
-        let is_blank = slot == blank;
-        ring(surf, x, y, r, if is_blank { 9 } else { 5 }, BLACK);
-        if is_blank {
+    for (i, &value) in chain.values.iter().enumerate() {
+        let (x, y) = place(i);
+        if i == chain.blank() {
+            surf.stamp(x, y, r + 16, WHITE);
+            ring(surf, x, y, r, 9, BLACK);
+            ring(surf, x, y, r + 16, 3, BLACK);
             answer.add(x - r + 12, y - r + 12, 0);
             answer.add(x + r - 12, y + r - 12, 0);
-        } else {
-            print_tight_centered(surf, font, &value.to_string(), 100.0, x, y, BLACK);
+            continue;
+        }
+        surf.stamp(x, y, r - 3, WHITE);
+        ring(surf, x, y, r, 5, BLACK);
+        let open = chain.order.contains(&i) && !chain.is_solved(i);
+        if !open {
+            print_tight_centered(surf, font, &value.to_string(), px, x, y, BLACK);
         }
     }
     answer

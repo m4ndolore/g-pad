@@ -135,6 +135,16 @@ impl Session {
         }
     }
 
+    /// After a correct answer on a bond chain, move to its next blank. False
+    /// on any other page, or when the blank just answered was the chain's last.
+    pub fn advance_chain(&mut self) -> bool {
+        let Page::Practice(set) = &mut self.page else { return false };
+        match set.items.last_mut().map(|p| &mut p.kind) {
+            Some(problems::Kind::BondChain(chain)) => chain.advance(),
+            _ => false,
+        }
+    }
+
     /// Draw the current page and remember its hit map.
     pub fn draw(&mut self, surf: &mut Surface, ui_font: &FontRef) {
         self.hits = match &self.page {

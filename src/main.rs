@@ -2292,10 +2292,18 @@ fn run() -> std::io::Result<()> {
                                             // the tracked ink is dropped so a second
                                             // DONE cannot resubmit it (or a mixture).
                                             user_ink.clear();
-                                            mark_dirty = learn::sheet::draw_check(&mut surf, &answer);
-                                            // Once the praise is written, the next
-                                            // page deals itself — no second tap.
-                                            learn_advance_pending = true;
+                                            if session.advance_chain() {
+                                                // A bond chain prints the answer
+                                                // and rings its next blank; the
+                                                // page stays until the last one.
+                                                session.draw(&mut surf, &ui_font);
+                                                disp.full_refresh(surf.w, surf.h);
+                                            } else {
+                                                mark_dirty = learn::sheet::draw_check(&mut surf, &answer);
+                                                // Once the praise is written, the next
+                                                // page deals itself — no second tap.
+                                                learn_advance_pending = true;
+                                            }
                                         }
                                         learn::Verdict::Almost | learn::Verdict::No => {
                                             // A clean retry: repaint the sheet so the
