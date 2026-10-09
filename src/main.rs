@@ -12,6 +12,7 @@ mod ask;
 // the one-page reader, and a poll thread feeds both when RIDDLE_BRIEF_URL
 // names a feed. See docs/daily-brief.md.
 mod brief;
+mod chess;
 // Agent mode: the AGENTS tab is the board, a tapped row opens the full turn
 // page, and a poll thread feeds both when RIDDLE_BRIDGE_URL names a hub. See
 // docs/claude-bridge.md and docs/plans/2026-08-30-anthink-hub-design.md.
@@ -91,6 +92,9 @@ usage:
   g-pad --render-cards [DIR]  render the Anthink boot, power-off and restart
                               cards into DIR (default /tmp/g-pad-cards) in
                               the OS's grayscale PNG format; no display needed
+  g-pad --render-chess [DIR]  render the chess page for each kind of puzzle,
+                              with a piece picked up and a hint shown, into
+                              DIR (default /tmp/g-pad-chess) as PNGs
   g-pad --render-tools [DIR]  render the tool menu, every pen, and a moved
                               selection into DIR (default /tmp/g-pad-tools)
                               as PNGs; no display needed
@@ -220,6 +224,12 @@ enum State {
     /// `brief::held()` each time, so a poll landing while it is open shows
     /// on the next open rather than tearing the page.
     BriefPage {
+        saved: Vec<u8>,
+        return_to: Box<State>,
+    },
+    /// The chess trainer over the page; the trainer itself lives outside the
+    /// state so a puzzle survives closing and reopening.
+    Chess {
         saved: Vec<u8>,
         return_to: Box<State>,
     },
@@ -373,6 +383,10 @@ fn main() {
         Some("--render-tools") => {
             let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/g-pad-tools");
             std::process::exit(render_tools(dir));
+        }
+        Some("--render-chess") => {
+            let dir = args.get(2).map(String::as_str).unwrap_or("/tmp/g-pad-chess");
+            std::process::exit(render_chess(dir));
         }
         // Diagnostic: one full tutor round trip with a simulated child answer
         // — draws a number bond, writes ANSWER into the blank in the reply
@@ -715,6 +729,44 @@ fn learn_test(answer: Option<&str>) -> i32 {
 /// Render the writing tools into `dir`: a page with one line per pen, the
 /// tool menu over it (as set, and as kids mode shows it), a selection, and
 /// the same selection dragged.
+fn render_chess(dir: &str) -> i32 {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("g-pad: cannot create {dir}: {e}");
+        return 1;
+    }
+    let (Ok(ui_font), Ok(pieces)) = (FontRef::try_from_slice(ui::UI_FONT_TTF),
+        FontRef::try_from_slice(chess::draw::CHESS_FONT_TTF)) else {
+        eprintln!("g-pad: bundled fonts unreadable");
+        return 1;
+    };
+    let mut buf = vec![0xFFu8; SCREEN_W * SCREEN_H * 4];
+    let ptr = buf.as_mut_ptr();
+    let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
+    for (i, kind) in chess::Category::ALL.into_iter().enumerate() {
+        let Some(mut t) = chess::Trainer::new(kind, 1800, 7 + i as u32) else {
+            eprintln!("g-pad: no {kind:?} puzzles");
+            return 1;
+        };
+        let name = kind.label().to_lowercase();
+        chess::draw::draw(&mut surf, &ui_font, &pieces, &t);
+        if let Err(e) = dump_page(&surf, &format!("{dir}/chess-{name}.png")) {
+            eprintln!("g-pad: write: {e}");
+            return 1;
+        }
+        if let Some(m) = t.expected() {
+            t.tap(m.from);
+            chess::draw::draw(&mut surf, &ui_font, &pieces, &t);
+            let _ = dump_page(&surf, &format!("{dir}/chess-{name}-picked.png"));
+            t.tap(m.from);
+            t.show_hint();
+            chess::draw::draw(&mut surf, &ui_font, &pieces, &t);
+            let _ = dump_page(&surf, &format!("{dir}/chess-{name}-hint.png"));
+        }
+        println!("{dir}/chess-{name}.png");
+    }
+    0
+}
+
 fn render_tools(dir: &str) -> i32 {
     if let Err(e) = std::fs::create_dir_all(dir) {
         eprintln!("g-pad: cannot create {dir}: {e}");
@@ -1034,6 +1086,10 @@ fn run() -> std::io::Result<()> {
     let mut kit = tools::Kit::default();
     // The tool menu while it is down, and when it goes up by itself.
     let mut tool_menu: Option<ui::ToolMenu> = None;
+    // The chess trainer, kept across visits, and when the opponent answers.
+    let chess_font = FontRef::try_from_slice(chess::draw::CHESS_FONT_TTF).map_err(std::io::Error::other)?;
+    let mut chess_trainer: Option<chess::Trainer> = None;
+    let mut chess_reply_at: Option<Instant> = None;
     let mut tool_menu_until: Option<Instant> = None;
     // A pen press that began while the menu was down: none of it is ink.
     let mut menu_press = false;
@@ -1194,6 +1250,23 @@ fn run() -> std::io::Result<()> {
                             eprintln!("g-pad: pen tip is now the {t:?}");
                         }
                         Some(ui::MenuPick::More) => queued_gestures.push(touch::Gesture::OpenControls),
+                        Some(ui::MenuPick::Chess) => {
+                            if chess_trainer.is_none() {
+                                let seed = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs() as u32)
+                                    .unwrap_or(1);
+                                chess_trainer = chess::Trainer::new(chess::Category::Tactic, prefs.chess_target, seed);
+                            }
+                            if let Some(t) = chess_trainer.as_ref() {
+                                eprintln!("g-pad: chess opens ({} near {})", t.category.label(), t.target);
+                                let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
+                                let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
+                                state = State::Chess { saved, return_to: Box::new(old) };
+                                chess::draw::draw(&mut surf, &ui_font, &chess_font, t);
+                                disp.full_refresh(surf.w, surf.h);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1400,6 +1473,54 @@ fn run() -> std::io::Result<()> {
                             }
                             _ => {}
                         }
+                    } else if matches!(state, State::Chess { .. }) {
+                        if let Some(t) = chess_trainer.as_mut() {
+                            use chess::draw::Hit;
+                            let before = t.target;
+                            match chess::draw::hit(x, y, t.flipped) {
+                                Some(Hit::Square(sq)) if chess_reply_at.is_none() => {
+                                    let tap = t.tap(sq);
+                                    if tap == chess::Tap::Right {
+                                        chess_reply_at = Some(Instant::now() + Duration::from_millis(700));
+                                    }
+                                    if tap != chess::Tap::None {
+                                        chess::draw::draw_board(&mut surf, &ui_font, &chess_font, t);
+                                        let (bx, by, bw, bh) = chess::draw::board_region().rect();
+                                        disp.update(bx, by, bw, bh, false);
+                                    }
+                                }
+                                Some(Hit::Hint) => {
+                                    t.show_hint();
+                                    chess::draw::draw_board(&mut surf, &ui_font, &chess_font, t);
+                                    let (bx, by, bw, bh) = chess::draw::board_region().rect();
+                                    disp.update(bx, by, bw, bh, false);
+                                }
+                                Some(Hit::Kind(c)) => {
+                                    chess_reply_at = None;
+                                    t.next(c);
+                                    chess::draw::draw(&mut surf, &ui_font, &chess_font, t);
+                                    disp.full_refresh(surf.w, surf.h);
+                                }
+                                Some(Hit::Next) => {
+                                    chess_reply_at = None;
+                                    let c = t.category;
+                                    t.next(c);
+                                    chess::draw::draw(&mut surf, &ui_font, &chess_font, t);
+                                    disp.full_refresh(surf.w, surf.h);
+                                }
+                                Some(Hit::Exit) => {
+                                    chess_reply_at = None;
+                                    eprintln!("g-pad: chess closes");
+                                    close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                                    disp.full_refresh(surf.w, surf.h);
+                                }
+                                _ => {}
+                            }
+                            if t.target != before {
+                                prefs.chess_target = t.target;
+                                let _ = prefs.save();
+                            }
+                        }
                     } else if matches!(state, State::Listening { .. } | State::Lingering { .. }) {
                         // A bare finger on the open page grows no chrome: a
                         // resting hand used to summon a pen palette here, and
@@ -1441,6 +1562,17 @@ fn run() -> std::io::Result<()> {
                 disp.update(bx as i32, by as i32, ui::BANNER_W as i32, ui::BANNER_H as i32, false);
             }
             banner_until = None;
+        }
+
+        // ---- chess: the opponent answers a right move ----
+        if chess_reply_at.is_some_and(|t| Instant::now() >= t) {
+            chess_reply_at = None;
+            if let (State::Chess { .. }, Some(t)) = (&state, chess_trainer.as_mut()) {
+                t.reply();
+                chess::draw::draw_board(&mut surf, &ui_font, &chess_font, t);
+                let (bx, by, bw, bh) = chess::draw::board_region().rect();
+                disp.update(bx, by, bw, bh, false);
+            }
         }
 
         // ---- battery: corner icon and low warnings ----
@@ -1662,7 +1794,7 @@ fn run() -> std::io::Result<()> {
                     continue;
                 }
                 if matches!(state, State::System { .. } | State::Drawer { .. } | State::ExpandedConversation { .. }
-                    | State::BriefPage { .. }) {
+                    | State::BriefPage { .. } | State::Chess { .. }) {
                     if !control_pen_latched {
                         queued_gestures.push(touch::Gesture::Tap(s.x, s.y));
                         control_pen_latched = true;
@@ -1817,7 +1949,7 @@ fn run() -> std::io::Result<()> {
                         }
                     } else if matches!(state, State::System { .. } | State::Drawer { .. }
                         | State::ExpandedConversation { .. } | State::SessionPage { .. }
-                        | State::NotePage { .. } | State::BriefPage { .. }) {
+                        | State::NotePage { .. } | State::BriefPage { .. } | State::Chess { .. }) {
                         if !control_pen_latched {
                             queued_gestures.push(touch::Gesture::Tap(ev.x, ev.y));
                             control_pen_latched = true;
@@ -2571,6 +2703,7 @@ fn run() -> std::io::Result<()> {
             }
             s @ State::NotePage { .. } => s,
             s @ State::BriefPage { .. } => s,
+            s @ State::Chess { .. } => s,
 
             State::FadingReply { stage, next, region } => {
                 const STAGES: u32 = 10;
@@ -2976,7 +3109,8 @@ fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
             *state = *return_to;
         }
         State::System { saved, return_to, .. } | State::SessionPage { saved, return_to, .. }
-        | State::NotePage { saved, return_to, .. } | State::BriefPage { saved, return_to } => {
+        | State::NotePage { saved, return_to, .. } | State::BriefPage { saved, return_to }
+        | State::Chess { saved, return_to } => {
             surf.paste_rect(0, 0, SCREEN_W, SCREEN_H, &saved);
             disp.update(0, 0, SCREEN_W as i32, SCREEN_H as i32, false); *state = *return_to;
         }

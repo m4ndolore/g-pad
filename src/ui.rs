@@ -1107,6 +1107,8 @@ pub enum MenuPick {
     Size(Size),
     /// The strip in Guided, the SYSTEM page in Stealth.
     More,
+    /// The chess trainer, over the page. Not in kids mode.
+    Chess,
     Close,
 }
 
@@ -1155,6 +1157,10 @@ fn menu_layout(kids: bool) -> Vec<Placed> {
     out.push(Placed { piece: MenuPiece::Rule, x: 0, y, w: MENU_W, h: 2 });
     y += 2;
     out.push(Placed { piece: MenuPiece::Pick(MenuPick::More), x: 0, y, w: MENU_W, h: MENU_ROW });
+    if !kids {
+        y += MENU_ROW;
+        out.push(Placed { piece: MenuPiece::Pick(MenuPick::Chess), x: 0, y, w: MENU_W, h: MENU_ROW });
+    }
     out
 }
 
@@ -1213,6 +1219,7 @@ impl ToolMenu {
                     }
                 }
                 MenuPiece::Pick(MenuPick::More) => menu_row(surf, font, &p, "MORE CONTROLS", false),
+                MenuPiece::Pick(MenuPick::Chess) => menu_row(surf, font, &p, "CHESS PUZZLES", false),
             }
         }
         rule(surf, MENU_W - MENU_BORDER, 0, MENU_BORDER, self.h);
@@ -1403,6 +1410,7 @@ mod tests {
                 MenuPiece::Pick(MenuPick::Tip(t)) => t.label(),
                 MenuPiece::Pick(MenuPick::Kind(k)) => k.label(),
                 MenuPiece::Pick(MenuPick::More) => "MORE CONTROLS",
+                MenuPiece::Pick(MenuPick::Chess) => "CHESS PUZZLES",
                 _ => continue,
             };
             let end = MENU_LABEL_X as f32 + script::measure(&font, label, LABEL_PX);
