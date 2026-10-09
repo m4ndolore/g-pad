@@ -66,6 +66,18 @@ pub struct HitMap {
 }
 
 impl HitMap {
+    /// A picker page's map: choice boxes and nothing else.
+    pub fn choices_only(choices: Vec<BBox>) -> HitMap {
+        HitMap {
+            answer: BBox::empty(),
+            done: BBox::empty(),
+            new: BBox::empty(),
+            menu: BBox::empty(),
+            choices,
+            blanks: Vec::new(),
+        }
+    }
+
     /// Which element a point (a stroke's centroid) landed on.
     pub fn hit(&self, x: i32, y: i32) -> Option<Target> {
         let inside = |b: &BBox| !b.is_empty() && x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
@@ -728,147 +740,114 @@ fn draw_action_box(surf: &mut Surface, font: &FontRef, which: ActionBox) -> BBox
     b
 }
 
-// ---- the menu page --------------------------------------------------------
+// ---- the picker pages -----------------------------------------------------
 
-/// The picker's entries, in choice-index order. `Session::choose_menu`
-/// interprets the index, so the two must move together: 0 math, 1 writing,
-/// 2 the full mix, 3 the skills page, 4–6 the games — and after the named
-/// entries, four LEVEL boxes at indices 7–10.
-pub const MENU_ITEMS: &[&str] = &[
-    "MATH",
-    "WRITING",
-    "SURPRISE MIX",
-    "MATH SKILLS",
-    "DOODLE CRITTER",
-    "GUESSING GAME",
-    "STORY TIME",
-];
+/// Box sizes for a picker grid.
+struct Grid {
+    box_h: i32,
+    row_gap: i32,
+    section_gap: i32,
+}
 
-/// How many leading MENU_ITEMS are practice topics (the rest are games).
-const MENU_PRACTICE: usize = 4;
+/// The menu has room for big boxes.
+const MENU_GRID: Grid = Grid { box_h: (H * 8 / 100) as i32, row_gap: (H * 25 / 1000) as i32, section_gap: (H * 4 / 100) as i32 };
 
-/// The levels the menu's LEVEL row offers, boxes 7–10.
-const MENU_LEVELS: u8 = 4;
+/// The skills page fits four strands above the footer, so its boxes are
+/// shorter.
+const SKILLS_GRID: Grid = Grid { box_h: (H * 55 / 1000) as i32, row_gap: (H * 13 / 1000) as i32, section_gap: (H * 2 / 100) as i32 };
 
-/// Draw the topic-and-game picker and return its hit map: every entry is a
-/// choice box, and there is deliberately no DONE, NEW, or MENU here — a mark
-/// in an entry is the only thing this page understands. `level` fills in the
-/// LEVEL row's current box so the child can see where the ladder stands.
-pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef, level: u8) -> HitMap {
+/// Draw a picker page: a title, a prompt, and each section as a heading over
+/// a two-column grid of outlined boxes. Returns the boxes in order and the y
+/// where the next section would start.
+fn draw_picker(
+    surf: &mut Surface,
+    font: &FontRef,
+    title: &str,
+    prompt: &str,
+    sections: &[(&str, Vec<&str>)],
+    grid: &Grid,
+) -> (Vec<BBox>, i32) {
     surf.fill_rect(0, 0, W, H, WHITE);
-    print(surf, ui_font, "LEARN · MENU", 32.0, MARGIN, 40, BLACK);
-    print_centered(surf, ui_font, "MARK A BOX TO CHOOSE", 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
-
+    print(surf, font, title, 32.0, MARGIN, 40, BLACK);
+    print_centered(surf, font, prompt, 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
     let gap_x = (W * 4 / 100) as i32;
     let bw = ((W - 2 * MARGIN) as i32 - gap_x) / 2;
-    let bh = (H * 8 / 100) as i32;
-    let row_h = bh + (H * 25 / 1000) as i32;
+    let row_h = grid.box_h + grid.row_gap;
     let mut choices = Vec::new();
-
-    let section = |surf: &mut Surface, label: &str, y: i32, items: &[&str], base: usize, choices: &mut Vec<BBox>| {
-        print(surf, ui_font, label, 30.0, MARGIN, y as usize, BLACK);
+    let mut y = (H * 14 / 100) as i32;
+    for (heading, items) in sections {
+        print(surf, font, heading, 30.0, MARGIN, y as usize, BLACK);
         let top = y + 50;
         for (i, item) in items.iter().enumerate() {
-            let (row, col) = ((i / 2) as i32, (i % 2) as i32);
-            let x = MARGIN as i32 + col * (bw + gap_x);
-            let by = top + row * row_h;
-            rect_outline(surf, x, by, bw, bh, 4, BLACK);
-            let px = fit_px(ui_font, item, 40.0, (bw - 40) as f32);
-            print_tight_centered(surf, ui_font, item, px, x + bw / 2, by + bh / 2, BLACK);
-            let mut b = BBox::empty();
-            b.add(x, by, 0);
-            b.add(x + bw, by + bh, 0);
-            debug_assert_eq!(choices.len(), base + i);
-            choices.push(b);
+            let x = MARGIN as i32 + (i % 2) as i32 * (bw + gap_x);
+            choices.push(label_box(surf, font, item, x, top + (i / 2) as i32 * row_h, bw, grid.box_h));
         }
-        top + items.len().div_ceil(2) as i32 * row_h
-    };
+        y = top + items.len().div_ceil(2) as i32 * row_h + grid.section_gap;
+    }
+    (choices, y)
+}
 
-    let after_practice = section(
-        surf,
-        "PRACTICE",
-        (H * 14 / 100) as i32,
-        &MENU_ITEMS[..MENU_PRACTICE],
-        0,
-        &mut choices,
-    );
-    let after_play = section(
-        surf,
-        "PLAY",
-        after_practice + (H * 4 / 100) as i32,
-        &MENU_ITEMS[MENU_PRACTICE..],
-        MENU_PRACTICE,
-        &mut choices,
-    );
+/// An outlined box with its label centered, shrunk to fit; returns the box.
+fn label_box(surf: &mut Surface, font: &FontRef, label: &str, x: i32, y: i32, w: i32, h: i32) -> BBox {
+    rect_outline(surf, x, y, w, h, 4, BLACK);
+    let px = fit_px(font, label, 40.0, (w - 40) as f32);
+    print_tight_centered(surf, font, label, px, x + w / 2, y + h / 2, BLACK);
+    let mut b = BBox::empty();
+    b.add(x, y, 0);
+    b.add(x + w, y + h, 0);
+    b
+}
 
-    // The LEVEL row: four boxes across, the current level filled solid so it
+/// Draw the menu, `super::MENU` section by section, then the LEVEL row, and
+/// return its hit map: every entry is a choice box, and there is
+/// deliberately no DONE, NEW, or MENU here. `level` fills in the LEVEL row's
+/// current box so the child can see where the ladder stands.
+pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef, level: u8) -> HitMap {
+    let sections: Vec<(&str, Vec<&str>)> = super::MENU
+        .iter()
+        .map(|(heading, items)| (*heading, items.iter().map(|(label, _)| *label).collect()))
+        .collect();
+    let (mut choices, ly) = draw_picker(surf, ui_font, "LEARN · MENU", "MARK A BOX TO CHOOSE", &sections, &MENU_GRID);
+
+    // The LEVEL row: one box per level, the current one filled solid so it
     // reads at a glance. Marking one re-seats the ladder and keeps the menu
     // open; the indices continue after the named entries.
-    let ly = after_play + (H * 4 / 100) as i32;
     print(surf, ui_font, "LEVEL", 30.0, MARGIN, ly as usize, BLACK);
     let top = ly + 50;
-    let lw = ((W - 2 * MARGIN) as i32 - 3 * gap_x) / 4;
-    for k in 0..MENU_LEVELS {
+    let gap_x = (W * 4 / 100) as i32;
+    let n = super::MENU_LEVELS as i32;
+    let lw = ((W - 2 * MARGIN) as i32 - (n - 1) * gap_x) / n;
+    let bh = MENU_GRID.box_h;
+    for k in 0..super::MENU_LEVELS {
         let x = MARGIN as i32 + k as i32 * (lw + gap_x);
-        let (ink, paper) = if k + 1 == level { (WHITE, BLACK) } else { (BLACK, WHITE) };
-        if paper == BLACK {
+        let ink = if k + 1 == level {
             surf.fill_rect(x.max(0) as usize, top.max(0) as usize, lw as usize, bh as usize, BLACK);
+            WHITE
         } else {
             rect_outline(surf, x, top, lw, bh, 4, BLACK);
-        }
+            BLACK
+        };
         print_tight_centered(surf, ui_font, &format!("{}", k + 1), 52.0, x + lw / 2, top + bh / 2, ink);
         let mut b = BBox::empty();
         b.add(x, top, 0);
         b.add(x + lw, top + bh, 0);
         choices.push(b);
     }
-
-    HitMap {
-        answer: BBox::empty(),
-        done: BBox::empty(),
-        new: BBox::empty(),
-        menu: BBox::empty(),
-        choices,
-        blanks: Vec::new(),
-    }
+    HitMap::choices_only(choices)
 }
 
-/// Draw the skills picker — every math activity as its own box — and return
-/// its hit map. Reached from the menu's MATH SKILLS entry; the indices mirror
-/// `problems::MATH_SKILLS`.
+/// Draw the skills picker, every math activity as its own box grouped by
+/// strand (`problems::SKILL_GROUPS`), and return its hit map. The footer's
+/// MENU box goes back to the menu, the same box every practice sheet has.
 pub fn draw_skills(surf: &mut Surface, ui_font: &FontRef) -> HitMap {
-    surf.fill_rect(0, 0, W, H, WHITE);
-    print(surf, ui_font, "LEARN · SKILLS", 32.0, MARGIN, 40, BLACK);
-    print_centered(surf, ui_font, "MARK A SKILL TO PRACTICE", 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
-
-    let gap_x = (W * 4 / 100) as i32;
-    let bw = ((W - 2 * MARGIN) as i32 - gap_x) / 2;
-    let bh = (H * 8 / 100) as i32;
-    let row_h = bh + (H * 25 / 1000) as i32;
-    let top = (H * 14 / 100) as i32;
-    let mut choices = Vec::new();
-    for (i, act) in super::problems::MATH_SKILLS.iter().enumerate() {
-        let (row, col) = ((i / 2) as i32, (i % 2) as i32);
-        let x = MARGIN as i32 + col * (bw + gap_x);
-        let by = top + row * row_h;
-        rect_outline(surf, x, by, bw, bh, 4, BLACK);
-        let label = act.label();
-        let px = fit_px(ui_font, label, 40.0, (bw - 40) as f32);
-        print_tight_centered(surf, ui_font, label, px, x + bw / 2, by + bh / 2, BLACK);
-        let mut b = BBox::empty();
-        b.add(x, by, 0);
-        b.add(x + bw, by + bh, 0);
-        choices.push(b);
-    }
-
-    HitMap {
-        answer: BBox::empty(),
-        done: BBox::empty(),
-        new: BBox::empty(),
-        menu: BBox::empty(),
-        choices,
-        blanks: Vec::new(),
-    }
+    let sections: Vec<(&str, Vec<&str>)> = super::problems::SKILL_GROUPS
+        .iter()
+        .map(|(heading, acts)| (*heading, acts.iter().map(|a| a.label()).collect()))
+        .collect();
+    let (choices, _) = draw_picker(surf, ui_font, "LEARN · SKILLS", "MARK A SKILL TO PRACTICE", &sections, &SKILLS_GRID);
+    let mut map = HitMap::choices_only(choices);
+    map.menu = draw_action_box(surf, ui_font, ActionBox::Menu);
+    map
 }
 
 fn fit_px(font: &FontRef, text: &str, px: f32, max_w: f32) -> f32 {
@@ -1212,8 +1191,9 @@ mod tests {
         let font = ui_font();
         let (_buf, mut surf) = page();
         let map = draw_menu(&mut surf, &font, 2);
-        // The named entries, then the four LEVEL boxes.
-        assert_eq!(map.choices.len(), MENU_ITEMS.len() + MENU_LEVELS as usize);
+        // The named entries, then the LEVEL boxes.
+        let named: usize = crate::learn::MENU.iter().map(|(_, items)| items.len()).sum();
+        assert_eq!(map.choices.len(), named + crate::learn::MENU_LEVELS as usize);
         assert!(map.done.is_empty() && map.new.is_empty() && map.menu.is_empty() && map.answer.is_empty());
         for (i, b) in map.choices.iter().enumerate() {
             assert!(!b.is_empty());
@@ -1230,8 +1210,8 @@ mod tests {
             assert_eq!(map.hit(cx, cy), Some(Target::Choice(i)));
         }
         // The current level's box is filled solid; the others are outlines.
-        let current = &map.choices[MENU_ITEMS.len() + 1]; // level 2
-        let other = &map.choices[MENU_ITEMS.len()]; // level 1
+        let current = &map.choices[named + 1]; // level 2
+        let other = &map.choices[named]; // level 1
         assert!(
             dark_in(&surf, current) > dark_in(&surf, other) * 3,
             "the current level must read at a glance"
@@ -1243,11 +1223,15 @@ mod tests {
         let font = ui_font();
         let (_buf, mut surf) = page();
         let map = draw_skills(&mut surf, &font);
-        assert_eq!(map.choices.len(), crate::learn::problems::MATH_SKILLS.len());
-        assert!(map.done.is_empty() && map.new.is_empty() && map.menu.is_empty() && map.answer.is_empty());
+        assert_eq!(map.choices.len(), crate::learn::problems::math_skills().len());
+        assert!(map.done.is_empty() && map.new.is_empty() && map.answer.is_empty());
+        // The footer's MENU box leads back, clear of every skill box.
+        assert!(!map.menu.is_empty());
+        let (mx, my) = ((map.menu.x0 + map.menu.x1) / 2, (map.menu.y0 + map.menu.y1) / 2);
+        assert_eq!(map.hit(mx, my), Some(Target::Menu));
         for (i, b) in map.choices.iter().enumerate() {
             assert!(!b.is_empty());
-            assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < H as i32);
+            assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < box_top() - 12, "skill box {i} reaches the footer");
             assert!(dark_in(&surf, b) > 100, "skill box {i} must be visibly drawn");
             for other in &map.choices[i + 1..] {
                 let apart = b.x1 < other.x0 || other.x1 < b.x0 || b.y1 < other.y0 || other.y1 < b.y0;
@@ -1299,7 +1283,7 @@ mod tests {
         let font = ui_font();
         let (_buf, mut surf) = page();
         let mut rng = Rng::new(59);
-        for &act in crate::learn::problems::MATH_SKILLS {
+        for act in crate::learn::problems::math_skills() {
             for level in 1..=4 {
                 for rot in 0..6 {
                     let set = generate_set(level, Topic::Skill(act), rot, &mut rng);

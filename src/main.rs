@@ -493,6 +493,7 @@ fn learn_sheets(dir: &str) -> i32 {
     }
     // The menu: the picker every page's MENU box deals — and the skills
     // page its MATH SKILLS entry opens.
+    let skills_box = learn::menu_index(learn::Pick::Skills).expect("MATH SKILLS is on the menu");
     let mut session = learn::Session::start_at(2, 99);
     session.open_menu();
     session.draw(&mut surf, &ui_font);
@@ -502,7 +503,7 @@ fn learn_sheets(dir: &str) -> i32 {
         return 1;
     }
     println!("{path}");
-    session.choose_menu(3);
+    session.choose_menu(skills_box);
     session.draw(&mut surf, &ui_font);
     let path = format!("{dir}/learn-skills.png");
     if let Err(e) = dump_page(&surf, &path) {
@@ -512,10 +513,10 @@ fn learn_sheets(dir: &str) -> i32 {
     println!("{path}");
     // One page per math skill at level 3, latched the way the skills page
     // latches it, so every figure can be checked on its own.
-    for i in 0..learn::problems::MATH_SKILLS.len() {
+    for i in 0..learn::problems::math_skills().len() {
         let mut session = learn::Session::start_at(3, 7 + i as u32);
         session.open_menu();
-        session.choose_menu(3);
+        session.choose_menu(skills_box);
         session.choose_menu(i);
         session.draw(&mut surf, &ui_font);
         let path = format!("{dir}/learn-skill-{i:02}.png");
@@ -526,14 +527,14 @@ fn learn_sheets(dir: &str) -> i32 {
         println!("{path}");
     }
     // Bond chains at each size, as dealt and after a first correct answer.
-    let chain_box = learn::problems::MATH_SKILLS.iter()
+    let chain_box = learn::problems::math_skills().iter()
         .position(|a| *a == learn::problems::Activity::BondChain)
         .expect("bond chains are a math skill");
     for level in [2u8, 3, 4] {
         for seed in [11u32, 12, 13] {
             let mut session = learn::Session::start_at(level, seed);
             session.open_menu();
-            session.choose_menu(3);
+            session.choose_menu(skills_box);
             session.choose_menu(chain_box);
             for step in 0..2 {
                 if step == 1 {
@@ -725,10 +726,8 @@ fn learn_test(answer: Option<&str>) -> i32 {
     i32::from(verdict == learn::Verdict::Unknown)
 }
 
-/// Write the whole page as an 8-bit grayscale PNG (full resolution).
-/// Render the writing tools into `dir`: a page with one line per pen, the
-/// tool menu over it (as set, and as kids mode shows it), a selection, and
-/// the same selection dragged.
+/// Render the chess page for every kind, grown-up and kids, into `dir`: as
+/// dealt, with the right piece picked up, and with the hint showing.
 fn render_chess(dir: &str) -> i32 {
     if let Err(e) = std::fs::create_dir_all(dir) {
         eprintln!("g-pad: cannot create {dir}: {e}");
@@ -742,12 +741,17 @@ fn render_chess(dir: &str) -> i32 {
     let mut buf = vec![0xFFu8; SCREEN_W * SCREEN_H * 4];
     let ptr = buf.as_mut_ptr();
     let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
-    for (i, kind) in chess::Category::ALL.into_iter().enumerate() {
-        let Some(mut t) = chess::Trainer::new(kind, 1800, 7 + i as u32) else {
+    for (i, kind) in chess::Category::ALL.into_iter().chain(chess::Category::KIDS).enumerate() {
+        let made = if kind.is_kids() {
+            chess::Trainer::kids(kind, 7 + i as u32)
+        } else {
+            chess::Trainer::new(kind, 1800, 7 + i as u32)
+        };
+        let Some(mut t) = made else {
             eprintln!("g-pad: no {kind:?} puzzles");
             return 1;
         };
-        let name = kind.label().to_lowercase();
+        let name = format!("{}{}", if kind.is_kids() { "kids-" } else { "" }, kind.label().to_lowercase());
         chess::draw::draw(&mut surf, &ui_font, &pieces, &t);
         if let Err(e) = dump_page(&surf, &format!("{dir}/chess-{name}.png")) {
             eprintln!("g-pad: write: {e}");
@@ -767,6 +771,9 @@ fn render_chess(dir: &str) -> i32 {
     0
 }
 
+/// Render the writing tools into `dir`: a page with one line per pen, the
+/// tool menu over it (as set, and as kids mode shows it), a selection, and
+/// the same selection dragged.
 fn render_tools(dir: &str) -> i32 {
     if let Err(e) = std::fs::create_dir_all(dir) {
         eprintln!("g-pad: cannot create {dir}: {e}");
@@ -845,6 +852,7 @@ fn render_tools(dir: &str) -> i32 {
     0
 }
 
+/// Write the whole page as an 8-bit grayscale PNG (full resolution).
 pub(crate) fn dump_page(surf: &Surface, path: &str) -> std::io::Result<()> {
     let mut gray = vec![0u8; surf.w * surf.h];
     for y in 0..surf.h {
@@ -1090,6 +1098,9 @@ fn run() -> std::io::Result<()> {
     let chess_font = FontRef::try_from_slice(chess::draw::CHESS_FONT_TTF).map_err(std::io::Error::other)?;
     let mut chess_trainer: Option<chess::Trainer> = None;
     let mut chess_reply_at: Option<Instant> = None;
+    // Kids chess deals the next lesson by itself after a solve, the way a
+    // Learn page does after a YES.
+    let mut chess_next_at: Option<Instant> = None;
     let mut tool_menu_until: Option<Instant> = None;
     // A pen press that began while the menu was down: none of it is ink.
     let mut menu_press = false;
@@ -1251,20 +1262,11 @@ fn run() -> std::io::Result<()> {
                         }
                         Some(ui::MenuPick::More) => queued_gestures.push(touch::Gesture::OpenControls),
                         Some(ui::MenuPick::Chess) => {
-                            if chess_trainer.is_none() {
-                                let seed = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs() as u32)
-                                    .unwrap_or(1);
-                                chess_trainer = chess::Trainer::new(chess::Category::Tactic, prefs.chess_target, seed);
+                            if chess_trainer.as_ref().is_none_or(|t| t.is_kids()) {
+                                chess_trainer = chess::Trainer::new(chess::Category::Tactic, prefs.chess_target, now_seed());
                             }
                             if let Some(t) = chess_trainer.as_ref() {
-                                eprintln!("g-pad: chess opens ({} near {})", t.category.label(), t.target);
-                                let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
-                                let old = std::mem::replace(&mut state, State::Listening { last_pen: None });
-                                state = State::Chess { saved, return_to: Box::new(old) };
-                                chess::draw::draw(&mut surf, &ui_font, &chess_font, t);
-                                disp.full_refresh(surf.w, surf.h);
+                                open_chess(&mut state, &mut surf, &disp, &ui_font, &chess_font, t);
                             }
                         }
                         _ => {}
@@ -1477,11 +1479,18 @@ fn run() -> std::io::Result<()> {
                         if let Some(t) = chess_trainer.as_mut() {
                             use chess::draw::Hit;
                             let before = t.target;
-                            match chess::draw::hit(x, y, t.flipped) {
+                            let hit = chess::draw::hit(x, y, t.flipped, t.is_kids());
+                            if !matches!(hit, Some(Hit::Square(_)) | None) {
+                                chess_next_at = None;
+                            }
+                            match hit {
                                 Some(Hit::Square(sq)) if chess_reply_at.is_none() => {
                                     let tap = t.tap(sq);
                                     if tap == chess::Tap::Right {
                                         chess_reply_at = Some(Instant::now() + Duration::from_millis(700));
+                                    }
+                                    if tap == chess::Tap::Solved && t.is_kids() {
+                                        chess_next_at = learn_next_dwell.map(|d| Instant::now() + d);
                                     }
                                     if tap != chess::Tap::None {
                                         chess::draw::draw_board(&mut surf, &ui_font, &chess_font, t);
@@ -1512,11 +1521,18 @@ fn run() -> std::io::Result<()> {
                                     chess_reply_at = None;
                                     eprintln!("g-pad: chess closes");
                                     close_overlay(&mut state, &mut surf, &disp, &mut drawer_selection, &mut drawer_scroll);
+                                    // Kids chess came from the Learn menu, and
+                                    // its MENU button goes back there.
+                                    if let (true, Some(session)) = (t.is_kids(), learn_session.as_mut()) {
+                                        session.open_menu();
+                                        user_ink.clear();
+                                        session.draw(&mut surf, &ui_font);
+                                    }
                                     disp.full_refresh(surf.w, surf.h);
                                 }
                                 _ => {}
                             }
-                            if t.target != before {
+                            if t.target != before && !t.is_kids() {
                                 prefs.chess_target = t.target;
                                 let _ = prefs.save();
                             }
@@ -1572,6 +1588,17 @@ fn run() -> std::io::Result<()> {
                 chess::draw::draw_board(&mut surf, &ui_font, &chess_font, t);
                 let (bx, by, bw, bh) = chess::draw::board_region().rect();
                 disp.update(bx, by, bw, bh, false);
+            }
+        }
+
+        // ---- kids chess: the next lesson after a solve ----
+        if chess_next_at.is_some_and(|t| Instant::now() >= t) {
+            chess_next_at = None;
+            if let (State::Chess { .. }, Some(t)) = (&state, chess_trainer.as_mut()) {
+                let c = t.category;
+                t.next(c);
+                chess::draw::draw(&mut surf, &ui_font, &chess_font, t);
+                disp.full_refresh(surf.w, surf.h);
             }
         }
 
@@ -2042,7 +2069,22 @@ fn run() -> std::io::Result<()> {
                         LearnTick::Choice(i) if session.is_menu() => session.choose_menu(i),
                         _ => false,
                     };
-                    if deal_locally {
+                    if deal_locally && session.page == learn::Page::Chess {
+                        // The board opens over the menu; the kids' trainer
+                        // keeps its kind across visits and starts at the
+                        // kind the child's level suits.
+                        if !chess_trainer.as_ref().is_some_and(|t| t.is_kids()) {
+                            let kind = chess::Category::for_level(session.level());
+                            chess_trainer = chess::Trainer::kids(kind, now_seed());
+                        }
+                        user_ink.clear();
+                        session.draw(&mut surf, &ui_font);
+                        if let Some(t) = chess_trainer.as_ref() {
+                            open_chess(&mut state, &mut surf, &disp, &ui_font, &chess_font, t);
+                        } else {
+                            disp.full_refresh(surf.w, surf.h);
+                        }
+                    } else if deal_locally {
                         user_ink.clear();
                         session.draw(&mut surf, &ui_font);
                         disp.full_refresh(surf.w, surf.h);
@@ -3099,6 +3141,25 @@ fn system_tap(x: i32, y: i32, state: &mut State, surf: &mut Surface, disp: &disp
     After::Stay
 }
 
+/// Put the chess board over the page; the page underneath comes back when it
+/// closes.
+fn open_chess(state: &mut State, surf: &mut Surface, disp: &display::Display, ui_font: &FontRef,
+    chess_font: &FontRef, t: &chess::Trainer) {
+    eprintln!("g-pad: chess opens ({} near {})", t.category.label(), t.target);
+    let saved = surf.copy_rect(0, 0, SCREEN_W, SCREEN_H);
+    let old = std::mem::replace(state, State::Listening { last_pen: None });
+    *state = State::Chess { saved, return_to: Box::new(old) };
+    chess::draw::draw(surf, ui_font, chess_font, t);
+    disp.full_refresh(surf.w, surf.h);
+}
+
+fn now_seed() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(1)
+}
+
 fn close_overlay(state: &mut State, surf: &mut Surface, disp: &display::Display,
     selection: &mut Option<usize>, scroll: &mut i32) {
     let old = std::mem::replace(state, State::Listening { last_pen: None });
@@ -3789,8 +3850,8 @@ fn learn_flavor(session: &learn::Session) -> LearnFlavor {
         learn::Page::Play(learn::games::Game::Critter { .. }) => LearnFlavor::Critter,
         learn::Page::Play(learn::games::Game::Guess) => LearnFlavor::Guess,
         learn::Page::Play(learn::games::Game::Story { .. }) => LearnFlavor::Story,
-        // Unreachable in marking: the picker pages have no DONE box to send from.
-        learn::Page::Menu | learn::Page::Skills => LearnFlavor::Practice,
+        // Unreachable in marking: the picker pages and the board have no DONE box.
+        learn::Page::Menu | learn::Page::Skills | learn::Page::Chess => LearnFlavor::Practice,
     }
 }
 

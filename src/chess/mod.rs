@@ -1,5 +1,7 @@
 //! Chess trainer: Lichess puzzles in three kinds (tactics, endgames,
-//! openings), solved by tapping a piece and then its square.
+//! openings), solved by tapping a piece and then its square. Kids mode gets
+//! its own three kinds: how the pieces move and how they capture (lessons
+//! generated in `lesson`), then checkmate in one (easy Lichess puzzles).
 //!
 //! Nothing here judges legality. A puzzle's solution is a fixed list of moves,
 //! so a move is right when it is the next one on the list, and the opponent's
@@ -8,6 +10,7 @@
 //! and a promotion takes the piece the solution names.
 
 pub mod draw;
+pub mod lesson;
 
 /// The puzzle set, picked by scripts/chess-puzzles.py from the Lichess
 /// puzzle database (CC0).
@@ -19,16 +22,61 @@ pub enum Category {
     Tactic,
     Endgame,
     Opening,
+    /// Kids: which of your pieces can reach the star?
+    Moves,
+    /// Kids: take the one black piece you can.
+    Capture,
+    /// Kids: checkmate in one move.
+    Mate,
 }
 
 impl Category {
+    /// The grown-up trainer's kinds.
     pub const ALL: [Category; 3] = [Category::Tactic, Category::Endgame, Category::Opening];
+    /// Kids mode's kinds, easiest first.
+    pub const KIDS: [Category; 3] = [Category::Moves, Category::Capture, Category::Mate];
 
     pub fn label(self) -> &'static str {
         match self {
             Category::Tactic => "TACTICS",
             Category::Endgame => "ENDGAMES",
             Category::Opening => "OPENINGS",
+            Category::Moves => "MOVES",
+            Category::Capture => "CAPTURE",
+            Category::Mate => "CHECKMATE",
+        }
+    }
+
+    pub fn is_kids(self) -> bool {
+        Category::KIDS.contains(&self)
+    }
+
+    /// The kids' kind for a Learn level: moves first, captures next,
+    /// checkmates from level 3.
+    pub fn for_level(level: u8) -> Category {
+        match level {
+            0 | 1 => Category::Moves,
+            2 => Category::Capture,
+            _ => Category::Mate,
+        }
+    }
+
+    /// What a kids page asks, in words a grown-up can read aloud.
+    pub fn prompt(self) -> &'static str {
+        match self {
+            Category::Moves => "WHICH PIECE CAN REACH THE STAR?",
+            Category::Capture => "TAKE A BLACK PIECE!",
+            Category::Mate => "CHECKMATE IN ONE MOVE!",
+            _ => "",
+        }
+    }
+
+    /// The ratings puzzles of this kind are picked between.
+    fn ratings(self) -> (u32, u32) {
+        if self.is_kids() {
+            (KIDS_RATING_MIN, KIDS_RATING_MAX)
+        } else {
+            (RATING_MIN, RATING_MAX)
         }
     }
 
@@ -37,6 +85,7 @@ impl Category {
             "tactic" => Some(Category::Tactic),
             "endgame" => Some(Category::Endgame),
             "opening" => Some(Category::Opening),
+            "mate" => Some(Category::Mate),
             _ => None,
         }
     }
@@ -48,9 +97,14 @@ pub struct Puzzle {
     pub rating: u32,
     /// The motif, the endgame type, or the opening family.
     pub label: String,
-    pub fen: String,
-    /// The opponent's setup move, then the solution alternating sides.
+    pub start: Board,
+    /// The solution alternating sides, after the opponent's setup move when
+    /// `setup` is set.
     pub moves: Vec<Move>,
+    /// Lichess puzzles open with the opponent's move; lessons do not.
+    pub setup: bool,
+    /// The square a lesson marks with a star.
+    pub goal: Option<Square>,
 }
 
 /// Every puzzle in the set; lines that do not parse are skipped.
@@ -63,10 +117,9 @@ fn parse_puzzle(line: &str) -> Option<Puzzle> {
     let category = Category::parse(f.next()?)?;
     let rating = f.next()?.parse().ok()?;
     let label = f.next()?.to_string();
-    let fen = f.next()?.to_string();
+    let start = Board::from_fen(f.next()?)?;
     let moves: Vec<Move> = f.next()?.split_whitespace().map(Move::parse).collect::<Option<_>>()?;
-    Board::from_fen(&fen)?;
-    (moves.len() >= 2).then_some(Puzzle { category, rating, label, fen, moves })
+    (moves.len() >= 2).then_some(Puzzle { category, rating, label, start, moves, setup: true, goal: None })
 }
 
 /// A square, 0 = a1 through 63 = h8.
@@ -207,6 +260,9 @@ pub enum Tap {
 pub const RATING_STEP: u32 = 40;
 pub const RATING_MIN: u32 = 1400;
 pub const RATING_MAX: u32 = 2300;
+/// Kids' checkmates are picked between these, starting at the bottom.
+pub const KIDS_RATING_MIN: u32 = 400;
+pub const KIDS_RATING_MAX: u32 = 1000;
 
 /// One puzzle in play, and the player's place in it.
 pub struct Trainer {
@@ -232,11 +288,12 @@ pub struct Trainer {
 impl Trainer {
     pub fn new(category: Category, target: u32, seed: u32) -> Option<Trainer> {
         let all = puzzles();
-        let first = pick(&all, category, target, seed)?.clone();
+        let (lo, hi) = category.ratings();
+        let first = deal(&all, category, target, seed)?;
         let mut t = Trainer {
             category,
-            target: target.clamp(RATING_MIN, RATING_MAX),
-            board: Board::from_fen(&first.fen)?,
+            target: target.clamp(lo, hi),
+            board: first.start.clone(),
             puzzle: first,
             ply: 0,
             selected: None,
@@ -253,29 +310,60 @@ impl Trainer {
         Some(t)
     }
 
+    /// The trainer kids mode opens: its own kinds, its own easy ratings.
+    pub fn kids(category: Category, seed: u32) -> Option<Trainer> {
+        Trainer::new(category, KIDS_RATING_MIN, seed)
+    }
+
+    pub fn is_kids(&self) -> bool {
+        self.category.is_kids()
+    }
+
     /// Set up the current puzzle and play the opponent's setup move.
     fn start(&mut self) {
-        self.board = Board::from_fen(&self.puzzle.fen).expect("puzzles parse at load");
-        let setup = self.puzzle.moves[0];
-        self.board.apply(setup);
-        self.last = Some(setup);
-        self.ply = 1;
+        self.board = self.puzzle.start.clone();
+        self.last = None;
+        self.ply = 0;
+        if self.puzzle.setup {
+            let setup = self.puzzle.moves[0];
+            self.board.apply(setup);
+            self.last = Some(setup);
+            self.ply = 1;
+        }
         self.flipped = !self.board.white_to_move;
         self.selected = None;
         self.missed = false;
         self.hint = false;
         self.solved = false;
-        self.status = format!("{} TO MOVE", if self.board.white_to_move { "WHITE" } else { "BLACK" });
+        self.status = if self.is_kids() {
+            "TAP A PIECE, THEN WHERE IT GOES".into()
+        } else {
+            format!("{} TO MOVE", if self.board.white_to_move { "WHITE" } else { "BLACK" })
+        };
     }
 
-    /// Deal the next puzzle in `category`, near the target rating.
+    /// Deal the next puzzle in `category`, near the target rating. Moving
+    /// between the grown-up kinds and the kids' kinds re-seats the target in
+    /// the new range.
     pub fn next(&mut self, category: Category) {
+        if category.is_kids() != self.category.is_kids() {
+            self.target = category.ratings().0;
+        }
         self.category = category;
         self.seed = self.seed.wrapping_mul(1664525).wrapping_add(1013904223);
-        if let Some(p) = pick(&self.all, category, self.target, self.seed) {
-            self.puzzle = p.clone();
+        if let Some(p) = deal(&self.all, category, self.target, self.seed) {
+            self.puzzle = p;
         }
         self.start();
+    }
+
+    /// Lower the target after a miss, once per puzzle.
+    fn miss(&mut self) {
+        if !self.missed {
+            self.missed = true;
+            let (lo, _) = self.category.ratings();
+            self.target = self.target.saturating_sub(RATING_STEP).max(lo);
+        }
     }
 
     /// The move the solver should play now.
@@ -287,10 +375,7 @@ impl Trainer {
     /// missed for the rating.
     pub fn show_hint(&mut self) {
         if self.expected().is_some() {
-            if !self.missed {
-                self.missed = true;
-                self.target = self.target.saturating_sub(RATING_STEP).max(RATING_MIN);
-            }
+            self.miss();
             self.hint = true;
             self.selected = None;
             self.status = "MOVE THE MARKED PIECE".into();
@@ -328,11 +413,8 @@ impl Trainer {
                         Tap::Right
                     }
                 } else {
-                    if !self.missed {
-                        self.missed = true;
-                        self.target = self.target.saturating_sub(RATING_STEP).max(RATING_MIN);
-                    }
-                    self.status = "NOT THIS ONE. TRY AGAIN".into();
+                    self.miss();
+                    self.status = if self.is_kids() { "NOT THAT ONE. TRY AGAIN!" } else { "NOT THIS ONE. TRY AGAIN" }.into();
                     Tap::Wrong
                 }
             }
@@ -351,12 +433,25 @@ impl Trainer {
 
     fn finish(&mut self) {
         self.solved = true;
-        if self.missed {
-            self.status = "SOLVED. TAP NEXT".into();
-        } else {
-            self.target = (self.target + RATING_STEP).min(RATING_MAX);
-            self.status = "SOLVED CLEANLY. TAP NEXT".into();
+        if !self.missed {
+            self.target = (self.target + RATING_STEP).min(self.category.ratings().1);
         }
+        self.status = match (self.is_kids(), self.missed) {
+            (true, false) => "YES! GREAT MOVE!",
+            (true, true) => "YES! YOU DID IT!",
+            (false, false) => "SOLVED CLEANLY. TAP NEXT",
+            (false, true) => "SOLVED. TAP NEXT",
+        }
+        .into();
+    }
+}
+
+/// The next puzzle of `category`: a fresh lesson for the kids' moves and
+/// captures, a pick from the bundled set for everything else.
+fn deal(all: &[Puzzle], category: Category, target: u32, seed: u32) -> Option<Puzzle> {
+    match category {
+        Category::Moves | Category::Capture => Some(lesson::generate(category, seed)),
+        _ => pick(all, category, target, seed).cloned(),
     }
 }
 
@@ -378,7 +473,7 @@ mod tests {
     fn every_bundled_puzzle_parses_and_each_kind_has_plenty() {
         let all = puzzles();
         assert_eq!(all.len(), PUZZLES.lines().count(), "a line failed to parse");
-        for c in Category::ALL {
+        for c in Category::ALL.into_iter().chain([Category::Mate]) {
             assert!(all.iter().filter(|p| p.category == c).count() >= 300, "{c:?}");
         }
     }
@@ -386,9 +481,9 @@ mod tests {
     #[test]
     fn every_solution_moves_its_own_pieces() {
         for p in puzzles() {
-            let mut b = Board::from_fen(&p.fen).unwrap();
+            let mut b = p.start.clone();
             for m in &p.moves {
-                assert!(b.is_own(m.from), "{} plays {m:?} from a square it does not own", p.fen);
+                assert!(b.is_own(m.from), "{p:?} plays {m:?} from a square it does not own");
                 b.apply(*m);
             }
         }
