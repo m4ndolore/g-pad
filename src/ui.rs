@@ -8,6 +8,7 @@ use crate::memory::MemoryStore;
 use crate::oracle::ContextSnapshot;
 use crate::script;
 use crate::surface::{Surface, BLACK, WHITE};
+use std::sync::atomic::{AtomicU16, Ordering};
 
 pub const UI_FONT_TTF: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 pub const PANEL_W: usize = SCREEN_W * 50 / 100;
@@ -960,6 +961,56 @@ pub fn draw_corner(surf: &mut Surface) {
     for i in 0..3 {
         rule(surf, x, 29 + i * 10, CORNER_BAR_W, CORNER_BAR_H);
     }
+    draw_battery(surf);
+}
+
+/// The battery the corner shows: percent in the low byte, 0x100 while
+/// charging, 0x200 once a reading exists. Set by the loop's minute poll, so
+/// painting the corner never touches sysfs.
+static BATTERY: AtomicU16 = AtomicU16::new(0);
+const BATT_X: usize = (CORNER - CORNER_BAR_W) / 2;
+const BATT_Y: usize = 62;
+const BATT_H: usize = 12;
+/// What a battery repaint covers: the icon, its nub, and the charging plus.
+pub const BATTERY_RECT: (usize, usize, usize, usize) = (BATT_X, BATT_Y - 2, 50, BATT_H + 4);
+
+/// Record a reading. True when the corner would look different: the fill
+/// moved a tenth, or charging started or stopped.
+pub fn set_battery(pct: u8, charging: bool) -> bool {
+    let v = 0x200 | (u16::from(charging) << 8) | u16::from(pct.min(100));
+    let old = BATTERY.swap(v, Ordering::Relaxed);
+    let look = |v: u16| (battery_fill(v as u8), v & 0x100 != 0);
+    old & 0x200 == 0 || look(old) != look(v)
+}
+
+/// The last reading, if any.
+pub fn battery() -> Option<(u8, bool)> {
+    let v = BATTERY.load(Ordering::Relaxed);
+    (v & 0x200 != 0).then_some((v as u8, v & 0x100 != 0))
+}
+
+/// Inner fill width in pixels, rounded to the nearest tenth of the bar.
+fn battery_fill(pct: u8) -> usize {
+    (usize::from(pct.min(100)) + 5) / 10 * (CORNER_BAR_W - 6) / 10
+}
+
+/// The corner's battery: an outline with a nub, filled by tenths, and a plus
+/// beside it while charging. Draws nothing before the first reading.
+pub fn draw_battery(surf: &mut Surface) {
+    let (rx, ry, rw, rh) = BATTERY_RECT;
+    surf.fill_rect(rx, ry, rw, rh, WHITE);
+    let Some((pct, charging)) = battery() else { return };
+    let (x, y, w) = (BATT_X, BATT_Y, CORNER_BAR_W);
+    rule(surf, x, y, w, 2);
+    rule(surf, x, y + BATT_H - 2, w, 2);
+    rule(surf, x, y, 2, BATT_H);
+    rule(surf, x + w - 2, y, 2, BATT_H);
+    rule(surf, x + w, y + 3, 3, BATT_H - 6);
+    rule(surf, x + 3, y + 3, battery_fill(pct), BATT_H - 6);
+    if charging {
+        rule(surf, x + w + 7, y + 5, 8, 2);
+        rule(surf, x + w + 10, y + 2, 2, 8);
+    }
 }
 
 pub fn corner_hit(x: i32, y: i32) -> bool {
@@ -1048,6 +1099,15 @@ pub fn draw_page_banner(surf: &mut Surface, font: &FontRef, current: usize, tota
     let saved = surf.copy_rect(x, y, BANNER_W, BANNER_H);
     surf.fill_rect(x, y, BANNER_W, BANNER_H, WHITE);
     render_text(surf, font, &format!("PAGE {current} / {total}"), LABEL_PX, x + 16, y + 12, BLACK, SCREEN_W);
+    saved
+}
+
+/// The flip banner's chip with any short text, such as a battery warning.
+pub fn draw_text_banner(surf: &mut Surface, font: &FontRef, label: &str) -> Vec<u8> {
+    let (x, y) = banner_origin();
+    let saved = surf.copy_rect(x, y, BANNER_W, BANNER_H);
+    surf.fill_rect(x, y, BANNER_W, BANNER_H, WHITE);
+    render_text(surf, font, label, LABEL_PX, x + 16, y + 12, BLACK, SCREEN_W);
     saved
 }
 
