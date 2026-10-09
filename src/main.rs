@@ -883,6 +883,11 @@ fn run() -> std::io::Result<()> {
     let mut sleep_requested = false;
     // The last pen, touch, or button input; AUTO-SLEEP counts from here.
     let mut last_input = Instant::now();
+    // The corner battery: polled once a minute, repainted only when its look
+    // changes, and a warning chip once per level while discharging.
+    let mut battery_at = Instant::now();
+    let mut battery_dirty = false;
+    let mut battery_warned: u8 = 101;
     let mut queued_gestures: Vec<touch::Gesture> = Vec::new();
     let mut fallback_touch: Option<((i32, i32), (i32, i32))> = None;
     let mut control_pen_latched = false;
@@ -1235,6 +1240,32 @@ fn run() -> std::io::Result<()> {
             banner_until = None;
         }
 
+        // ---- battery: corner icon and low warnings ----
+        if Instant::now() >= battery_at {
+            battery_at = Instant::now() + Duration::from_secs(60);
+            if let Some((pct, charging)) = power::battery() {
+                battery_dirty |= ui::set_battery(pct, charging);
+                let quiet = matches!(state, State::Listening { .. })
+                    && controls_saved.is_none() && banner_saved.is_none();
+                if charging {
+                    battery_warned = 101;
+                } else if let Some(level) = power::battery_warning(pct, battery_warned).filter(|_| quiet) {
+                    eprintln!("g-pad: battery {pct}%, warning at {level}%");
+                    battery_warned = level;
+                    banner_saved = Some(ui::draw_text_banner(&mut surf, &ui_font, &format!("BATTERY {pct}%")));
+                    banner_until = Some(Instant::now() + Duration::from_secs(6));
+                    let (bx, by) = ui::banner_origin();
+                    disp.update(bx as i32, by as i32, ui::BANNER_W as i32, ui::BANNER_H as i32, false);
+                }
+            }
+        }
+        if battery_dirty && matches!(state, State::Listening { .. }) && controls_saved.is_none() {
+            battery_dirty = false;
+            ui::draw_battery(&mut surf);
+            let (x, y, w, h) = ui::BATTERY_RECT;
+            disp.update(x as i32, y as i32, w as i32, h as i32, false);
+        }
+
         // ---- power button: sleep page, suspend, restore on wake ----
         if let Some(ref mut p) = power_dev {
             let pressed = p.drain_pressed();
@@ -1319,6 +1350,7 @@ fn run() -> std::io::Result<()> {
                 p.drain_pressed();
                 power_grace = Instant::now() + Duration::from_secs(3);
                 last_input = Instant::now();
+                battery_at = Instant::now();
                 // The radio was healed above; a WI-FI section left open
                 // through the sleep shows the connection as it is now.
                 if let State::System { page, .. } = &mut state {
