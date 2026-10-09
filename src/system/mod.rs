@@ -80,6 +80,7 @@ pub enum Act {
     /// One key of the join sheet's keyboard.
     Key(keyboard::Key),
     Sleep,
+    StepAutoSleep(i8),
     Leave,
     Reboot,
     PowerOff,
@@ -210,6 +211,8 @@ impl Arm {
 pub const PALM_MS: [u64; 6] = [0, 250, 500, 750, 1000, 1500];
 pub const IDLE_MS: [u64; 4] = [1500, 2800, 4000, 6000];
 pub const DWELL_MS: [u64; 4] = [0, 3000, 5000, 8000];
+/// Auto-sleep minutes; 0 is NEVER.
+pub const SLEEP_MIN: [u32; 6] = [0, 5, 10, 15, 30, 60];
 pub const MAX_TOKENS: [u32; 5] = [800, 1200, 2000, 4000, 8000];
 pub const REASONING: [&str; 4] = ["", "low", "medium", "high"];
 
