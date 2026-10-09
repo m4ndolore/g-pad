@@ -116,7 +116,7 @@ pub fn draw(surf: &mut Surface, font: &FontRef, page: &mut Page, view: &View, pr
         Section::Learn => learn(surf, font, &mut rows, view, prefs),
         Section::Wifi => wifi_section(surf, font, &mut rows, &mut page.wifi, page.join.as_ref()),
         Section::Device => device_section(surf, font, &mut rows, &view.facts),
-        Section::Power => power(surf, font, &mut rows),
+        Section::Power => power(surf, font, &mut rows, prefs),
     }
     if let Some(notice) = &page.notice {
         full_text(surf, font, notice, LABEL_PX, PAD, NOTICE_Y as usize, BLACK);
@@ -479,8 +479,13 @@ fn device_section(surf: &mut Surface, font: &FontRef, rows: &mut Rows, facts: &d
     rows.row(surf, font, "CORPUS", "WHAT THE NEXT REQUEST CARRIES", false, Some(Act::Corpus));
 }
 
-fn power(surf: &mut Surface, font: &FontRef, rows: &mut Rows) {
+fn power(surf: &mut Surface, font: &FontRef, rows: &mut Rows, prefs: Preferences) {
     rows.row(surf, font, "SLEEP", "", false, Some(Act::Sleep));
+    let after = match prefs.sleep_after_min {
+        0 => "NEVER".to_string(),
+        m => format!("{m} MIN"),
+    };
+    rows.stepper(surf, font, "AUTO-SLEEP AFTER", &after, Act::StepAutoSleep);
     rows.row(surf, font, "LEAVE TO STOCK UI", "OR HOLD FIVE FINGERS", false, Some(Act::Leave));
     rows.armed_row(surf, font, "REBOOT", Act::Reboot);
     rows.armed_row(surf, font, "POWER OFF", Act::PowerOff);
@@ -575,6 +580,8 @@ mod tests {
         assert!(power.hits.region(Act::Reboot).is_some());
         assert!(power.hits.region(Act::PowerOff).is_some());
         assert!(power.hits.region(Act::Sleep).is_some());
+        assert!(power.hits.region(Act::StepAutoSleep(1)).is_some());
+        assert!(power.hits.region(Act::StepAutoSleep(-1)).is_some());
         assert!(power.hits.region(Act::Leave).is_some());
     }
 
