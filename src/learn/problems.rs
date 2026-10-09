@@ -36,7 +36,154 @@ pub enum Kind {
     HundredWindow { center: u32 },
     /// Two numbers with an empty box between: the child writes <, =, or >.
     Compare { left: u32, right: u32 },
+    /// Chained number bonds with several blanks, filled one at a time in an
+    /// order where each blank is the only unknown left in some bond.
+    BondChain(Chain),
+    /// The make-ten strategy for adding: `a + b` with a bond under `b`
+    /// splitting it into `10 - a` and the rest. The child writes the sum.
+    BridgeTen { a: u32, b: u32 },
+    /// A comparison bar model: a long bar over a short one, the gap
+    /// bracketed. The child writes how many more the long bar has.
+    CompareBars { big: u32, small: u32 },
+    /// Skip counting: four terms of `start, start + step, …` and a box for
+    /// the fifth.
+    SkipCount { start: u32, step: u32 },
 }
+
+/// Number bonds linked into a chain: a part of one bond is the whole of the
+/// next. `order` lists the blank circles in the order they can be solved, so
+/// each is the only unknown in some bond once the ones before it are filled;
+/// `step` is the blank the child is on. Earlier blanks print as solved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Chain {
+    pub values: Vec<u32>,
+    /// Each bond as (whole, [part, part]), indices into `values`; a whole
+    /// always comes before its parts.
+    pub bonds: Vec<(usize, [usize; 2])>,
+    /// Each circle's place: its row from the top, and x in thousandths of the
+    /// page width.
+    pub at: Vec<(u8, u16)>,
+    pub order: Vec<usize>,
+    pub step: usize,
+}
+
+impl Chain {
+    /// The circle being filled now.
+    pub fn blank(&self) -> usize {
+        self.order[self.step]
+    }
+
+    pub fn is_solved(&self, i: usize) -> bool {
+        self.order[..self.step].contains(&i)
+    }
+
+    /// Move to the next blank; false when the one just filled was the last.
+    pub fn advance(&mut self) -> bool {
+        if self.step + 1 < self.order.len() {
+            self.step += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The order `blanks` can be solved in, bond by bond, with `true` when
+    /// some step leans on an earlier answer. None when some blank is never
+    /// the only unknown in a bond.
+    fn solve_order(bonds: &[(usize, [usize; 2])], blanks: &[usize]) -> Option<(Vec<usize>, bool)> {
+        let mut unknown: Vec<usize> = blanks.to_vec();
+        let mut order: Vec<usize> = Vec::new();
+        let mut linked = false;
+        while !unknown.is_empty() {
+            let (next, bond) = bonds.iter().find_map(|&(w, [a, b])| {
+                let open: Vec<usize> = [w, a, b].into_iter().filter(|i| unknown.contains(i)).collect();
+                (open.len() == 1).then(|| (open[0], [w, a, b]))
+            })?;
+            linked |= bond.iter().any(|i| order.contains(i));
+            unknown.retain(|&i| i != next);
+            order.push(next);
+        }
+        Some((order, linked))
+    }
+}
+
+type Shape = (&'static [(u8, u16)], &'static [(usize, [usize; 2])]);
+
+/// Chain shapes: circle places and bonds, drawn for a right-hand split and
+/// mirrored for a left-hand one. Splits go inward so circles stay on the page.
+const CHAIN_TWO: Shape = (
+    &[(0, 500), (1, 280), (1, 720), (2, 600), (2, 840)],
+    &[(0, [1, 2]), (2, [3, 4])],
+);
+const CHAIN_TREE: Shape = (
+    &[(0, 500), (1, 280), (1, 720), (2, 160), (2, 400), (2, 600), (2, 840)],
+    &[(0, [1, 2]), (1, [3, 4]), (2, [5, 6])],
+);
+const CHAIN_LADDER: Shape = (
+    &[(0, 500), (1, 280), (1, 720), (2, 600), (2, 840), (3, 480), (3, 720)],
+    &[(0, [1, 2]), (2, [3, 4]), (3, [5, 6])],
+);
+/// Four bonds for four blanks: n bonds are n equations, so a chain never
+/// has more solvable blanks than bonds.
+const CHAIN_TREE_PLUS: Shape = (
+    &[(0, 500), (1, 280), (1, 720), (2, 160), (2, 400), (2, 600), (2, 840), (3, 300), (3, 500)],
+    &[(0, [1, 2]), (1, [3, 4]), (2, [5, 6]), (4, [7, 8])],
+);
+const CHAIN_LADDER_PLUS: Shape = (
+    &[(0, 500), (1, 280), (1, 720), (2, 600), (2, 840), (3, 480), (3, 720), (2, 160), (2, 400)],
+    &[(0, [1, 2]), (1, [7, 8]), (2, [3, 4]), (3, [5, 6])],
+);
+
+/// A chain sized by level: two bonds and two blanks to 10, then three bonds
+/// and three blanks to 20, then four of each to 50.
+fn chain(level: u8, rng: &mut Rng) -> Chain {
+    let either = |rng: &mut Rng, a: Shape, b: Shape| if rng.range(0, 1) == 0 { a } else { b };
+    let (shape, blanks, max_whole) = match level {
+        0..=2 => (CHAIN_TWO, 2, 10),
+        3 => (either(rng, CHAIN_TREE, CHAIN_LADDER), 3, 20),
+        _ => (either(rng, CHAIN_TREE_PLUS, CHAIN_LADDER_PLUS), 4, 50),
+    };
+    let (places, bonds) = shape;
+    let mirror = rng.range(0, 1) == 1;
+    let at: Vec<(u8, u16)> = places.iter().map(|&(r, x)| (r, if mirror { 1000 - x } else { x })).collect();
+    let n = places.len();
+
+    // The least each circle can hold: 1 for a leaf, the sum of its parts'
+    // least for a circle that splits, so every circle gets a number.
+    let mut least = vec![1u32; n];
+    for &(w, [a, b]) in bonds.iter().rev() {
+        least[w] = least[a] + least[b];
+    }
+    let mut values = vec![0u32; n];
+    values[0] = rng.range(least[0].max(4), max_whole);
+    for &(w, [a, b]) in bonds {
+        values[a] = rng.range(least[a], values[w] - least[b]);
+        values[b] = values[w] - values[a];
+    }
+
+    // Blanks: random picks until one set solves in order and at least one
+    // step needs an earlier answer, which is what makes it a chain.
+    for _ in 0..500 {
+        let mut set: Vec<usize> = Vec::new();
+        while set.len() < blanks {
+            let i = rng.range(0, n as u32 - 1) as usize;
+            if !set.contains(&i) {
+                set.push(i);
+            }
+        }
+        if let Some((order, true)) = Chain::solve_order(bonds, &set) {
+            return Chain { values, bonds: bonds.to_vec(), at, order, step: 0 };
+        }
+    }
+    // One part of each bond, solved bottom-up, always chains; the random
+    // search above finds a set long before this.
+    let set: Vec<usize> = bonds.iter().take(blanks).map(|&(_, [a, _])| a).collect();
+    let (order, _) = Chain::solve_order(bonds, &set).expect("one part per bond solves");
+    Chain { values, bonds: bonds.to_vec(), at, order, step: 0 }
+}
+
+/// Terms shown before the box on a skip-counting row.
+pub const SKIP_SHOWN: u32 = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blank {
@@ -102,6 +249,10 @@ impl Problem {
                 std::cmp::Ordering::Equal => "=".to_string(),
                 std::cmp::Ordering::Greater => ">".to_string(),
             },
+            Kind::BondChain(c) => c.values[c.blank()].to_string(),
+            Kind::BridgeTen { a, b } => (a + b).to_string(),
+            Kind::CompareBars { big, small } => (big - small).to_string(),
+            Kind::SkipCount { start, step } => (start + SKIP_SHOWN * step).to_string(),
         }
     }
 
@@ -165,6 +316,25 @@ impl Problem {
             ),
             Kind::Compare { left, right } => format!(
                 "the numbers {left} and {right} with an empty box between them; the child wrote a comparison symbol, one of < or = or > (correct answer {expected})"
+            ),
+            Kind::BondChain(c) => {
+                let links: Vec<String> = c.bonds.iter()
+                    .map(|&(w, [a, b])| format!("{} splits into {} and {}", c.values[w], c.values[a], c.values[b]))
+                    .collect();
+                format!(
+                    "chained number bonds ({}), filled one empty circle at a time; the child wrote the number for blank {} of {} (correct answer {expected})",
+                    links.join(", "), c.step + 1, c.order.len()
+                )
+            }
+            Kind::BridgeTen { a, b } => format!(
+                "the sum {a} + {b} = ___ with {b} split into {} and {} to make ten; the child wrote the sum (correct answer {expected})",
+                10 - a, b - (10 - a)
+            ),
+            Kind::CompareBars { big, small } => format!(
+                "a comparison bar model: a bar of {big} over a bar of {small}; the child wrote how many more the longer bar has (correct answer {expected})"
+            ),
+            Kind::SkipCount { start, step } => format!(
+                "skip counting by {step}s from {start}, four numbers shown; the child wrote the next number (correct answer {expected})"
             ),
         }
     }
@@ -255,13 +425,17 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
         (Topic::Skill(a), _) => a.alone(),
         (Topic::Writing, _) => &[Trace],
         (Topic::Math, 1) => &[Count, Bond, Compare],
-        (Topic::Math, 2) => &[Bond, MakeTen, Equation, Compare, NumberLine, Bar],
-        (Topic::Math, 3) => &[Bond, Equation, NumberLine, Bar, MakeTen, PlaceValue],
-        (Topic::Math, _) => &[Array, Equation, Share, PlaceValue, HundredWindow, Bar],
+        (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, Compare, NumberLine, Bar, BridgeTen],
+        (Topic::Math, 3) => &[Bond, Equation, BondChain, NumberLine, Bar, BridgeTen, MakeTen, PlaceValue,
+            CompareBars, SkipCount],
+        (Topic::Math, _) => &[Array, Equation, BondChain, Share, PlaceValue, HundredWindow, Bar,
+            CompareBars, SkipCount],
         (Topic::Mix, 1) => &[Count, Bond, Trace, Compare],
-        (Topic::Mix, 2) => &[Bond, MakeTen, Trace, Equation, Compare, NumberLine, Bar],
-        (Topic::Mix, 3) => &[Bond, Equation, Trace, NumberLine, Bar, PlaceValue],
-        (Topic::Mix, _) => &[Array, Equation, Trace, PlaceValue, HundredWindow, Bar],
+        (Topic::Mix, 2) => &[Bond, MakeTen, Trace, Equation, BondChain, Compare, NumberLine, Bar, BridgeTen],
+        (Topic::Mix, 3) => &[Bond, Equation, Trace, BondChain, NumberLine, Bar, BridgeTen, PlaceValue,
+            CompareBars, SkipCount],
+        (Topic::Mix, _) => &[Array, Equation, Trace, BondChain, PlaceValue, HundredWindow, Bar,
+            CompareBars, SkipCount],
     }
 }
 
@@ -279,6 +453,10 @@ pub enum Activity {
     PlaceValue,
     HundredWindow,
     Compare,
+    BondChain,
+    BridgeTen,
+    CompareBars,
+    SkipCount,
 }
 
 /// Every math activity, in the skills picker's box order. `Trace` stays out:
@@ -286,12 +464,16 @@ pub enum Activity {
 pub const MATH_SKILLS: &[Activity] = &[
     Activity::Count,
     Activity::Bond,
+    Activity::BondChain,
     Activity::MakeTen,
+    Activity::BridgeTen,
     Activity::Equation,
     Activity::Array,
     Activity::Share,
     Activity::Bar,
+    Activity::CompareBars,
     Activity::NumberLine,
+    Activity::SkipCount,
     Activity::PlaceValue,
     Activity::HundredWindow,
     Activity::Compare,
@@ -314,6 +496,10 @@ impl Activity {
             PlaceValue => &[PlaceValue],
             HundredWindow => &[HundredWindow],
             Compare => &[Compare],
+            BondChain => &[BondChain],
+            BridgeTen => &[BridgeTen],
+            CompareBars => &[CompareBars],
+            SkipCount => &[SkipCount],
         }
     }
 
@@ -334,6 +520,10 @@ impl Activity {
             PlaceValue => "TENS & ONES",
             HundredWindow => "HUNDRED CHART",
             Compare => "BIGGER OR SMALLER",
+            BondChain => "BOND CHAINS",
+            BridgeTen => "ADD BY MAKING TEN",
+            CompareBars => "HOW MANY MORE",
+            SkipCount => "SKIP COUNTING",
         }
     }
 }
@@ -362,8 +552,8 @@ fn per_page(act: Activity, rng: &mut Rng) -> usize {
     use Activity::*;
     match act {
         Equation | Compare => rng.range(3, 4) as usize,
-        PlaceValue => rng.range(2, 3) as usize,
-        NumberLine | Bar | HundredWindow => 2,
+        PlaceValue | SkipCount => rng.range(2, 3) as usize,
+        NumberLine | Bar | HundredWindow | CompareBars => 2,
         _ => 1,
     }
 }
@@ -378,9 +568,13 @@ fn page_prompt(act: Activity, n: usize) -> &'static str {
         }
         Compare => "WRITE <, =, OR >",
         NumberLine => "COUNT THE HOPS",
+        BondChain => "FILL THE CIRCLES, ONE AT A TIME",
         Bar | Bond => {
             if many { "WRITE THE MISSING NUMBERS" } else { "WRITE THE MISSING NUMBER" }
         }
+        BridgeTen => "MAKE TEN, THEN ADD",
+        CompareBars => "HOW MANY MORE?",
+        SkipCount => "WHAT COMES NEXT?",
         PlaceValue => {
             if many { "WRITE THE NUMBERS" } else { "WRITE THE NUMBER" }
         }
@@ -537,6 +731,34 @@ fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
             };
             Problem { kind: Kind::Compare { left, right }, prompt: "WRITE <, =, OR >" }
         }
+        Activity::BondChain => Problem {
+            kind: Kind::BondChain(chain(level, rng)),
+            prompt: "FILL THE CIRCLES, ONE AT A TIME",
+        },
+        Activity::BridgeTen => {
+            // `b` must be bigger than what `a` needs to reach ten, so the
+            // sum crosses ten and the bond has a nonzero rest.
+            let a = if level <= 2 { rng.range(8, 9) } else { rng.range(6, 9) };
+            let b = rng.range(11 - a, 9);
+            Problem { kind: Kind::BridgeTen { a, b }, prompt: "MAKE TEN, THEN ADD" }
+        }
+        Activity::CompareBars => {
+            let top = if level <= 2 { 10 } else { 20 };
+            let big = rng.range(3, top);
+            let small = rng.range(1, big - 1);
+            Problem { kind: Kind::CompareBars { big, small }, prompt: "HOW MANY MORE?" }
+        }
+        Activity::SkipCount => {
+            let step = if level <= 3 {
+                [2, 5, 10][rng.range(0, 2) as usize]
+            } else {
+                [2, 3, 4, 5, 10][rng.range(0, 4) as usize]
+            };
+            // Start on a multiple of the step, low enough that the answer
+            // stays under 100. A step above 19 would underflow this bound.
+            let k = rng.range(0, (99 / step - SKIP_SHOWN).min(6));
+            Problem { kind: Kind::SkipCount { start: k * step, step }, prompt: "WHAT COMES NEXT?" }
+        }
     }
 }
 
@@ -667,6 +889,10 @@ mod tests {
                             | (Kind::PlaceValue { .. }, Activity::PlaceValue)
                             | (Kind::HundredWindow { .. }, Activity::HundredWindow)
                             | (Kind::Compare { .. }, Activity::Compare)
+                            | (Kind::BondChain(_), Activity::BondChain)
+                            | (Kind::BridgeTen { .. }, Activity::BridgeTen)
+                            | (Kind::CompareBars { .. }, Activity::CompareBars)
+                            | (Kind::SkipCount { .. }, Activity::SkipCount)
                     );
                     assert!(same, "skill {act:?} at level {level} dealt {:?}", p.kind);
                 }
@@ -774,7 +1000,8 @@ mod tests {
                         "a page is one activity, like a worksheet");
                     let solo_only = matches!(set.items[0].kind,
                         Kind::Bond { .. } | Kind::TenFrame { .. } | Kind::Array { .. }
-                        | Kind::Share { .. } | Kind::Trace { .. });
+                        | Kind::Share { .. } | Kind::Trace { .. } | Kind::BondChain(_)
+                        | Kind::BridgeTen { .. });
                     if solo_only {
                         assert_eq!(set.items.len(), 1, "{:?} needs the whole page", set.items[0].kind);
                     } else {
@@ -783,6 +1010,90 @@ mod tests {
                     assert!(!set.prompt.is_empty());
                     assert_eq!(set.graded().expected(), set.items.last().unwrap().expected());
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn every_chain_bond_adds_up_and_its_blanks_solve_in_order() {
+        let mut rng = Rng::new(43);
+        for level in 1..=4u8 {
+            for rot in 0..60 {
+                let p = generate(level, Topic::Skill(Activity::BondChain), rot, &mut rng);
+                let Kind::BondChain(c) = p.kind else { panic!("{:?}", p.kind) };
+                for &(w, [a, b]) in &c.bonds {
+                    assert_eq!(c.values[a] + c.values[b], c.values[w], "a bond that does not add up");
+                }
+                assert!(c.values.iter().all(|&v| v >= 1), "a zero circle teaches nothing");
+                let (want, max) = match level { 1 | 2 => (2, 10), 3 => (3, 20), _ => (4, 50) };
+                assert_eq!(c.order.len(), want, "blanks at level {level}");
+                assert!(c.values[0] <= max);
+                // Replay the order: each blank is the only unknown in a bond
+                // when its turn comes, and some turn uses an earlier answer.
+                let mut open = c.order.clone();
+                let mut leaned = false;
+                for (k, &next) in c.order.iter().enumerate() {
+                    let bond = c.bonds.iter().find(|&&(w, [a, b])| {
+                        let left: Vec<_> = [w, a, b].into_iter().filter(|i| open.contains(i)).collect();
+                        left == [next]
+                    });
+                    let &(w, [a, b]) = bond.unwrap_or_else(|| panic!("blank {next} is not solvable at its turn in {c:?}"));
+                    leaned |= [w, a, b].iter().any(|i| c.order[..k].contains(i));
+                    open.retain(|&i| i != next);
+                }
+                assert!(leaned, "no step uses an earlier answer in {c:?}");
+                assert!(c.at.iter().all(|&(_, x)| (100..=900).contains(&x)), "circles stay on the page");
+            }
+        }
+    }
+
+    #[test]
+    fn a_chain_steps_through_its_blanks_then_stops() {
+        let mut c = Chain {
+            values: vec![9, 4, 5, 2, 3],
+            bonds: vec![(0, [1, 2]), (2, [3, 4])],
+            at: vec![(0, 500), (1, 280), (1, 720), (2, 600), (2, 840)],
+            order: vec![3, 2],
+            step: 0,
+        };
+        let p = Problem { kind: Kind::BondChain(c.clone()), prompt: "" };
+        assert_eq!(p.expected(), "2");
+        assert!(c.advance());
+        assert!(c.is_solved(3) && !c.is_solved(2));
+        assert_eq!(Problem { kind: Kind::BondChain(c.clone()), prompt: "" }.expected(), "5");
+        assert!(!c.advance(), "the last blank ends the chain");
+        assert_eq!(Chain::solve_order(&c.bonds, &[0, 1]), None, "a whole and its own part never solve alone");
+    }
+
+    #[test]
+    fn making_ten_always_crosses_ten() {
+        let mut rng = Rng::new(47);
+        for level in 1..=4 {
+            for rot in 0..40 {
+                let p = generate(level, Topic::Skill(Activity::BridgeTen), rot, &mut rng);
+                let Kind::BridgeTen { a, b } = p.kind else { panic!("{:?}", p.kind) };
+                assert!(b > 10 - a, "{a} + {b} does not cross ten");
+                assert!(a <= 9 && b <= 9, "both addends are single digits");
+                assert_eq!(p.expected(), (a + b).to_string());
+            }
+        }
+    }
+
+    #[test]
+    fn comparison_bars_and_skip_counts_stay_positive_and_under_a_hundred() {
+        let mut rng = Rng::new(53);
+        for level in 1..=4 {
+            for rot in 0..60 {
+                if let Kind::CompareBars { big, small } =
+                    generate(level, Topic::Skill(Activity::CompareBars), rot, &mut rng).kind
+                {
+                    assert!(small >= 1 && big > small);
+                    assert!(big <= if level <= 2 { 10 } else { 20 });
+                }
+                let p = generate(level, Topic::Skill(Activity::SkipCount), rot, &mut rng);
+                let Kind::SkipCount { start, step } = p.kind else { panic!("{:?}", p.kind) };
+                assert_eq!(start % step, 0, "counting starts on the step's own ladder");
+                assert!(start + SKIP_SHOWN * step < 100, "{start} by {step}s runs past 99");
             }
         }
     }

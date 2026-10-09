@@ -133,12 +133,29 @@ cargo build --release --features rm2
 | Tap with a bare finger | Nothing. A resting hand grows no chrome |
 | Two-finger tap, three-finger tap | Undo, redo |
 | Swipe in from the left edge | The drawer: HISTORY, AGENTS, VAULT, BRIEF |
-| Swipe down from the top, or tap the corner button | The control strip (Guided), or the SYSTEM page (Stealth) |
+| Tap the corner button | The tool menu: pen, eraser, or select; which pen; what size |
+| Swipe down from the top, or MORE CONTROLS in the tool menu | The control strip (Guided), or the SYSTEM page (Stealth) |
 | Hold five fingers | Leave; the stock UI comes back |
 | Power button | Sleep card; press again and you are exactly where you were |
 
 A palm resting on the sheet does not count as a finger, and touch is ignored for
 half a second whenever the marker is near the glass.
+
+The tool menu drops from the corner button, the way the stock tablet's tool
+bar does. TOOL picks what the tip does: PEN writes, ERASER erases, SELECT draws
+a lasso. PEN picks the pen: fineliner (one width), ballpoint (pressure widens
+it; the default), marker, pencil (graphite grain), or highlighter (a light band
+that stays under the ink it crosses). SIZE picks fine, medium, or bold. Each pen
+row shows a sample stroke at the chosen size. Picking a pen or a size keeps the
+menu open and switches the tip to PEN; a tap outside, the ×, or fifteen idle
+seconds close it.
+
+With SELECT, loop the pen around strokes to pick them up. A dashed box marks the
+selection: press inside it and drag to move the strokes, or tap DELETE above it
+to remove them. Press outside to start a new lasso; a finger tap clears the
+selection. A move or delete repaints your own strokes; printed text and the
+model's handwriting under them are not repainted, the same as the eraser. Kids
+mode leaves SELECT out of the menu.
 
 The control strip has eight cells: SEND (DISMISS while a reply is up), ERASE,
 NEW PAGE, HISTORY, KIDS ON/OFF, PEN/ERASER, SLEEP, SETTINGS. KIDS and the pen
