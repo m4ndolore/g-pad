@@ -100,26 +100,59 @@ letters genuinely touch the lines the child is told to reach.
 ## The menu
 
 A mark in MENU deals the picker: two labeled sections of tick boxes,
-**PRACTICE** (Math, Writing, Surprise Mix, Math Skills) and **PLAY** (Doodle
-Critter, Guessing Game, Story Time), then a **LEVEL** row — four numbered
-boxes, the current level filled solid. A mark in an entry deals that page at
-once, and the choice is *sticky*: a picked game deals itself again on every
-NEW, a picked topic narrows the practice rotation (math only, or tracing
+**PRACTICE** (Math, Math Skills, Writing, Surprise Mix) and **GAMES** (Chess,
+Doodle Critter, Guessing Game, Story Time), then a **LEVEL** row: four
+numbered boxes, the current level filled solid. A mark in an entry deals that
+page at once, and the choice is *sticky*: a picked game deals itself again on
+every NEW, a picked topic narrows the practice rotation (math only, or tracing
 only) until the menu says otherwise. Surprise Mix restores the default deck.
 A mark in a LEVEL box re-seats the adaptive ladder there and keeps the menu
 open, redrawn with the pick filled, so a topic can still be chosen.
 
 **Math Skills** opens a second picker listing every math activity by its own
-name — Count Dots, Number Bonds, Bond Chains, Make Ten, Add by Making Ten,
-Number Sentences, Times Tables, Sharing, Bar Models, How Many More, Number
-Line, Skip Counting, Tens & Ones, Hundred Chart, Bigger or Smaller. A mark latches that one skill: every page deals it (at the current
-level, still adapting) until the menu says otherwise — and like any named
-pick, a latched skill is never interrupted by earned play pages.
+name, grouped by strand:
 
-The mapping between box order and meaning lives in one place per page
-(`sheet::MENU_ITEMS` ↔ `Session::choose_menu`, `problems::MATH_SKILLS` ↔ the
-skills page), and the picker pages themselves have no DONE or NEW — a mark
-in an entry is the only thing they understand.
+| Strand | Skills |
+|---|---|
+| Counting & numbers | Count Dots, Bigger or Smaller, Tens & Ones, Hundred Chart, Skip Counting |
+| Adding & taking away | Number Bonds, Bond Chains, Make Ten, Add by Making Ten, Number Sentences, Number Line |
+| Bar models | Bar Models, How Many More |
+| Times & sharing | Times Tables, Sharing |
+
+A mark latches that one skill: every page deals it (at the current level,
+still adapting) until the menu says otherwise, and like any named pick, a
+latched skill is never interrupted by earned play pages. The skills page
+carries the footer's MENU box, so a child can go back without picking.
+
+One table per page holds the box order and its meaning: `learn::MENU` (each
+entry a label and a `Pick`) is what `sheet::draw_menu` draws and
+`Session::choose_menu` reads, and `problems::SKILL_GROUPS` does the same for
+the skills page. The menu has no DONE or NEW; a mark in an entry is the only
+thing it understands.
+
+## Chess
+
+**Chess** opens the chess board over the menu (`Page::Chess`). It is the
+same trainer as the grown-up CHESS PUZZLES in the corner menu, with kids'
+kinds and kids' words. Pieces move by tap, pen or finger: tap a piece, then
+its square.
+
+| Kind | What the child does | Where it comes from |
+|---|---|---|
+| MOVES | Three white pieces and a star; move the one piece that can reach it | Generated (`chess::lesson`), exactly one piece reaches the star |
+| CAPTURE | Two white pieces, three black; make the one capture there is | Generated, exactly one capture on the board |
+| CHECKMATE | Checkmate in one move | 300 Lichess puzzles rated 449–998, fewest pieces first, each with a single mating move |
+
+The board opens on the kind the child's level suits (level 1 MOVES, level 2
+CAPTURE, level 3 and up CHECKMATE) and keeps the child's kind across visits.
+The question is the page header in big letters; a solve reads YES! GREAT
+MOVE! and the next lesson deals itself after the same dwell as a Learn YES
+(`RIDDLE_LEARN_NEXT_MS`). HINT marks the piece to move. MENU returns to the
+Learn menu. Kids' results never move the grown-up trainer's rating.
+
+Lessons ignore check, and black never has a king in one; the white king is
+one of the pieces taught. A lesson teaches how one piece moves. `g-pad --render-chess [DIR]` renders
+every kind, grown-up and kids, as PNGs.
 
 ## The marking round trip
 

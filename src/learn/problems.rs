@@ -459,25 +459,32 @@ pub enum Activity {
     SkipCount,
 }
 
-/// Every math activity, in the skills picker's box order. `Trace` stays out:
-/// handwriting is already the WRITING topic.
-pub const MATH_SKILLS: &[Activity] = &[
-    Activity::Count,
-    Activity::Bond,
-    Activity::BondChain,
-    Activity::MakeTen,
-    Activity::BridgeTen,
-    Activity::Equation,
-    Activity::Array,
-    Activity::Share,
-    Activity::Bar,
-    Activity::CompareBars,
-    Activity::NumberLine,
-    Activity::SkipCount,
-    Activity::PlaceValue,
-    Activity::HundredWindow,
-    Activity::Compare,
+/// The skills picker's sections, each a strand of the curriculum, in box
+/// order. `Trace` stays out: handwriting is already the WRITING topic.
+pub const SKILL_GROUPS: &[(&str, &[Activity])] = &[
+    (
+        "COUNTING & NUMBERS",
+        &[Activity::Count, Activity::Compare, Activity::PlaceValue, Activity::HundredWindow, Activity::SkipCount],
+    ),
+    (
+        "ADDING & TAKING AWAY",
+        &[
+            Activity::Bond,
+            Activity::BondChain,
+            Activity::MakeTen,
+            Activity::BridgeTen,
+            Activity::Equation,
+            Activity::NumberLine,
+        ],
+    ),
+    ("BAR MODELS", &[Activity::Bar, Activity::CompareBars]),
+    ("TIMES & SHARING", &[Activity::Array, Activity::Share]),
 ];
+
+/// Every math activity, in the skills picker's box order.
+pub fn math_skills() -> Vec<Activity> {
+    SKILL_GROUPS.iter().flat_map(|(_, acts)| acts.iter().copied()).collect()
+}
 
 impl Activity {
     /// A rotation of just this activity, for the skills latch.
@@ -872,7 +879,7 @@ mod tests {
     #[test]
     fn a_skill_topic_deals_only_its_own_activity_at_every_level() {
         let mut rng = Rng::new(13);
-        for &act in MATH_SKILLS {
+        for act in math_skills() {
             for level in 1..=4 {
                 for rot in 0..6 {
                     let p = generate(level, Topic::Skill(act), rot, &mut rng);
@@ -902,11 +909,16 @@ mod tests {
 
     #[test]
     fn every_math_skill_has_a_short_readable_label() {
-        for &act in MATH_SKILLS {
+        for act in math_skills() {
             let label = act.label();
             assert!(!label.is_empty() && label.len() <= 18, "label {label:?} won't fit its box");
             assert!(!matches!(act, Activity::Trace), "writing is a topic, not a math skill");
         }
+        let skills = math_skills();
+        for (i, a) in skills.iter().enumerate() {
+            assert!(!skills[..i].contains(a), "{a:?} sits in two skill groups");
+        }
+        assert_eq!(skills.len(), 15, "every math activity has a box");
     }
 
     #[test]

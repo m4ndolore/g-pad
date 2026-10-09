@@ -1107,7 +1107,8 @@ pub enum MenuPick {
     Size(Size),
     /// The strip in Guided, the SYSTEM page in Stealth.
     More,
-    /// The chess trainer, over the page. Not in kids mode.
+    /// The chess trainer, over the page. Not in kids mode: kids open their
+    /// own board from the Learn menu.
     Chess,
     Close,
 }

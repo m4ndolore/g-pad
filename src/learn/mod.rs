@@ -13,6 +13,11 @@
 //! reverse Pictionary, a choose-your-own-adventure) — same pen, same marks,
 //! more giggling. `RIDDLE_LEARN_PLAY` = `earned` (default) | `always` |
 //! `never` sets the mix.
+//!
+//! The menu (`MENU`) is the one table of what kids mode offers: practice
+//! topics, the skills picker, chess, and the games. Chess is the one entry
+//! that leaves the sheet: it opens the chess board over the page (`Page::Chess`),
+//! and the board's MENU button comes back here.
 
 pub mod games;
 pub mod problems;
@@ -21,7 +26,6 @@ pub mod verdict;
 
 use ab_glyph::FontRef;
 
-use crate::fb::BBox;
 use crate::surface::Surface;
 
 pub use sheet::{HitMap, Target};
@@ -37,9 +41,62 @@ pub enum Page {
     /// The picker: every topic and game as a tick box. Dealt by a mark in
     /// the MENU footer box; a mark in a choice box deals the chosen page.
     Menu,
-    /// The skills picker: every math activity as its own tick box, reached
-    /// from the menu's MATH SKILLS entry. A mark latches that one skill.
+    /// The skills picker: every math activity as its own tick box, grouped
+    /// by strand, reached from the menu's MATH SKILLS entry. A mark latches
+    /// that one skill; the footer's MENU box goes back to the menu.
     Skills,
+    /// The chess board is up over the page. The board owns input until its
+    /// MENU button closes it; drawing this page draws the menu.
+    Chess,
+}
+
+/// What marking a named menu entry does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// Practice within a topic until the menu says otherwise.
+    Topic(problems::Topic),
+    /// Open the skills picker.
+    Skills,
+    /// Open the kids' chess board.
+    Chess,
+    /// Deal this game (by `games::Game::nth` index) on every NEW.
+    Game(usize),
+}
+
+/// The menu's named entries, section by section, in choice-index order; the
+/// LEVEL boxes follow them. `sheet::draw_menu` draws this table and
+/// `Session::choose_menu` reads it, so a box and its meaning cannot drift.
+pub const MENU: &[(&str, &[(&str, Pick)])] = &[
+    (
+        "PRACTICE",
+        &[
+            ("MATH", Pick::Topic(problems::Topic::Math)),
+            ("MATH SKILLS", Pick::Skills),
+            ("WRITING", Pick::Topic(problems::Topic::Writing)),
+            ("SURPRISE MIX", Pick::Topic(problems::Topic::Mix)),
+        ],
+    ),
+    (
+        "GAMES",
+        &[
+            ("CHESS", Pick::Chess),
+            ("DOODLE CRITTER", Pick::Game(0)),
+            ("GUESSING GAME", Pick::Game(1)),
+            ("STORY TIME", Pick::Game(2)),
+        ],
+    ),
+];
+
+/// The levels the menu's LEVEL row offers, after the named entries.
+pub const MENU_LEVELS: u8 = 4;
+
+fn menu_entries() -> impl Iterator<Item = &'static (&'static str, Pick)> {
+    MENU.iter().flat_map(|(_, items)| items.iter())
+}
+
+/// The choice index of a named menu entry.
+pub fn menu_index(pick: Pick) -> Option<usize> {
+    menu_entries().position(|&(_, p)| p == pick)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,7 +209,10 @@ impl Session {
                 sheet::draw(surf, ui_font, set, self.ladder.level, self.ladder.streak(), self.score)
             }
             Page::Play(g) => games::draw(surf, ui_font, g),
-            Page::Menu => sheet::draw_menu(surf, ui_font, self.ladder.level),
+            Page::Menu | Page::Chess => {
+                self.page = Page::Menu;
+                sheet::draw_menu(surf, ui_font, self.ladder.level)
+            }
             Page::Skills => sheet::draw_skills(surf, ui_font),
         };
     }
@@ -204,34 +264,40 @@ impl Session {
 
     /// The child ticked picker box `i`: act on what it names and deal the
     /// page that follows (call `draw` afterwards). False when no such box
-    /// exists. On the menu the indices mirror `sheet::MENU_ITEMS`, with the
-    /// four LEVEL boxes after them; a level pick re-seats the ladder and
-    /// stays on the menu so a topic can still be chosen. On the skills page
-    /// the indices mirror `problems::MATH_SKILLS`.
+    /// exists. On the menu the indices follow `MENU`, with the LEVEL boxes
+    /// after them; a level pick re-seats the ladder and stays on the menu so
+    /// a topic can still be chosen, and CHESS leaves `Page::Chess` up for the
+    /// caller to open the board. On the skills page the indices follow
+    /// `problems::math_skills()`.
     pub fn choose_menu(&mut self, i: usize) -> bool {
         self.focus = if self.page == Page::Skills {
-            match problems::MATH_SKILLS.get(i) {
+            match problems::math_skills().get(i) {
                 Some(&act) => Focus::Practice(problems::Topic::Skill(act)),
                 None => return false,
             }
         } else {
-            match i {
-                0 => Focus::Practice(problems::Topic::Math),
-                1 => Focus::Practice(problems::Topic::Writing),
-                2 => Focus::Practice(problems::Topic::Mix),
-                3 => {
+            match menu_entries().nth(i).map(|&(_, p)| p) {
+                Some(Pick::Topic(t)) => Focus::Practice(t),
+                Some(Pick::Game(g)) => Focus::Game(g),
+                Some(Pick::Skills) => {
                     self.page = Page::Skills;
                     return true;
                 }
-                4..=6 => Focus::Game(i - 4),
-                7..=10 => {
+                Some(Pick::Chess) => {
+                    self.page = Page::Chess;
+                    return true;
+                }
+                None => {
                     // A LEVEL box: re-seat the adaptive ladder there (it
                     // still walks up and down from the new rung) and stay
                     // on the menu, redrawn with the pick filled in.
-                    self.ladder = problems::Ladder::new((i - 6) as u8);
+                    let k = i - menu_entries().count();
+                    if k >= MENU_LEVELS as usize {
+                        return false;
+                    }
+                    self.ladder = problems::Ladder::new(k as u8 + 1);
                     return true;
                 }
-                _ => return false,
             }
         };
         // The picker never earns a treat: deal the pick itself, not a play page.
@@ -319,7 +385,7 @@ impl Session {
     pub fn needs_ink(&self) -> bool {
         !matches!(
             self.page,
-            Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills
+            Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills | Page::Chess
         )
     }
 
@@ -352,8 +418,9 @@ impl Session {
                 };
                 game.instruction(pending)
             }
-            // The picker pages have no DONE box; nothing is ever asked from them.
-            Page::Menu | Page::Skills => String::new(),
+            // The picker pages and the chess board have no DONE box; nothing
+            // is ever asked from them.
+            Page::Menu | Page::Skills | Page::Chess => String::new(),
         }
     }
 }
@@ -366,14 +433,7 @@ fn now_seed() -> u32 {
 }
 
 fn empty_hits() -> HitMap {
-    HitMap {
-        answer: BBox::empty(),
-        done: BBox::empty(),
-        new: BBox::empty(),
-        menu: BBox::empty(),
-        choices: Vec::new(),
-        blanks: Vec::new(),
-    }
+    HitMap::choices_only(Vec::new())
 }
 
 #[cfg(test)]
@@ -432,6 +492,18 @@ mod tests {
         assert!(matches!(s.page, Page::Practice(_)));
     }
 
+    fn pick(p: Pick) -> usize {
+        menu_index(p).expect("on the menu")
+    }
+
+    const MATH: Pick = Pick::Topic(problems::Topic::Math);
+    const WRITING: Pick = Pick::Topic(problems::Topic::Writing);
+    const MIX: Pick = Pick::Topic(problems::Topic::Mix);
+
+    fn level_box(level: u8) -> usize {
+        menu_entries().count() + level as usize - 1
+    }
+
     #[test]
     fn the_menu_latches_topics_and_games_on_demand() {
         let mut s = Session::start_at(1, 5);
@@ -440,7 +512,7 @@ mod tests {
         assert!(!s.needs_ink(), "the menu wants a mark, never ink");
         // Picking math deals math, and it sticks: no handwriting pages
         // sneak into the rotation.
-        assert!(s.choose_menu(0));
+        assert!(s.choose_menu(pick(MATH)));
         for _ in 0..6 {
             let Page::Practice(ref p) = s.page else { panic!("math focus must deal practice") };
             assert!(!p.items.iter().any(|q| matches!(q.kind, problems::Kind::Trace { .. })));
@@ -448,7 +520,7 @@ mod tests {
         }
         // Writing deals tracing, and only tracing.
         s.open_menu();
-        assert!(s.choose_menu(1));
+        assert!(s.choose_menu(pick(WRITING)));
         for _ in 0..3 {
             let Page::Practice(ref p) = s.page else { panic!("writing focus must deal practice") };
             assert!(p.items.iter().all(|q| matches!(q.kind, problems::Kind::Trace { .. })));
@@ -456,26 +528,27 @@ mod tests {
         }
         // A game is sticky: NEW deals the same game afresh.
         s.open_menu();
-        assert!(s.choose_menu(6));
+        assert!(s.choose_menu(pick(Pick::Game(2))));
         assert!(matches!(s.page, Page::Play(games::Game::Story { .. })));
         s.next();
         assert!(matches!(s.page, Page::Play(games::Game::Story { .. })));
         // Surprise mix restores the default deck; nonsense selects nothing.
         s.open_menu();
-        assert!(s.choose_menu(2));
+        assert!(s.choose_menu(pick(MIX)));
         assert!(matches!(s.page, Page::Practice(_)));
-        assert!(!s.choose_menu(99));
+        s.open_menu();
+        assert!(!s.choose_menu(level_box(MENU_LEVELS + 1)));
     }
 
     #[test]
     fn a_level_box_reseats_the_ladder_and_keeps_the_menu_open() {
         let mut s = Session::start_at(1, 5);
         s.open_menu();
-        // LEVEL boxes sit after the named entries: 7..=10 are levels 1..=4.
-        assert!(s.choose_menu(9));
+        // LEVEL boxes sit after the named entries.
+        assert!(s.choose_menu(level_box(3)));
         assert_eq!(s.level(), 3);
         assert!(s.is_menu(), "a level pick leaves the menu open for a topic pick");
-        assert!(s.choose_menu(0));
+        assert!(s.choose_menu(pick(MATH)));
         let Page::Practice(_) = s.page else { panic!("the topic pick still deals") };
         assert_eq!(s.level(), 3, "the dealt page is at the picked level");
         // The ladder still walks from the new rung.
@@ -489,12 +562,12 @@ mod tests {
     fn the_skills_page_latches_one_math_skill_until_the_menu_says_otherwise() {
         let mut s = Session::start_at(2, 5);
         s.open_menu();
-        assert!(s.choose_menu(3), "MATH SKILLS opens the skills page");
+        assert!(s.choose_menu(pick(Pick::Skills)), "MATH SKILLS opens the skills page");
         assert_eq!(s.page, Page::Skills);
         assert!(s.is_menu(), "the skills page routes marks like the menu");
         assert!(!s.needs_ink());
         // Pick bar models: every dealt page is bar models, even across treats.
-        let bar = problems::MATH_SKILLS.iter().position(|a| *a == problems::Activity::Bar).unwrap();
+        let bar = problems::math_skills().iter().position(|a| *a == problems::Activity::Bar).unwrap();
         assert!(s.choose_menu(bar));
         for _ in 0..6 {
             s.record(Verdict::Yes);
@@ -508,8 +581,24 @@ mod tests {
         }
         // A nonsense skill index selects nothing.
         s.open_menu();
-        assert!(s.choose_menu(3));
-        assert!(!s.choose_menu(problems::MATH_SKILLS.len()));
+        assert!(s.choose_menu(pick(Pick::Skills)));
+        assert!(!s.choose_menu(problems::math_skills().len()));
+    }
+
+    #[test]
+    fn chess_opens_over_the_menu_and_keeps_the_focus() {
+        let mut s = Session::start_at(2, 5);
+        s.open_menu();
+        assert!(s.choose_menu(pick(WRITING)));
+        s.open_menu();
+        assert!(s.choose_menu(pick(Pick::Chess)));
+        assert_eq!(s.page, Page::Chess, "the caller opens the board");
+        assert!(!s.needs_ink() && !s.is_menu());
+        assert!(s.instruction().is_empty(), "nothing is asked from the board");
+        // Coming back deals the writing the child was on.
+        s.next();
+        let Page::Practice(ref p) = s.page else { panic!("practice resumes") };
+        assert!(p.items.iter().all(|q| matches!(q.kind, problems::Kind::Trace { .. })));
     }
 
     #[test]
@@ -557,7 +646,7 @@ mod tests {
         // the category "drifted". A named topic must hold its ground.
         let mut s = Session::start_at(1, 5);
         s.open_menu();
-        assert!(s.choose_menu(0));
+        assert!(s.choose_menu(pick(MATH)));
         for _ in 0..6 {
             s.record(Verdict::Yes);
             s.next();
@@ -568,7 +657,7 @@ mod tests {
         }
         // The default mix still pays out the treat as before.
         s.open_menu();
-        assert!(s.choose_menu(2));
+        assert!(s.choose_menu(pick(MIX)));
         s.record(Verdict::Yes);
         s.next();
         s.record(Verdict::Yes);
@@ -578,21 +667,23 @@ mod tests {
 
     #[test]
     fn every_menu_box_maps_to_a_selection() {
-        // The named entries, then the four LEVEL boxes after them.
-        for i in 0..sheet::MENU_ITEMS.len() + 4 {
+        // The named entries, then the LEVEL boxes after them.
+        let named = menu_entries().count();
+        for i in 0..named + MENU_LEVELS as usize {
             let mut s = Session::start_at(1, 5);
             s.open_menu();
             assert!(s.choose_menu(i), "menu box {i} must select something");
-            // MATH SKILLS and the level boxes keep a picker up; every other
-            // pick deals a page and leaves.
-            let stays = i == 3 || i >= sheet::MENU_ITEMS.len();
+            // MATH SKILLS and the level boxes keep a picker up, CHESS leaves
+            // the board's marker, and every other pick deals a page.
+            let stays = i == pick(Pick::Skills) || i >= named;
             assert_eq!(s.is_menu(), stays, "menu box {i} left the wrong page up");
+            assert_eq!(s.page == Page::Chess, i == pick(Pick::Chess));
         }
         // And every skills box latches a skill and leaves.
-        for i in 0..problems::MATH_SKILLS.len() {
+        for i in 0..problems::math_skills().len() {
             let mut s = Session::start_at(1, 5);
             s.open_menu();
-            assert!(s.choose_menu(3));
+            assert!(s.choose_menu(pick(Pick::Skills)));
             assert!(s.choose_menu(i), "skill box {i} must select something");
             assert!(!s.is_menu(), "a skill pick must deal a page");
         }
