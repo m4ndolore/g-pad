@@ -16,6 +16,7 @@
 
 use ab_glyph::FontRef;
 
+use crate::access;
 use crate::brief::{json_field, split_objects};
 use crate::page::{self, BODY_PX, LINE_H, TITLE_LINE_H};
 
@@ -167,10 +168,8 @@ pub fn mark_stale() {
 /// in that folder — a poll finishing after the reader walked elsewhere must
 /// not yank them back.
 fn fetch_listing(agent: &ureq::Agent, base: &str, bearer: &str, prefix: &str) -> bool {
-    let got = agent
-        .get(&notes_url(base, prefix))
-        .set("Authorization", bearer)
-        .call()
+    let got = admitted(access::authed(agent.get(&notes_url(base, prefix)), bearer).call())
+        .map_err(|e| eprintln!("g-pad: {e}"))
         .ok()
         .and_then(|r| r.into_string().ok());
     match got {
@@ -209,7 +208,7 @@ pub fn spawn_poll() {
     eprintln!("g-pad: vault polling {base} every {every}s");
     let bearer = format!("Bearer {}", token());
     std::thread::spawn(move || {
-        let agent = ureq::AgentBuilder::new()
+        let agent = access::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build();
         loop {
@@ -226,7 +225,7 @@ pub fn spawn_poll() {
 /// marked stale, and the reader has not moved.
 pub fn browse(prefix: &str) -> Result<(), String> {
     let base = base().ok_or_else(|| "no vault configured".to_string())?;
-    let agent = ureq::AgentBuilder::new()
+    let agent = access::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build();
     let bearer = format!("Bearer {}", token());
@@ -255,24 +254,13 @@ pub fn browse(prefix: &str) -> Result<(), String> {
 /// pause is the page loading, not the pad freezing.
 pub fn fetch_note(path: &str) -> Result<Note, String> {
     let base = base().ok_or_else(|| "no vault configured".to_string())?;
-    let agent = ureq::AgentBuilder::new()
+    let agent = access::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build();
-    match agent
-        .get(&note_url(&base, path))
-        .set("Authorization", &format!("Bearer {}", token()))
-        .call()
-    {
-        Ok(r) => {
-            let body = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
-            Ok(parse_note(&body))
-        }
-        Err(ureq::Error::Status(code, r)) => {
-            let detail = r.into_string().unwrap_or_default();
-            Err(format!("vault {code}: {}", detail.trim()))
-        }
-        Err(e) => Err(format!("vault unreachable: {e}")),
-    }
+    let bearer = format!("Bearer {}", token());
+    let r = admitted(access::authed(agent.get(&note_url(&base, path)), &bearer).call())?;
+    let body = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
+    Ok(parse_note(&body))
 }
 
 // ---- annotating a note --------------------------------------------------
@@ -306,6 +294,22 @@ fn error_detail(code: u16, body: &str) -> String {
     format!("vault {code}: {msg}")
 }
 
+/// One vault answer, or what went wrong in words: Access turning the pad
+/// away, Vellum's own error message, or no network at all.
+fn admitted(got: Result<ureq::Response, ureq::Error>) -> Result<ureq::Response, String> {
+    match got {
+        Ok(r) => match access::refusal(&r) {
+            Some(why) => Err(format!("vault: {why}")),
+            None => Ok(r),
+        },
+        Err(ureq::Error::Status(code, r)) => Err(match access::refusal(&r) {
+            Some(why) => format!("vault: {why}"),
+            None => error_detail(code, &r.into_string().unwrap_or_default()),
+        }),
+        Err(e) => Err(format!("vault unreachable: {e}")),
+    }
+}
+
 /// Send the marked-up page and get back the proposal Vellum now holds:
 /// `(id, summary)`. Synchronous like `fetch_note`, but the pause is longer —
 /// a model is reading ink — so the box says so before this is called.
@@ -318,29 +322,21 @@ pub fn propose(path: &str, png_path: &str) -> Result<(String, String), String> {
         crate::oracle::base64(&png),
         now_ms(),
     );
-    let agent = ureq::AgentBuilder::new()
+    let agent = access::builder()
         .timeout(std::time::Duration::from_secs(180))
         .build();
-    match agent
-        .post(&annotate_url(&base))
-        .set("Authorization", &format!("Bearer {}", token()))
-        .set("Content-Type", "application/json")
-        .send_string(&body)
-    {
-        Ok(r) => {
-            let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
-            let id = json_field(&text, "id").unwrap_or_default();
-            if id.is_empty() {
-                return Err("vault sent no proposal".to_string());
-            }
-            Ok((id, json_field(&text, "summary").unwrap_or_default()))
-        }
-        Err(ureq::Error::Status(code, r)) => {
-            let detail = r.into_string().unwrap_or_default();
-            Err(error_detail(code, &detail))
-        }
-        Err(e) => Err(format!("vault unreachable: {e}")),
+    let bearer = format!("Bearer {}", token());
+    let r = admitted(
+        access::authed(agent.post(&annotate_url(&base)), &bearer)
+            .set("Content-Type", "application/json")
+            .send_string(&body),
+    )?;
+    let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
+    let id = json_field(&text, "id").unwrap_or_default();
+    if id.is_empty() {
+        return Err("vault sent no proposal".to_string());
     }
+    Ok((id, json_field(&text, "summary").unwrap_or_default()))
 }
 
 /// Settle a proposal: `apply` writes the revision into the vault (Vellum
@@ -348,25 +344,17 @@ pub fn propose(path: &str, png_path: &str) -> Result<(String, String), String> {
 /// change), `discard` walks away. Ok(true) means the note changed.
 pub fn decide(id: &str, decision: &str) -> Result<bool, String> {
     let base = base().ok_or_else(|| "no vault configured".to_string())?;
-    let agent = ureq::AgentBuilder::new()
+    let agent = access::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build();
-    match agent
-        .post(&decision_url(&base, id))
-        .set("Authorization", &format!("Bearer {}", token()))
-        .set("Content-Type", "application/json")
-        .send_string(&format!("{{\"decision\":\"{}\"}}", crate::bridge::escape_json(decision)))
-    {
-        Ok(r) => {
-            let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
-            Ok(json_bool(&text, "applied").unwrap_or(false))
-        }
-        Err(ureq::Error::Status(code, r)) => {
-            let detail = r.into_string().unwrap_or_default();
-            Err(error_detail(code, &detail))
-        }
-        Err(e) => Err(format!("vault unreachable: {e}")),
-    }
+    let bearer = format!("Bearer {}", token());
+    let r = admitted(
+        access::authed(agent.post(&decision_url(&base, id)), &bearer)
+            .set("Content-Type", "application/json")
+            .send_string(&format!("{{\"decision\":\"{}\"}}", crate::bridge::escape_json(decision))),
+    )?;
+    let text = r.into_string().map_err(|e| format!("vault read failed: {e}"))?;
+    Ok(json_bool(&text, "applied").unwrap_or(false))
 }
 
 // ---- parsing -----------------------------------------------------------
