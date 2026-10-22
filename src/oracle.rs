@@ -554,7 +554,7 @@ impl HttpOracle {
             // a stalled SSE stream leaves the diary "thinking" forever. The
             // read timeout is per-read, so a healthy stream can run long —
             // only silence trips it (thinking models can lead with ~a minute).
-            let agent = ureq::AgentBuilder::new()
+            let agent = crate::access::builder()
                 .timeout_connect(std::time::Duration::from_secs(10))
                 .timeout_read(std::time::Duration::from_secs(90))
                 .build();
@@ -585,9 +585,7 @@ impl HttpOracle {
                     json_quote(&user_text),
                     img,
                 );
-                agent
-                    .post(&format!("{base}/chat/completions"))
-                    .set("Authorization", &format!("Bearer {key}"))
+                crate::access::authed(agent.post(&format!("{base}/chat/completions")), &format!("Bearer {key}"))
                     .set("Content-Type", "application/json")
                     .send_string(&body)
             };
@@ -608,6 +606,11 @@ impl HttpOracle {
             };
 
             let reader = match resp {
+                Ok(r) | Err(ureq::Error::Status(_, r)) if crate::access::refusal(&r).is_some() => {
+                    let why = crate::access::refusal(&r).unwrap_or_default();
+                    let _ = tx.send(Err(format!("http {}: {why}", r.status())));
+                    return;
+                }
                 Ok(r) => r.into_reader(),
                 Err(ureq::Error::Status(code, r)) => {
                     let detail = r.into_string().unwrap_or_default();

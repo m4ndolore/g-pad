@@ -7,6 +7,7 @@
 //! QTFB_KEY is set, or full takeover via the vendor engine (quill) when
 //! built with --features takeover and launched with xochitl stopped.
 
+mod access;
 mod ask;
 // The daily brief: the BRIEF tab lists the day's items, a tapped row opens
 // the one-page reader, and a poll thread feeds both when RIDDLE_BRIEF_URL
@@ -3981,6 +3982,10 @@ fn oracle_excuse(e: &str) -> String {
     if e.contains("no oracle") {
         "The pad is quiet: it found no oracle. \
          Put an API key in oracle.env, then open me again."
+            .into()
+    } else if e.contains("Access refused the pad") {
+        "Cloudflare Access refused the pad. Check RIDDLE_CF_ACCESS_ID and \
+         RIDDLE_CF_ACCESS_SECRET in oracle.env."
             .into()
     } else if e.starts_with("http 401") || e.starts_with("http 403") {
         "The oracle refused the pad's key. Check RIDDLE_OPENAI_KEY in oracle.env.".into()
