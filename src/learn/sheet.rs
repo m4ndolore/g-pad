@@ -160,6 +160,8 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
     let n = set.items.len().max(1) as i32;
     let (top, bottom) = ((H * 18 / 100) as i32, feedback_y() - 24);
     let mut blanks = Vec::new();
+    // Tick boxes, on a page answered by ticking: marked on the tablet.
+    let mut choices = Vec::new();
     for (i, problem) in set.items.iter().enumerate() {
         let band = Band {
             y0: top + (bottom - top) * i as i32 / n,
@@ -184,6 +186,14 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
             Kind::CountShapes { target, scene } => draw_count_shapes(surf, ui_font, *target, scene),
             Kind::ShapePattern { cycle, shown } => draw_shape_pattern(surf, cycle, *shown),
             Kind::DrawShape { .. } => draw_shape_frame(surf),
+            Kind::NameShape { shape, options } => {
+                choices = draw_name_shape(surf, ui_font, *shape, options);
+                span(&choices)
+            }
+            Kind::FindShape { options, .. } => {
+                choices = draw_find_shape(surf, options);
+                span(&choices)
+            }
             // The band figures: scale to their slice of the page.
             Kind::Equation { a, op, b } => draw_equation(surf, ui_font, *a, *op, *b, band),
             Kind::Bar { whole, parts, blank } => draw_bar(surf, ui_font, *whole, *parts, *blank, band),
@@ -201,11 +211,56 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
         blanks.push(blank);
     }
 
-    let done = draw_action_box(surf, ui_font, ActionBox::Done);
+    // A tick-box page has no DONE: the tick is the answer, and nothing on
+    // it is ever sent to the tutor.
+    let done = if choices.is_empty() { draw_action_box(surf, ui_font, ActionBox::Done) } else { BBox::empty() };
     let new = draw_action_box(surf, ui_font, ActionBox::New);
     let menu = draw_action_box(surf, ui_font, ActionBox::Menu);
     let answer = blanks.last().copied().unwrap_or_else(BBox::empty);
-    HitMap { answer, done, new, menu, choices: Vec::new(), blanks }
+    HitMap { answer, done, new, menu, choices, blanks }
+}
+
+/// The smallest box holding all of `boxes`.
+fn span(boxes: &[BBox]) -> BBox {
+    let mut b = BBox::empty();
+    for c in boxes {
+        b.add(c.x0, c.y0, 0);
+        b.add(c.x1, c.y1, 0);
+    }
+    b
+}
+
+/// Three equal tick boxes in a row, `h` tall, starting at `y`.
+fn choice_row(y: i32, h: i32) -> [(i32, i32, i32, i32); 3] {
+    let gap = (W * 4 / 100) as i32;
+    let w = ((W - 2 * MARGIN) as i32 - 2 * gap) / 3;
+    [0, 1, 2].map(|i| (MARGIN as i32 + i * (w + gap), y, w, h))
+}
+
+/// One big shape, and its name to tick among three.
+fn draw_name_shape(surf: &mut Surface, font: &FontRef, shape: Shape, options: &[Shape; 3]) -> Vec<BBox> {
+    draw_shape(surf, shape, (W / 2) as i32, (H * 35 / 100) as i32, (H * 13 / 100) as i32, 5);
+    choice_row((H * 54 / 100) as i32, (H * 9 / 100) as i32)
+        .iter()
+        .zip(options)
+        .map(|(&(x, y, w, h), o)| label_box(surf, font, o.name(), x, y, w, h))
+        .collect()
+}
+
+/// Three shapes, each in its own tick box.
+fn draw_find_shape(surf: &mut Surface, options: &[Shape; 3]) -> Vec<BBox> {
+    let rows = choice_row((H * 26 / 100) as i32, 0);
+    rows.iter()
+        .zip(options)
+        .map(|(&(x, y, w, _), &o)| {
+            rect_outline(surf, x, y, w, w, 4, BLACK);
+            draw_shape(surf, o, x + w / 2, y + w / 2, w * 36 / 100, 4);
+            let mut b = BBox::empty();
+            b.add(x, y, 0);
+            b.add(x + w, y + w, 0);
+            b
+        })
+        .collect()
 }
 
 /// Repaint the decision boxes: called after an absorbed mark's white-out,
@@ -1158,6 +1213,17 @@ pub fn draw_check(surf: &mut Surface, answer: &BBox) -> BBox {
     let s = (W * 3 / 100) as i32;
     let cy = (answer.y0 + answer.y1) / 2;
     let cx = if answer.x1 + 4 * s < W as i32 { answer.x1 + 2 * s } else { answer.x0 - 3 * s };
+    check_at(surf, cx, cy, s)
+}
+
+/// The check for a ticked box in a row of them: centered under the box,
+/// where the neighbors' edges cannot be.
+pub fn draw_check_under(surf: &mut Surface, answer: &BBox) -> BBox {
+    let s = (W * 3 / 100) as i32;
+    check_at(surf, (answer.x0 + answer.x1) / 2, answer.y1 + 2 * s, s)
+}
+
+fn check_at(surf: &mut Surface, cx: i32, cy: i32, s: i32) -> BBox {
     surf.brush_line(cx - s, cy, cx - s / 4, cy + s * 3 / 4, 5, BLACK);
     surf.brush_line(cx - s / 4, cy + s * 3 / 4, cx + s, cy - s * 3 / 4, 5, BLACK);
     let mut b = BBox::empty();
@@ -1273,7 +1339,9 @@ mod tests {
             for rot in 0..8 {
                 let set = generate_set(level, Topic::Mix, rot, &mut rng);
                 let map = draw(&mut surf, &font, &set, level, 2, 45);
-                for b in [&map.answer, &map.done, &map.new, &map.menu] {
+                // A tick-box page has no DONE; every other page has all four.
+                assert_eq!(map.done.is_empty(), !map.choices.is_empty(), "{:?}", set.items);
+                for b in [&map.answer, &map.new, &map.menu] {
                     assert!(!b.is_empty(), "empty region for {:?}", set.items);
                     assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < H as i32);
                 }
@@ -1287,7 +1355,7 @@ mod tests {
                     assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32 && b.y1 < H as i32,
                         "blank {i} off-page for {:?}", set.items[i].kind);
                     // Blanks never overlap the decision boxes...
-                    assert!(b.y1 < map.done.y0, "{:?}", set.items[i].kind);
+                    assert!(b.y1 < map.new.y0, "{:?}", set.items[i].kind);
                     // ...or each other: every question's box is its own.
                     for other in &map.blanks[i + 1..] {
                         let apart = b.x1 < other.x0 || other.x1 < b.x0
@@ -1476,9 +1544,15 @@ mod tests {
                         let kind = &set.items[i].kind;
                         assert!(b.x0 >= 0 && b.y0 >= 0 && b.x1 < W as i32, "{kind:?} blank off-page");
                         assert!(b.y1 < feedback_y(), "{kind:?} blank runs into the feedback strip");
-                        let mut core = BBox::empty();
-                        core.add((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, 30);
-                        assert_eq!(dark_in(&surf, &core), 0, "{kind:?} blank is not empty paper");
+                        if map.choices.is_empty() {
+                            let mut core = BBox::empty();
+                            core.add((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, 30);
+                            assert_eq!(dark_in(&surf, &core), 0, "{kind:?} blank is not empty paper");
+                        } else {
+                            // A tick-box page: three boxes, no DONE.
+                            assert_eq!(map.choices.len(), 3, "{kind:?}");
+                            assert!(map.done.is_empty(), "{kind:?} has a DONE box");
+                        }
                         for other in &map.blanks[i + 1..] {
                             let apart = b.x1 < other.x0 || other.x1 < b.x0
                                 || b.y1 < other.y0 || other.y1 < b.y0;
