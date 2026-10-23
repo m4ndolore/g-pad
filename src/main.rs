@@ -479,7 +479,7 @@ fn learn_sheets(dir: &str) -> i32 {
     let mut buf = vec![0xFFu8; SCREEN_W * SCREEN_H * 4];
     let ptr = buf.as_mut_ptr();
     let mut surf = Surface::new(ptr, buf.len(), SCREEN_W, SCREEN_H, SCREEN_W * 4, surface::PixFmt::Rgb32);
-    for level in 1..=4u8 {
+    for level in 1..=learn::problems::MAX_LEVEL {
         let mut session = learn::Session::start_at(level, 41 + level as u32);
         for page in 0..8 {
             session.draw(&mut surf, &ui_font);

@@ -178,6 +178,8 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
             Kind::Trace { word } => draw_trace(surf, ui_font, word),
             Kind::BondChain(chain) => draw_bond_chain(surf, ui_font, chain),
             Kind::BridgeTen { a, b } => draw_bridge_ten(surf, ui_font, *a, *b),
+            Kind::TraceNumber { number } => draw_trace(surf, ui_font, &number.to_string()),
+            Kind::Groups { groups, each } => draw_groups(surf, ui_font, *groups, *each),
             // The band figures: scale to their slice of the page.
             Kind::Equation { a, op, b } => draw_equation(surf, ui_font, *a, *op, *b, band),
             Kind::Bar { whole, parts, blank } => draw_bar(surf, ui_font, *whole, *parts, *blank, band),
@@ -187,6 +189,10 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
             Kind::Compare { left, right } => draw_compare(surf, ui_font, *left, *right, band),
             Kind::CompareBars { big, small } => draw_compare_bars(surf, ui_font, *big, *small, band),
             Kind::SkipCount { start, step } => draw_skip_count(surf, ui_font, *start, *step, band),
+            Kind::Column { a, op, b } => draw_column(surf, ui_font, *a, *op, *b, band),
+            Kind::MissingFactor { a, product } => equation_with_box_sized(
+                surf, ui_font, &format!("{a} x "), &format!(" = {product}"), band.mid(), band_sizes(band),
+            ),
         };
         blanks.push(blank);
     }
@@ -575,6 +581,77 @@ fn draw_array(surf: &mut Surface, font: &FontRef, rows: u32, cols: u32) -> BBox 
     equation_with_box(surf, font, &format!("{rows} x {cols} = "), "", eq_y)
 }
 
+/// Multiplication as equal groups: `groups` rings, each holding `each` dots,
+/// then the fact with its box. Up to three rings share a row; four or five
+/// take two rows, so every ring stays big enough to count inside.
+fn draw_groups(surf: &mut Surface, font: &FontRef, groups: u32, each: u32) -> BBox {
+    let groups = groups.max(1) as i32;
+    let per_row = if groups <= 3 { groups } else { (groups + 1) / 2 };
+    let rows = (groups + per_row - 1) / per_row;
+    let cell = ((W - 2 * MARGIN) as i32 / per_row).min((H * 17 / 100) as i32);
+    let r = cell * 42 / 100;
+    let y0 = (H * 19 / 100) as i32;
+    // Dots sit in a small grid inside each ring: ten is four, four, two.
+    let cols = match each {
+        0..=2 => each.max(1),
+        3..=4 => 2,
+        5..=6 => 3,
+        _ => 4,
+    } as i32;
+    let drows = (each as i32 + cols - 1) / cols;
+    let pitch = r * 2 * 62 / 100 / cols.max(drows).max(1);
+    for g in 0..groups {
+        let (row, col) = (g / per_row, g % per_row);
+        let in_row = if row == rows - 1 { groups - row * per_row } else { per_row };
+        let cx = (W as i32 - in_row * cell) / 2 + col * cell + cell / 2;
+        let cy = y0 + row * cell + cell / 2;
+        ring(surf, cx, cy, r, 5, BLACK);
+        let gx = cx - (cols - 1) * pitch / 2;
+        let gy = cy - (drows - 1) * pitch / 2;
+        for i in 0..each as i32 {
+            surf.stamp(gx + (i % cols) * pitch, gy + (i / cols) * pitch, (pitch * 30 / 100).max(6), BLACK);
+        }
+    }
+    let (_, bh) = box_size();
+    let eq_y = y0 + rows * cell + bh / 2 + 20;
+    equation_with_box(surf, font, &format!("{groups} x {each} = "), "", eq_y)
+}
+
+/// Two-digit adding or taking away in column form: a T and an O heading,
+/// the numbers stacked digit under digit with the sign to their left, a
+/// rule, and one answer box under both columns. A dashed line splits tens
+/// from ones down to the rule; the box itself stays blank paper. The child
+/// writes the whole answer in it.
+fn draw_column(surf: &mut Surface, font: &FontRef, a: u32, op: Op, b: u32, band: Band) -> BBox {
+    let h = band.h();
+    let row = h * 22 / 100;
+    let px = (row as f32 * 0.9).min(120.0);
+    let cw = (px * 1.5) as i32;
+    let x_t = W as i32 / 2 - cw;
+    let x_o = x_t + cw;
+    let head_y = band.y0 + h * 6 / 100;
+    print_tight_centered(surf, font, "T", 30.0, x_t + cw / 2, head_y, BLACK);
+    print_tight_centered(surf, font, "O", 30.0, x_o + cw / 2, head_y, BLACK);
+    let y_a = band.y0 + h * 13 / 100 + row / 2;
+    let y_b = y_a + row;
+    let number = |surf: &mut Surface, n: u32, cy: i32| {
+        if n >= 10 {
+            print_tight_centered(surf, font, &(n / 10).to_string(), px, x_t + cw / 2, cy, BLACK);
+        }
+        print_tight_centered(surf, font, &(n % 10).to_string(), px, x_o + cw / 2, cy, BLACK);
+    };
+    number(surf, a, y_a);
+    number(surf, b, y_b);
+    let sign = if op == Op::Sub { "-" } else { "+" };
+    print_tight_centered(surf, font, sign, px, x_t - cw * 6 / 10, y_b, BLACK);
+    let rule_y = y_b + row / 2 + h * 3 / 100;
+    line(surf, x_t - cw, rule_y, x_o + cw + cw / 5, rule_y, 4, BLACK);
+    let box_y = rule_y + h * 4 / 100;
+    let box_h = h * 30 / 100;
+    dashed_vline(surf, x_o, head_y + 20, box_y - 8, 2, FADED);
+    answer_box(surf, x_t, box_y, 2 * cw, box_h)
+}
+
 fn draw_share(surf: &mut Surface, font: &FontRef, total: u32, groups: u32) -> BBox {
     let each = (total / groups.max(1)).max(1);
     let gap = (W * 7 / 100) as i32;
@@ -599,16 +676,21 @@ fn draw_share(surf: &mut Surface, font: &FontRef, total: u32, groups: u32) -> BB
 /// x-height lands on the dashed line, because "small letters stop at the
 /// middle" is the lesson. Tall letters then rise above the midline toward
 /// the top line without quite touching it — the print-font compromise every
-/// paper worksheet set in a regular font makes.
+/// paper worksheet set in a regular font makes. Numbers are the exception:
+/// digits fill the whole writing height, top line to baseline.
 fn draw_trace(surf: &mut Surface, font: &FontRef, word: &str) -> BBox {
     let gap = (H * 55 / 1000) as i32; // half the writing height
     let base1 = (H * 34 / 100) as i32;
     let base2 = (H * 56 / 100) as i32;
 
     // Fit: x-height → gap (the midline), capped by the content width.
+    // Numerals have no x-height: a digit is taught top line to baseline, so
+    // an all-digit template is sized by an 8 to fill the writing height.
     let probe = 100.0f32;
-    let x_h = tight_text_height(font, "x", probe).max(1) as f32;
-    let mut px = probe * gap as f32 / x_h;
+    let numeral = !word.is_empty() && word.chars().all(|c| c.is_ascii_digit());
+    let (reference, target) = if numeral { ("8", 2 * gap - 8) } else { ("x", gap) };
+    let ref_h = tight_text_height(font, reference, probe).max(1) as f32;
+    let mut px = probe * target as f32 / ref_h;
     let max_w = (W - 2 * MARGIN) as f32;
     let w = script::measure(font, word, px);
     if w > max_w {
@@ -744,17 +826,18 @@ fn draw_action_box(surf: &mut Surface, font: &FontRef, which: ActionBox) -> BBox
 
 /// Box sizes for a picker grid.
 struct Grid {
+    cols: usize,
     box_h: i32,
     row_gap: i32,
     section_gap: i32,
 }
 
 /// The menu has room for big boxes.
-const MENU_GRID: Grid = Grid { box_h: (H * 8 / 100) as i32, row_gap: (H * 25 / 1000) as i32, section_gap: (H * 4 / 100) as i32 };
+const MENU_GRID: Grid = Grid { cols: 2, box_h: (H * 8 / 100) as i32, row_gap: (H * 25 / 1000) as i32, section_gap: (H * 4 / 100) as i32 };
 
-/// The skills page fits four strands above the footer, so its boxes are
-/// shorter.
-const SKILLS_GRID: Grid = Grid { box_h: (H * 55 / 1000) as i32, row_gap: (H * 13 / 1000) as i32, section_gap: (H * 2 / 100) as i32 };
+/// The skills page fits every strand above the footer: three columns, and
+/// shorter boxes.
+const SKILLS_GRID: Grid = Grid { cols: 3, box_h: (H * 55 / 1000) as i32, row_gap: (H * 13 / 1000) as i32, section_gap: (H * 2 / 100) as i32 };
 
 /// Draw a picker page: a title, a prompt, and each section as a heading over
 /// a two-column grid of outlined boxes. Returns the boxes in order and the y
@@ -767,11 +850,12 @@ fn draw_picker(
     sections: &[(&str, Vec<&str>)],
     grid: &Grid,
 ) -> (Vec<BBox>, i32) {
+    let cols = grid.cols as i32;
     surf.fill_rect(0, 0, W, H, WHITE);
     print(surf, font, title, 32.0, MARGIN, 40, BLACK);
     print_centered(surf, font, prompt, 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
     let gap_x = (W * 4 / 100) as i32;
-    let bw = ((W - 2 * MARGIN) as i32 - gap_x) / 2;
+    let bw = ((W - 2 * MARGIN) as i32 - (cols - 1) * gap_x) / cols;
     let row_h = grid.box_h + grid.row_gap;
     let mut choices = Vec::new();
     let mut y = (H * 14 / 100) as i32;
@@ -779,10 +863,11 @@ fn draw_picker(
         print(surf, font, heading, 30.0, MARGIN, y as usize, BLACK);
         let top = y + 50;
         for (i, item) in items.iter().enumerate() {
-            let x = MARGIN as i32 + (i % 2) as i32 * (bw + gap_x);
-            choices.push(label_box(surf, font, item, x, top + (i / 2) as i32 * row_h, bw, grid.box_h));
+            let i = i as i32;
+            let x = MARGIN as i32 + (i % cols) * (bw + gap_x);
+            choices.push(label_box(surf, font, item, x, top + (i / cols) * row_h, bw, grid.box_h));
         }
-        y = top + items.len().div_ceil(2) as i32 * row_h + grid.section_gap;
+        y = top + (items.len() as i32 + cols - 1) / cols * row_h + grid.section_gap;
     }
     (choices, y)
 }
@@ -1284,7 +1369,7 @@ mod tests {
         let (_buf, mut surf) = page();
         let mut rng = Rng::new(59);
         for act in crate::learn::problems::math_skills() {
-            for level in 1..=4 {
+            for level in 1..=crate::learn::problems::MAX_LEVEL {
                 for rot in 0..6 {
                     let set = generate_set(level, Topic::Skill(act), rot, &mut rng);
                     let map = draw(&mut surf, &font, &set, level, 0, 0);
