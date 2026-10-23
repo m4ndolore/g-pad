@@ -52,6 +52,10 @@ pub struct Roster {
     pub current: usize,
     /// None in tests and previews: nothing is written.
     path: Option<PathBuf>,
+    /// Lines for players the current config does not name, kept verbatim:
+    /// a renamed roster must not erase anyone, and naming them again brings
+    /// them back as they were.
+    others: Vec<String>,
 }
 
 impl Roster {
@@ -76,6 +80,7 @@ impl Roster {
     fn from_text(names: &[String], text: &str) -> Self {
         let mut players: Vec<Player> = names.iter().map(|n| Player::new(n)).collect();
         let mut current_name = String::new();
+        let mut others = Vec::new();
         for line in text.lines() {
             let Some((key, value)) = line.split_once('=') else { continue };
             if key == "current" {
@@ -83,7 +88,10 @@ impl Roster {
                 continue;
             }
             let Some((name, field)) = key.rsplit_once('.') else { continue };
-            let Some(p) = players.iter_mut().find(|p| p.name == name) else { continue };
+            let Some(p) = players.iter_mut().find(|p| p.name == name) else {
+                others.push(line.to_string());
+                continue;
+            };
             let value = value.trim();
             match field {
                 "level" => p.level = value.parse::<u8>().unwrap_or(1).clamp(1, super::problems::MAX_LEVEL),
@@ -94,7 +102,7 @@ impl Roster {
             }
         }
         let current = players.iter().position(|p| p.name == current_name).unwrap_or(0);
-        Self { players, current, path: None }
+        Self { players, current, path: None, others }
     }
 
     fn to_text(&self) -> String {
@@ -108,6 +116,10 @@ impl Roster {
                 out.push_str(&format!("{}.race_ms={ms}\n", p.name));
             }
         }
+        for line in &self.others {
+            out.push_str(line);
+            out.push('\n');
+        }
         out
     }
 
@@ -116,10 +128,15 @@ impl Roster {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        // Write then rename: a flat battery mid-write must not cost a child
-        // their stars.
+        // Write, flush to the card, then rename: a flat battery mid-write
+        // must not cost a child their stars.
         let tmp = path.with_extension("tmp");
-        if std::fs::write(&tmp, self.to_text()).is_ok() {
+        let written = std::fs::File::create(&tmp).and_then(|mut f| {
+            use std::io::Write;
+            f.write_all(self.to_text().as_bytes())?;
+            f.sync_all()
+        });
+        if written.is_ok() {
             let _ = std::fs::rename(&tmp, path);
         }
     }
@@ -268,6 +285,11 @@ mod tests {
         assert_eq!(back.players[0].best_level, 4);
         assert_eq!(back.players[2].best_race_ms, Some(42_000));
         assert!(back.players.iter().all(|p| p.name != "GHOST"));
+        // A player the config no longer names survives a save, and comes
+        // back as they were when named again.
+        assert!(back.to_text().contains("GHOST.stars=999"));
+        let ghost = Roster::from_text(&names_from(Some("GHOST")), &back.to_text());
+        assert_eq!(ghost.players[0].stars, 999);
     }
 
     #[test]
