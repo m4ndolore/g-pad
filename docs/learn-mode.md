@@ -119,7 +119,7 @@ name, grouped by strand:
 | Adding & taking away | Number Bonds, Bond Chains, Make Ten, Add by Making Ten, Number Sentences, Number Line, Big Sums, Big Take-Aways |
 | Bar models | Bar Models, How Many More |
 | Times & sharing | Times Tables, Equal Groups, Times Facts, Sharing, Missing Number, Divide |
-| Shapes | Sides & Corners, Count Shapes, Shape Patterns, Draw Shapes |
+| Shapes | Name the Shape, Find the Shape, Sides & Corners, Count Shapes, Shape Patterns, Draw Shapes |
 
 **Shapes** are drawn by the pad as outlines: circle, triangle, square, and
 rectangle from level 1, pentagon and hexagon from level 3. SIDES & CORNERS
@@ -130,6 +130,21 @@ square. SHAPE PATTERNS repeats a cycle of circles, triangles, and squares,
 never squares beside rectangles, and the child draws what comes next; DRAW
 SHAPES asks for one shape in an empty frame. The tutor judges drawings
 leniently: wobbly lines and rounded corners are fine.
+
+## Tick-box questions
+
+NAME THE SHAPE (one big shape, three names) and FIND THE SHAPE (three shapes
+in boxes, MARK THE CIRCLE) are answered with a tick, and marked on the
+tablet: `Problem::choice_answer` knows the right box, and nothing on the page
+is ever sent to the tutor. These pages have no DONE box; NEW and MENU work
+as everywhere.
+
+A tick stays on the page as the child's answer. The verdict is built as a
+tutor-shaped reply (`YES` and a rotating cheer, or `NO TRY AGAIN!` and a
+hint for the grown-up) and fed through the same channel an oracle reply
+arrives on, so the check (drawn under the ticked box, where a row of boxes
+leaves room), the cheer, the score, the ladder, and the next-page dwell are
+the code every other answer already uses.
 
 **Column sums** (Big Sums, Big Take-Aways) stack the numbers under T and O
 headings with a dashed line between the columns, and one answer box under

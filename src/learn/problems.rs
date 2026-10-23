@@ -67,6 +67,12 @@ pub enum Kind {
     ShapePattern { cycle: Vec<Shape>, shown: u32 },
     /// An empty frame: the child draws the named shape.
     DrawShape { shape: Shape },
+    /// One big shape and three name boxes: the child ticks its name. Marked
+    /// on the tablet, never by the tutor.
+    NameShape { shape: Shape, options: [Shape; 3] },
+    /// Three shapes in three boxes: the child ticks the `target`. Marked on
+    /// the tablet.
+    FindShape { target: Shape, options: [Shape; 3] },
 }
 
 /// The flat shapes Learn draws and asks about.
@@ -114,6 +120,17 @@ impl Shape {
         }
     }
 
+    fn find_prompt(self) -> &'static str {
+        match self {
+            Shape::Circle => "MARK THE CIRCLE",
+            Shape::Triangle => "MARK THE TRIANGLE",
+            Shape::Square => "MARK THE SQUARE",
+            Shape::Rectangle => "MARK THE RECTANGLE",
+            Shape::Pentagon => "MARK THE PENTAGON",
+            Shape::Hexagon => "MARK THE HEXAGON",
+        }
+    }
+
     fn draw_prompt(self) -> &'static str {
         match self {
             Shape::Circle => "DRAW A CIRCLE",
@@ -135,6 +152,34 @@ fn shapes_for(level: u8) -> &'static [Shape] {
     } else {
         &[Circle, Triangle, Square, Rectangle, Pentagon, Hexagon]
     }
+}
+
+/// A shape and three distinct options holding it, shuffled. Square and
+/// rectangle never share a question before level 3: telling them apart is
+/// its own lesson.
+fn shape_options(level: u8, rng: &mut Rng) -> (Shape, [Shape; 3]) {
+    let pool = shapes_for(level);
+    let pick = |rng: &mut Rng| pool[rng.range(0, pool.len() as u32 - 1) as usize];
+    let target = pick(rng);
+    let clash = |a: Shape, b: Shape| {
+        a == b || (level <= 2 && matches!((a, b), (Shape::Square, Shape::Rectangle) | (Shape::Rectangle, Shape::Square)))
+    };
+    let mut options = vec![target];
+    for step in 0..pool.len() * 4 {
+        if options.len() == 3 {
+            break;
+        }
+        // Random first, then walk the pool so a short one always fills.
+        let s = if step < pool.len() * 2 { pick(rng) } else { pool[step % pool.len()] };
+        if !options.iter().any(|&o| clash(o, s)) {
+            options.push(s);
+        }
+    }
+    let mut options = [options[0], options[1], options[2]];
+    for i in (1..3).rev() {
+        options.swap(i, rng.range(0, i as u32) as usize);
+    }
+    (target, options)
 }
 
 /// Cells in a shape scene: four across, three down.
@@ -354,6 +399,28 @@ impl Problem {
             Kind::CountShapes { target, scene } => scene.iter().filter(|(s, _)| s == target).count().to_string(),
             Kind::ShapePattern { cycle, shown } => cycle[*shown as usize % cycle.len()].name().to_string(),
             Kind::DrawShape { shape } => shape.name().to_string(),
+            Kind::NameShape { shape, .. } => shape.name().to_string(),
+            Kind::FindShape { target, .. } => target.name().to_string(),
+        }
+    }
+
+    /// For a problem answered by ticking one of its boxes: the right box.
+    /// None for everything the child writes or draws.
+    pub fn choice_answer(&self) -> Option<usize> {
+        match &self.kind {
+            Kind::NameShape { shape, options } => options.iter().position(|o| o == shape),
+            Kind::FindShape { target, options } => options.iter().position(|o| o == target),
+            _ => None,
+        }
+    }
+
+    /// The grown-up's line after a wrong tick: how to look again, never the
+    /// answer.
+    pub fn choice_hint(&self) -> &'static str {
+        match &self.kind {
+            Kind::NameShape { .. } => "Count its sides together, then look again.",
+            Kind::FindShape { .. } => "Count the sides on each one.",
+            _ => "Look at each box again.",
         }
     }
 
@@ -482,6 +549,9 @@ impl Problem {
                     lower = expected.to_lowercase()
                 )
             }
+            Kind::NameShape { .. } | Kind::FindShape { .. } => format!(
+                "a tick-box question marked on the tablet (correct answer {expected})"
+            ),
             Kind::DrawShape { shape } => format!(
                 "the child was asked to draw a {lower} in an empty frame. The page shows only the child's drawing. \
                  YES if it is recognizably a {lower} (wobbly lines and rounded corners are fine for a young child), \
@@ -582,9 +652,9 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
         (Topic::Skill(a), _) => a.alone(),
         (Topic::Writing, _) => &[Trace],
         (Topic::Numbers, _) => &[WriteNumbers],
-        (Topic::Shapes, 1) => &[DrawShape, CountShapes, ShapePattern],
-        (Topic::Shapes, 2) => &[DrawShape, CountShapes, ShapeSides, ShapePattern],
-        (Topic::Shapes, _) => &[ShapeSides, CountShapes, ShapePattern, DrawShape],
+        (Topic::Shapes, 1) => &[FindShape, DrawShape, CountShapes, NameShape, ShapePattern],
+        (Topic::Shapes, 2) => &[NameShape, DrawShape, CountShapes, FindShape, ShapeSides, ShapePattern],
+        (Topic::Shapes, _) => &[ShapeSides, NameShape, CountShapes, ShapePattern, FindShape, DrawShape],
         (Topic::Math, 1) => &[Count, Bond, Compare],
         (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, Compare, NumberLine, Bar, BridgeTen],
         (Topic::Math, 3) => &[Bond, ColumnAdd, Equation, BondChain, NumberLine, Bar, BridgeTen, ColumnSub,
@@ -593,9 +663,9 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
             PlaceValue, HundredWindow, DivideFacts, Bar, CompareBars, SkipCount],
         (Topic::Math, _) => &[ColumnAdd, TimesFacts, MissingFactor, ColumnSub, Groups, DivideFacts, BondChain,
             Bar, CompareBars, HundredWindow, SkipCount],
-        (Topic::Mix, 1) => &[Count, Bond, WriteNumbers, DrawShape, Trace, Compare, CountShapes],
-        (Topic::Mix, 2) => &[Bond, MakeTen, WriteNumbers, Equation, CountShapes, Trace, BondChain, Compare,
-            NumberLine, ShapePattern, Bar, BridgeTen],
+        (Topic::Mix, 1) => &[Count, Bond, WriteNumbers, FindShape, Trace, Compare, DrawShape, CountShapes],
+        (Topic::Mix, 2) => &[Bond, MakeTen, WriteNumbers, Equation, CountShapes, Trace, BondChain, NameShape,
+            Compare, NumberLine, ShapePattern, Bar, BridgeTen],
         (Topic::Mix, 3) => &[Bond, ColumnAdd, Equation, ShapeSides, Trace, BondChain, WriteNumbers, NumberLine,
             Bar, BridgeTen, ColumnSub, ShapePattern, PlaceValue, CompareBars, SkipCount],
         (Topic::Mix, 4) => &[Array, ColumnAdd, Trace, Groups, TimesFacts, BondChain, ShapeSides, ColumnSub,
@@ -634,6 +704,8 @@ pub enum Activity {
     CountShapes,
     ShapePattern,
     DrawShape,
+    NameShape,
+    FindShape,
 }
 
 /// The skills picker's sections, each a strand of the curriculum, in box
@@ -670,7 +742,14 @@ pub const SKILL_GROUPS: &[(&str, &[Activity])] = &[
     ),
     (
         "SHAPES",
-        &[Activity::ShapeSides, Activity::CountShapes, Activity::ShapePattern, Activity::DrawShape],
+        &[
+            Activity::NameShape,
+            Activity::FindShape,
+            Activity::ShapeSides,
+            Activity::CountShapes,
+            Activity::ShapePattern,
+            Activity::DrawShape,
+        ],
     ),
 ];
 
@@ -711,6 +790,8 @@ impl Activity {
             CountShapes => &[CountShapes],
             ShapePattern => &[ShapePattern],
             DrawShape => &[DrawShape],
+            NameShape => &[NameShape],
+            FindShape => &[FindShape],
         }
     }
 
@@ -746,6 +827,8 @@ impl Activity {
             CountShapes => "COUNT SHAPES",
             ShapePattern => "SHAPE PATTERNS",
             DrawShape => "DRAW SHAPES",
+            NameShape => "NAME THE SHAPE",
+            FindShape => "FIND THE SHAPE",
         }
     }
 }
@@ -800,6 +883,8 @@ fn page_prompt(act: Activity, n: usize) -> &'static str {
         CountShapes => "HOW MANY?",
         ShapePattern => "DRAW WHAT COMES NEXT",
         DrawShape => "DRAW THE SHAPE",
+        NameShape => "WHAT SHAPE IS THIS?",
+        FindShape => "MARK THE SHAPE",
         Compare => "WRITE <, =, OR >",
         NumberLine => "COUNT THE HOPS",
         BondChain => "FILL THE CIRCLES, ONE AT A TIME",
@@ -1094,6 +1179,14 @@ fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
             let shown = rng.range(cycle.len() as u32 + 1, 7);
             Problem { kind: Kind::ShapePattern { cycle, shown }, prompt: "DRAW WHAT COMES NEXT" }
         }
+        Activity::NameShape => {
+            let (shape, options) = shape_options(level, rng);
+            Problem { kind: Kind::NameShape { shape, options }, prompt: "WHAT SHAPE IS THIS?" }
+        }
+        Activity::FindShape => {
+            let (target, options) = shape_options(level, rng);
+            Problem { kind: Kind::FindShape { target, options }, prompt: target.find_prompt() }
+        }
         Activity::DrawShape => {
             use Shape::*;
             let pool: &[Shape] = if level <= 2 { &[Circle, Triangle, Square, Rectangle] } else { &[Triangle, Square, Rectangle, Pentagon, Hexagon] };
@@ -1294,6 +1387,8 @@ mod tests {
                             | (Kind::CountShapes { .. }, Activity::CountShapes)
                             | (Kind::ShapePattern { .. }, Activity::ShapePattern)
                             | (Kind::DrawShape { .. }, Activity::DrawShape)
+                            | (Kind::NameShape { .. }, Activity::NameShape)
+                            | (Kind::FindShape { .. }, Activity::FindShape)
                     );
                     assert!(same, "skill {act:?} at level {level} dealt {:?}", p.kind);
                 }
@@ -1312,7 +1407,7 @@ mod tests {
         for (i, a) in skills.iter().enumerate() {
             assert!(!skills[..i].contains(a), "{a:?} sits in two skill groups");
         }
-        assert_eq!(skills.len(), 25, "every math activity has a box");
+        assert_eq!(skills.len(), 27, "every math activity has a box");
     }
 
     #[test]
@@ -1409,7 +1504,7 @@ mod tests {
                         | Kind::Share { .. } | Kind::Trace { .. } | Kind::BondChain(_)
                         | Kind::BridgeTen { .. } | Kind::TraceNumber { .. } | Kind::Groups { .. }
                         | Kind::ShapeSides { .. } | Kind::CountShapes { .. } | Kind::ShapePattern { .. }
-                        | Kind::DrawShape { .. });
+                        | Kind::DrawShape { .. } | Kind::NameShape { .. } | Kind::FindShape { .. });
                     if solo_only {
                         assert_eq!(set.items.len(), 1, "{:?} needs the whole page", set.items[0].kind);
                     } else {
@@ -1617,6 +1712,37 @@ mod tests {
         let p = Problem { kind: Kind::ShapePattern { cycle: vec![Shape::Circle, Shape::Square], shown: 5 }, prompt: "" };
         assert_eq!(p.expected(), "SQUARE");
         assert_eq!(Problem { kind: Kind::ShapeSides { shape: Shape::Hexagon, corners: true }, prompt: "" }.expected(), "6");
+    }
+
+    #[test]
+    fn tick_box_questions_hold_their_answer_once() {
+        for level in 1..=MAX_LEVEL {
+            for act in [Activity::NameShape, Activity::FindShape] {
+                for kind in dealt(level, act, 200) {
+                    let p = Problem { kind: kind.clone(), prompt: "" };
+                    let (Kind::NameShape { options, .. } | Kind::FindShape { options, .. }) = &kind else {
+                        panic!("{kind:?}")
+                    };
+                    let right = p.choice_answer().expect("a tick-box question has a right box");
+                    assert_eq!(options[right].name(), p.expected());
+                    for i in 0..3 {
+                        for j in i + 1..3 {
+                            assert_ne!(options[i], options[j], "two boxes say the same: {options:?}");
+                        }
+                    }
+                    if level <= 2 {
+                        let has = |s| options.contains(&s);
+                        assert!(!(has(Shape::Square) && has(Shape::Rectangle)), "{options:?} at level {level}");
+                    }
+                }
+            }
+        }
+        // The right box moves around.
+        let spots: std::collections::HashSet<usize> = dealt(3, Activity::NameShape, 60).iter()
+            .filter_map(|k| Problem { kind: k.clone(), prompt: "" }.choice_answer())
+            .collect();
+        assert_eq!(spots.len(), 3);
+        assert_eq!(Problem { kind: Kind::Equation { a: 1, op: Op::Add, b: 1 }, prompt: "" }.choice_answer(), None);
     }
 
     #[test]

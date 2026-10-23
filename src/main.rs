@@ -644,6 +644,36 @@ fn learn_sheets(dir: &str) -> i32 {
         println!("{path}");
         session.next();
     }
+    // A tick-box question, answered right and then wrong, through the same
+    // reply parsing and marks the main loop uses.
+    let name_box = learn::problems::math_skills().iter()
+        .position(|a| *a == learn::problems::Activity::NameShape)
+        .expect("naming shapes is a math skill");
+    for (name, right) in [("yes", true), ("no", false)] {
+        let mut session = learn::Session::start_at(2, 31);
+        session.open_menu();
+        session.choose_menu(skills_box);
+        session.choose_menu(name_box);
+        session.draw(&mut surf, &ui_font);
+        let correct = session.as_practice().and_then(|p| p.choice_answer()).unwrap_or(0);
+        let pick = if right { correct } else { (correct + 1) % 3 };
+        let reply = session.answer_choice(pick).unwrap_or_default();
+        let (verdict, fb) = learn::verdict::parse(&reply);
+        session.record(verdict);
+        let chosen = session.hits.choices[pick];
+        if right {
+            learn::sheet::draw_check_under(&mut surf, &chosen);
+        } else {
+            learn::sheet::draw_look_again(&mut surf, &chosen);
+        }
+        learn::sheet::draw_feedback(&mut surf, &ui_font, &fb.cheer, &fb.hint, right, session.last_award());
+        let path = format!("{dir}/learn-choice-{name}.png");
+        if let Err(e) = dump_page(&surf, &path) {
+            eprintln!("g-pad: write {path}: {e}");
+            return 1;
+        }
+        println!("{path}");
+    }
     0
 }
 
@@ -2089,6 +2119,28 @@ fn run() -> std::io::Result<()> {
                         user_ink.clear();
                         session.draw(&mut surf, &ui_font);
                         disp.full_refresh(surf.w, surf.h);
+                    } else if let Some((i, reply)) = match tick {
+                        LearnTick::Choice(i) => session.answer_choice(i).map(|r| (i, r)),
+                        _ => None,
+                    } {
+                        // A tick box is marked here, at once. The verdict
+                        // still travels the tutor's channel, so the check,
+                        // the cheer, the score, the ladder, and the next
+                        // page all behave exactly as they do for ink.
+                        clear_feedback(&mut surf, &disp);
+                        if let Some(&b) = session.hits.choices.get(i) {
+                            session.hits.answer = b;
+                        }
+                        let (tx, rx) = mpsc::channel();
+                        let _ = tx.send(Ok(Event::Ink(reply)));
+                        drop(tx);
+                        state = State::LearnMarking {
+                            rx,
+                            pulse: Instant::now(),
+                            blot_on: false,
+                            since: Instant::now(),
+                            got: String::new(),
+                        };
                     } else {
                     // A story choice tick must name a box that exists on this
                     // page; registering it also latches the label for the ask.
@@ -2460,9 +2512,13 @@ fn run() -> std::io::Result<()> {
 
             State::LearnMarking { rx, pulse, blot_on, since, mut got } => {
                 // The thinking blot pulses above the DONE box the child marked.
+                // A tick-box page has no DONE box: the blot sits over the
+                // ticked box instead.
                 let (bx, by) = learn_session
                     .as_ref()
-                    .map(|s| ((s.hits.done.x0 + s.hits.done.x1) / 2, (s.hits.done.y0 - 40).max(20)))
+                    .map(|s| if s.hits.done.is_empty() { s.hits.answer } else { s.hits.done })
+                    .filter(|b| !b.is_empty())
+                    .map(|b| ((b.x0 + b.x1) / 2, (b.y0 - 40).max(20)))
                     .unwrap_or((THINK_X, THINK_Y));
                 let clear_blot = |surf: &mut Surface, disp: &display::Display| {
                     surf.fill_rect((bx - 14).max(0) as usize, (by - 14).max(0) as usize, 28, 28, WHITE);
@@ -2531,7 +2587,11 @@ fn run() -> std::io::Result<()> {
                                                 session.draw(&mut surf, &ui_font);
                                                 disp.full_refresh(surf.w, surf.h);
                                             } else {
-                                                mark_dirty = learn::sheet::draw_check(&mut surf, &answer);
+                                                mark_dirty = if session.is_choice_page() {
+                                                    learn::sheet::draw_check_under(&mut surf, &answer)
+                                                } else {
+                                                    learn::sheet::draw_check(&mut surf, &answer)
+                                                };
                                                 // Once the praise is written, the next
                                                 // page deals itself — no second tap.
                                                 learn_advance_pending = true;
@@ -3882,6 +3942,11 @@ fn learn_mark(ink: &mut ink::Ink, session: &learn::Session, ui_font: &FontRef,
         Some(learn::Target::Choice(i)) => LearnTick::Choice(i),
         _ => return None,
     };
+    // On a tick-box question the tick is the child's answer: it stays on
+    // the page, beside the check (or under the look-again line).
+    if matches!(tick, LearnTick::Choice(_)) && session.is_choice_page() {
+        return Some(tick);
+    }
     if let Some(gone) = ink.pop_stroke() {
         let (x, y, w, h) = gone.rect();
         surf.fill_rect(x.max(0) as usize, y.max(0) as usize, w as usize, h as usize, WHITE);

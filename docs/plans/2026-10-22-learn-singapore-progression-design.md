@@ -152,7 +152,7 @@ Each step is its own PR, tested and rendered with `--learn-sheets`:
 
 1. Level 5, number writing, column sums, times and division.
 2. Shapes marked by the tutor: sides and corners, counting, patterns.
-3. Multiple choice marked on the tablet, NAME THE SHAPE, the three-column
+3. Multiple choice marked on the tablet, NAME THE SHAPE, FIND THE SHAPE.
+4. Players, lifetime stars, trophies, the leaderboard, the three-column
    menu.
-4. Players, lifetime stars, trophies, the leaderboard.
 5. The race.

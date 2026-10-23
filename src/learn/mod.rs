@@ -34,6 +34,9 @@ pub use verdict::Verdict;
 /// Correct practice answers that earn one play page.
 const PLAY_EVERY: u32 = 2;
 
+/// What a right tick says, in turn: a tick box has no tutor to vary it.
+const LOCAL_CHEERS: &[&str] = &["GREAT JOB!", "WOW!", "SUPER STAR!", "YOU GOT IT!", "AMAZING!"];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
     Practice(problems::Set),
@@ -130,6 +133,8 @@ pub struct Session {
     score: u32,
     /// What the last correct answer was worth, for the "+N" beside the cheer.
     last_award: u32,
+    /// Which local cheer a right tick says next.
+    cheer_rot: usize,
     pub page: Page,
     pub hits: HitMap,
 }
@@ -172,6 +177,7 @@ impl Session {
             earned: 0,
             score: 0,
             last_award: 0,
+            cheer_rot: 0,
             page,
             hits: empty_hits(),
         }
@@ -383,12 +389,37 @@ impl Session {
 
     /// Does DONE require ink in the answer region on this page? Everywhere
     /// but the story, where an empty page just means the pad invents a hero.
-    /// (The picker pages have no DONE box at all.)
+    /// (The picker and tick-box pages have no DONE box at all.)
     pub fn needs_ink(&self) -> bool {
-        !matches!(
-            self.page,
-            Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills | Page::Chess
-        )
+        !self.is_choice_page()
+            && !matches!(
+                self.page,
+                Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills | Page::Chess
+            )
+    }
+
+    /// Is this a practice page answered by ticking a box? Its ticks are
+    /// marked here, on the tablet, and never reach the tutor.
+    pub fn is_choice_page(&self) -> bool {
+        self.as_practice().is_some_and(|p| p.choice_answer().is_some())
+    }
+
+    /// The child ticked box `i` on a tick-box page: the tutor-shaped reply
+    /// for it (`YES` and a cheer, or `NO`, a cheer, and the grown-up's
+    /// hint), so the verdict travels the same road an oracle reply does.
+    /// None when this is not a tick-box page or there is no such box.
+    pub fn answer_choice(&mut self, i: usize) -> Option<String> {
+        let p = self.as_practice()?;
+        let right = p.choice_answer()?;
+        if i >= 3 {
+            return None;
+        }
+        if i == right {
+            self.cheer_rot += 1;
+            Some(format!("YES {}", LOCAL_CHEERS[self.cheer_rot % LOCAL_CHEERS.len()]))
+        } else {
+            Some(format!("NO TRY AGAIN!\n{}", p.choice_hint()))
+        }
     }
 
     /// The per-turn instruction for the oracle: tutor on practice pages,
@@ -689,6 +720,32 @@ mod tests {
             assert!(s.choose_menu(i), "skill box {i} must select something");
             assert!(!s.is_menu(), "a skill pick must deal a page");
         }
+    }
+
+    #[test]
+    fn a_tick_box_page_is_marked_here_and_reads_like_the_tutor() {
+        let mut s = Session::start_at(2, 5);
+        s.open_menu();
+        assert!(s.choose_menu(pick(Pick::Skills)));
+        let name = problems::math_skills().iter().position(|a| *a == problems::Activity::NameShape).unwrap();
+        assert!(s.choose_menu(name));
+        assert!(s.is_choice_page());
+        assert!(!s.needs_ink(), "a tick needs no ink in a blank");
+        let right = s.as_practice().unwrap().choice_answer().unwrap();
+        let wrong = (right + 1) % 3;
+        let (v, f) = verdict::parse(&s.answer_choice(wrong).unwrap());
+        assert_eq!(v, Verdict::No);
+        assert!(!f.hint.is_empty(), "a wrong tick tells the grown-up how to look again");
+        let (v, f) = verdict::parse(&s.answer_choice(right).unwrap());
+        assert_eq!(v, Verdict::Yes);
+        assert!(f.cheer.split_whitespace().count() <= 3);
+        assert!(s.answer_choice(3).is_none(), "there is no fourth box");
+        // Written answers are not tick boxes.
+        let mut s = Session::start_at(2, 5);
+        s.open_menu();
+        assert!(s.choose_menu(pick(MATH)));
+        assert!(!s.is_choice_page());
+        assert!(s.answer_choice(0).is_none());
     }
 
     #[test]
