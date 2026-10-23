@@ -441,6 +441,11 @@ fn draw_vault(surf: &mut Surface, font: &FontRef, vault: &crate::vault::Vault, s
     if !label.is_empty() {
         text(surf, font, &label, LABEL_PX, PAD, SCREEN_H - 60, BLUE);
     }
+    // A walk that went nowhere says so above the footer, in black: the
+    // reader just ticked something and the shelf did not move.
+    if let Some(e) = &vault.walk_error {
+        text(surf, font, e, LABEL_PX, PAD, SCREEN_H - 110, BLACK);
+    }
 }
 
 /// The note page's header targets, mirroring `session_page_action`:
@@ -1586,7 +1591,7 @@ mod tests {
                 path: "raw/Hood and DLA.md".into(), title: "Hood and DLA".into(), mtime_ms: 0,
             }],
             shelf: 1,
-            stale: false,
+            ..Default::default()
         });
         let mut d = Drawer::open(&surf, DrawerKind::Vault, None, 0, None);
         let store = None;
@@ -1607,6 +1612,7 @@ mod tests {
             notes: Vec::new(),
             shelf: 0,
             stale: true,
+            walk_error: Some("VAULT UNREACHABLE".into()),
         });
         draw_vault(&mut surf, &font, &crate::vault::held(), 0);
         crate::vault::replace(crate::vault::Vault::default());

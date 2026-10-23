@@ -55,6 +55,11 @@ pub struct Vault {
     pub shelf: usize,
     /// True when these are the last notes we held rather than a fresh poll.
     pub stale: bool,
+    /// Why the reader's last walk went nowhere, in the footer's words. A
+    /// failed walk leaves the shelf exactly as it was, so without this a
+    /// tick on a folder or ← reads as a dead button. The next fetch that
+    /// lands clears it.
+    pub walk_error: Option<String>,
 }
 
 /// One step up from a prefix: `raw/AI` → `raw`, `raw` → the root.
@@ -167,13 +172,11 @@ pub fn mark_stale() {
 /// Fetch one listing and hold it, but only if the reader is still standing
 /// in that folder — a poll finishing after the reader walked elsewhere must
 /// not yank them back.
-fn fetch_listing(agent: &ureq::Agent, base: &str, bearer: &str, prefix: &str) -> bool {
+fn fetch_listing(agent: &ureq::Agent, base: &str, bearer: &str, prefix: &str) -> Result<(), String> {
     let got = admitted(access::authed(agent.get(&notes_url(base, prefix)), bearer).call())
-        .map_err(|e| eprintln!("g-pad: {e}"))
-        .ok()
-        .and_then(|r| r.into_string().ok());
+        .and_then(|r| r.into_string().map_err(|e| format!("vault read failed: {e}")));
     match got {
-        Some(body) => {
+        Ok(body) => {
             let (dirs, mut notes, shelf) = parse_listing(&body);
             // Only this shelf's notes reach the drawer — an older vault
             // lists recursively, and the filter is what keeps the folders
@@ -183,15 +186,26 @@ fn fetch_listing(agent: &ureq::Agent, base: &str, bearer: &str, prefix: &str) ->
             if let Ok(mut g) = HELD.lock() {
                 let current = g.as_ref().map(|v| v.prefix.clone()).unwrap_or_default();
                 if current == prefix {
-                    *g = Some(Vault { prefix: prefix.to_string(), dirs, notes, shelf, stale: false });
+                    *g = Some(Vault { prefix: prefix.to_string(), dirs, notes, shelf, ..Vault::default() });
                 }
             }
-            true
+            Ok(())
         }
-        None => {
+        Err(e) => {
+            eprintln!("g-pad: {e}");
             mark_stale();
-            false
+            Err(e)
         }
+    }
+}
+
+/// The footer's words for a walk that failed: a refusal at the door is a
+/// different fix (the token) from a network that is not there (the Wi-Fi).
+pub fn walk_error_label(e: &str) -> String {
+    if e.contains("Access refused") {
+        "ACCESS REFUSED · CHECK TOKEN".to_string()
+    } else {
+        "VAULT UNREACHABLE".to_string()
     }
 }
 
@@ -213,7 +227,7 @@ pub fn spawn_poll() {
             .build();
         loop {
             let prefix = held().prefix;
-            fetch_listing(&agent, &base, &bearer, &prefix);
+            let _ = fetch_listing(&agent, &base, &bearer, &prefix);
             std::thread::sleep(std::time::Duration::from_secs(every));
         }
     });
@@ -235,18 +249,17 @@ pub fn browse(prefix: &str) -> Result<(), String> {
     if let Ok(mut g) = HELD.lock() {
         g.get_or_insert_with(Vault::default).prefix = prefix.to_string();
     }
-    if fetch_listing(&agent, &base, &bearer, prefix) {
-        Ok(())
-    } else {
+    fetch_listing(&agent, &base, &bearer, prefix).map_err(|e| {
         // Step back where we stood: a failed walk must not leave the reader
-        // in a folder whose shelf never arrived.
+        // in a folder whose shelf never arrived. Say why, on the shelf.
+        let label = walk_error_label(&e);
         if let Ok(mut g) = HELD.lock() {
             if g.as_ref().is_some_and(|v| v.prefix == prefix) {
-                *g = Some(Vault { stale: true, ..before });
+                *g = Some(Vault { stale: true, walk_error: Some(label.clone()), ..before });
             }
         }
-        Err("vault unreachable".to_string())
-    }
+        label
+    })
 }
 
 /// Fetch one note body. Synchronous and short-fused, like `post_nudge`: the
@@ -710,6 +723,16 @@ mod tests {
 
     fn font() -> FontRef<'static> {
         FontRef::try_from_slice(UI_FONT_TTF).unwrap()
+    }
+
+    #[test]
+    fn a_failed_walk_names_its_cause() {
+        assert_eq!(
+            walk_error_label("vault: Access refused the pad (302). Check RIDDLE_CF_ACCESS_ID and RIDDLE_CF_ACCESS_SECRET"),
+            "ACCESS REFUSED · CHECK TOKEN"
+        );
+        assert_eq!(walk_error_label("vault unreachable: Dns Failed"), "VAULT UNREACHABLE");
+        assert_eq!(walk_error_label("vault 500: internal error"), "VAULT UNREACHABLE");
     }
 
     #[test]
