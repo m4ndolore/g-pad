@@ -55,7 +55,53 @@ pub enum Page {
     /// The leaderboard: every player's stars, trophies, best level and race.
     /// Its MENU box goes back to the menu.
     Trophies,
+    /// A speed race under way, or its finish line.
+    Race(Race),
 }
+
+/// Ten tick-box questions against the clock. The clock starts when the race
+/// is dealt and stops on the last right tick; a wrong tick stays on its
+/// question, and the time it costs is the penalty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Race {
+    pub questions: Vec<problems::Problem>,
+    /// The question being answered; `questions.len()` once finished.
+    pub at: usize,
+    pub misses: u32,
+    started: std::time::Instant,
+    pub result: Option<RaceResult>,
+}
+
+/// How a finished race went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RaceResult {
+    pub ms: u64,
+    /// The player's best before this race; None on their first.
+    pub best_before: Option<u64>,
+    pub record: bool,
+    pub stars: u32,
+    pub trophy: bool,
+}
+
+impl Race {
+    pub fn question(&self) -> Option<&problems::Problem> {
+        self.questions.get(self.at)
+    }
+}
+
+/// What one race tick did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RaceStep {
+    Right,
+    Wrong,
+    Finished,
+}
+
+/// Stars for finishing a race, and for finishing it with no misses, and
+/// for beating your own best.
+const RACE_STARS: u32 = 3;
+const RACE_PERFECT_STARS: u32 = 2;
+const RACE_RECORD_STARS: u32 = 2;
 
 /// What marking a named menu entry does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +114,8 @@ pub enum Pick {
     Chess,
     /// Open the leaderboard.
     Trophies,
+    /// Start a speed race; NEW races again.
+    Race,
     /// Deal this game (by `games::Game::nth` index) on every NEW.
     Game(usize),
 }
@@ -90,6 +138,7 @@ pub const MENU: &[(&str, &[(&str, Pick)])] = &[
     (
         "GAMES",
         &[
+            ("SPEED RACE", Pick::Race),
             ("TROPHIES", Pick::Trophies),
             ("CHESS", Pick::Chess),
             ("DOODLE CRITTER", Pick::Game(0)),
@@ -125,6 +174,7 @@ enum PlayPolicy {
 enum Focus {
     Practice(problems::Topic),
     Game(usize),
+    Race,
 }
 
 pub struct Session {
@@ -259,7 +309,53 @@ impl Session {
             }
             Page::Skills => sheet::draw_skills(surf, ui_font),
             Page::Trophies => sheet::draw_trophies(surf, ui_font, &self.roster),
+            Page::Race(race) => sheet::draw_race(surf, ui_font, race, &self.roster.player().name),
         };
+    }
+
+    fn new_race(&mut self) -> Page {
+        Page::Race(Race {
+            questions: problems::race(self.ladder.level, &mut self.rng),
+            at: 0,
+            misses: 0,
+            started: std::time::Instant::now(),
+            result: None,
+        })
+    }
+
+    /// Is a race (or its finish line) on the page?
+    pub fn is_race(&self) -> bool {
+        matches!(self.page, Page::Race(_))
+    }
+
+    /// The child ticked box `i` in a race, at `now`. A right tick moves to
+    /// the next question; the last one stops the clock, saves a record, and
+    /// awards the race's stars. A wrong tick stays put. None when no race
+    /// question is up or there is no such box. Races never move the ladder
+    /// or the session score: the race is the game, the ladder is the lesson.
+    pub fn race_answer(&mut self, i: usize, now: std::time::Instant) -> Option<RaceStep> {
+        let Page::Race(race) = &mut self.page else { return None };
+        let right = race.question()?.choice_answer()?;
+        if i >= 3 {
+            return None;
+        }
+        if i != right {
+            race.misses += 1;
+            return Some(RaceStep::Wrong);
+        }
+        race.at += 1;
+        if race.at < race.questions.len() {
+            return Some(RaceStep::Right);
+        }
+        let ms = now.saturating_duration_since(race.started).as_millis() as u64;
+        let best_before = self.roster.player().best_race_ms;
+        let record = self.roster.race_finished(ms);
+        let stars = RACE_STARS
+            + if race.misses == 0 { RACE_PERFECT_STARS } else { 0 }
+            + if record && best_before.is_some() { RACE_RECORD_STARS } else { 0 };
+        let earned = self.roster.add_stars(stars);
+        race.result = Some(RaceResult { ms, best_before, record, stars, trophy: earned.trophy });
+        Some(RaceStep::Finished)
     }
 
     /// Repaint the picker under a mark that was just absorbed, and return
@@ -285,6 +381,10 @@ impl Session {
         let topic = match self.focus {
             Focus::Game(g) => {
                 self.page = Page::Play(games::Game::nth(g));
+                return;
+            }
+            Focus::Race => {
+                self.page = self.new_race();
                 return;
             }
             Focus::Practice(t) => t,
@@ -336,6 +436,7 @@ impl Session {
             match menu_entries().nth(i).map(|&(_, p)| p) {
                 Some(Pick::Topic(t)) => Focus::Practice(t),
                 Some(Pick::Game(g)) => Focus::Game(g),
+                Some(Pick::Race) => Focus::Race,
                 Some(Pick::Skills) => {
                     self.page = Page::Skills;
                     return true;
@@ -375,6 +476,7 @@ impl Session {
         self.earned = 0;
         match self.focus {
             Focus::Game(g) => self.page = Page::Play(games::Game::nth(g)),
+            Focus::Race => self.page = self.new_race(),
             Focus::Practice(topic) => {
                 self.rot += 1;
                 self.page = Page::Practice(problems::generate_set(self.ladder.level, topic, self.rot, &mut self.rng));
@@ -469,6 +571,7 @@ impl Session {
             && !matches!(
                 self.page,
                 Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills | Page::Chess | Page::Trophies
+                    | Page::Race(_)
             )
     }
 
@@ -527,7 +630,7 @@ impl Session {
             }
             // The picker pages, the board, and the leaderboard have no DONE
             // box; nothing is ever asked from them.
-            Page::Menu | Page::Skills | Page::Chess | Page::Trophies => String::new(),
+            Page::Menu | Page::Skills | Page::Chess | Page::Trophies | Page::Race(_) => String::new(),
         }
     }
 }
@@ -857,6 +960,50 @@ mod tests {
             won |= s.take_celebration() == Some("NEW TROPHY!");
         }
         assert!(won);
+    }
+
+    fn right_box(s: &Session) -> usize {
+        let Page::Race(r) = &s.page else { panic!("no race up") };
+        r.question().unwrap().choice_answer().unwrap()
+    }
+
+    #[test]
+    fn a_race_runs_ten_questions_then_times_scores_and_keeps_a_record() {
+        use std::time::{Duration, Instant};
+        let mut s = Session::start_at(2, 5);
+        s.open_menu();
+        assert!(s.choose_menu(pick(Pick::Race)));
+        assert!(s.is_race() && !s.is_menu() && !s.needs_ink());
+        assert!(s.instruction().is_empty(), "a race never asks the tutor");
+        let (level, score) = (s.level(), s.score);
+        let t0 = Instant::now();
+        // One wrong tick, then all ten right.
+        let wrong = (right_box(&s) + 1) % 3;
+        assert_eq!(s.race_answer(wrong, t0), Some(RaceStep::Wrong));
+        for q in 0..problems::RACE_LEN {
+            let step = s.race_answer(right_box(&s), t0 + Duration::from_secs(40));
+            let want = if q + 1 == problems::RACE_LEN { RaceStep::Finished } else { RaceStep::Right };
+            assert_eq!(step, Some(want));
+        }
+        let Page::Race(r) = &s.page else { panic!() };
+        let res = r.result.expect("a finished race has a result");
+        assert!(res.ms >= 40_000 && res.record && res.best_before.is_none());
+        assert_eq!(res.stars, RACE_STARS, "a miss forfeits the perfect bonus, and a first race beats no one");
+        assert_eq!(s.roster().player().stars, RACE_STARS);
+        assert!(s.race_answer(0, t0).is_none(), "the finish line takes no ticks");
+        assert_eq!((s.level(), s.score), (level, score), "a race moves neither the ladder nor the score");
+        // NEW races again; a faster, perfect run is a record with both bonuses.
+        s.next();
+        assert!(s.is_race());
+        let t1 = Instant::now();
+        for _ in 0..problems::RACE_LEN {
+            s.race_answer(right_box(&s), t1 + Duration::from_secs(20));
+        }
+        let Page::Race(r) = &s.page else { panic!() };
+        let res = r.result.unwrap();
+        assert!(res.record && res.best_before.is_some());
+        assert_eq!(res.stars, RACE_STARS + RACE_PERFECT_STARS + RACE_RECORD_STARS);
+        assert_eq!(s.roster().player().best_race_ms, Some(res.ms));
     }
 
     #[test]

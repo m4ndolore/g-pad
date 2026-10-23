@@ -141,7 +141,11 @@ impl Roster {
 
     /// A right answer, `streak` right before it in a row.
     pub fn award(&mut self, streak: u32) -> Earned {
-        let stars = 1 + u32::from(streak >= 2);
+        self.add_stars(1 + u32::from(streak >= 2))
+    }
+
+    /// `stars` more for the current player.
+    pub fn add_stars(&mut self, stars: u32) -> Earned {
         let p = &mut self.players[self.current];
         let before = p.trophies();
         p.stars += stars;
@@ -161,6 +165,17 @@ impl Roster {
         }
         self.save();
         badge
+    }
+
+    /// A finished race in `ms`. True when it beats this player's best.
+    pub fn race_finished(&mut self, ms: u64) -> bool {
+        let p = &mut self.players[self.current];
+        let record = p.best_race_ms.is_none_or(|best| ms < best);
+        if record {
+            p.best_race_ms = Some(ms);
+        }
+        self.save();
+        record
     }
 
     /// Player indices by stars, most first: the leaderboard's order. Ties
@@ -230,6 +245,10 @@ mod tests {
         assert!(!r.set_level(2) && !r.set_level(3), "going back down, or back to it, is not");
         assert!(r.switch(1));
         assert_eq!(r.player().level, 1, "OWL keeps OWL's level");
+        assert!(r.race_finished(60_000), "a first race is a record");
+        assert!(!r.race_finished(70_000));
+        assert!(r.race_finished(50_000));
+        assert_eq!(r.player().best_race_ms, Some(50_000));
         assert!(!r.switch(9));
         assert_eq!((r.players[0].level, r.players[0].best_level), (3, 3), "FOX kept FOX's level");
     }

@@ -211,6 +211,10 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, header: &Header) -
                 choices = draw_find_shape(surf, options);
                 span(&choices)
             }
+            Kind::QuickSum { a, op, b, options } => {
+                choices = draw_quick_sum(surf, ui_font, *a, *op, *b, options);
+                span(&choices)
+            }
             // The band figures: scale to their slice of the page.
             Kind::Equation { a, op, b } => draw_equation(surf, ui_font, *a, *op, *b, band),
             Kind::Bar { whole, parts, blank } => draw_bar(surf, ui_font, *whole, *parts, *blank, band),
@@ -261,6 +265,24 @@ fn draw_name_shape(surf: &mut Surface, font: &FontRef, shape: Shape, options: &[
         .iter()
         .zip(options)
         .map(|(&(x, y, w, h), o)| label_box(surf, font, o.name(), x, y, w, h))
+        .collect()
+}
+
+/// A sum with a question mark for its answer, and three answers to tick.
+fn draw_quick_sum(surf: &mut Surface, font: &FontRef, a: u32, op: Op, b: u32, options: &[u32; 3]) -> Vec<BBox> {
+    let sum = format!("{a} {} {b} = ?", op.glyph());
+    print_tight_centered(surf, font, &sum, 130.0, (W / 2) as i32, (H * 33 / 100) as i32, BLACK);
+    choice_row((H * 47 / 100) as i32, (H * 12 / 100) as i32)
+        .iter()
+        .zip(options)
+        .map(|(&(x, y, w, h), o)| {
+            rect_outline(surf, x, y, w, h, 5, BLACK);
+            print_tight_centered(surf, font, &o.to_string(), 110.0, x + w / 2, y + h / 2, BLACK);
+            let mut bb = BBox::empty();
+            bb.add(x, y, 0);
+            bb.add(x + w, y + h, 0);
+            bb
+        })
         .collect()
 }
 
@@ -1159,6 +1181,71 @@ pub fn draw_trophies(surf: &mut Surface, ui_font: &FontRef, roster: &super::play
     map
 }
 
+/// A speed race: who is racing, how far they are (3 / 10, and a bar of ten
+/// cells, the done ones filled), and the question with its tick boxes. Once
+/// finished, the finish line instead. NEW races again; there is no DONE.
+pub fn draw_race(surf: &mut Surface, ui_font: &FontRef, race: &super::Race, player: &str) -> HitMap {
+    surf.fill_rect(0, 0, W, H, WHITE);
+    print(surf, ui_font, &format!("{player} · SPEED RACE"), 32.0, MARGIN, 40, BLACK);
+    let mut choices = Vec::new();
+    if let Some(res) = race.result {
+        draw_race_finish(surf, ui_font, race.misses, &res);
+    } else if let Some(q) = race.question() {
+        let n = race.questions.len().max(1) as i32;
+        print_tight_centered(surf, ui_font, &format!("{} / {n}", race.at + 1), 64.0, (W / 2) as i32,
+            (H * 8 / 100) as i32, BLACK);
+        let gap = 12;
+        let cw = ((W - 2 * MARGIN) as i32 - (n - 1) * gap) / n;
+        let (cy, ch) = ((H * 12 / 100) as i32, 34);
+        for k in 0..n {
+            let x = MARGIN as i32 + k * (cw + gap);
+            if (k as usize) < race.at {
+                surf.fill_rect(x as usize, cy as usize, cw as usize, ch as usize, BLACK);
+            } else {
+                rect_outline(surf, x, cy, cw, ch, 3, BLACK);
+            }
+        }
+        print_centered(surf, ui_font, q.prompt, 46.0, (W / 2) as i32, (H * 18 / 100) as i32, BLACK);
+        choices = match &q.kind {
+            Kind::QuickSum { a, op, b, options } => draw_quick_sum(surf, ui_font, *a, *op, *b, options),
+            Kind::NameShape { shape, options } => draw_name_shape(surf, ui_font, *shape, options),
+            Kind::FindShape { options, .. } => draw_find_shape(surf, options),
+            _ => Vec::new(),
+        };
+    }
+    let new = draw_action_box(surf, ui_font, ActionBox::New);
+    let menu = draw_action_box(surf, ui_font, ActionBox::Menu);
+    HitMap { answer: span(&choices), done: BBox::empty(), new, menu, choices, blanks: Vec::new() }
+}
+
+/// The finish line: the time, how it compares, and what it earned. A miss
+/// is never counted out loud; a race with none says so.
+fn draw_race_finish(surf: &mut Surface, font: &FontRef, misses: u32, res: &super::RaceResult) {
+    use super::players::race_time;
+    let cx = (W / 2) as i32;
+    print_tight_centered(surf, font, "FINISHED!", 110.0, cx, (H * 15 / 100) as i32, BLACK);
+    print_tight_centered(surf, font, &race_time(res.ms), 220.0, cx, (H * 31 / 100) as i32, BLACK);
+    let line = match res.best_before {
+        None => "YOUR FIRST RACE!".to_string(),
+        Some(_) if res.record => "NEW RECORD!".to_string(),
+        Some(best) => format!("YOUR BEST IS {}", race_time(best)),
+    };
+    print_tight_centered(surf, font, &line, 76.0, cx, (H * 45 / 100) as i32, BLACK);
+    if misses == 0 {
+        print_tight_centered(surf, font, "NO MISSES!", 60.0, cx, (H * 53 / 100) as i32, BLACK);
+    }
+    let stars = format!("+{} STARS", res.stars);
+    let w = tight_width(font, &stars, 64.0);
+    let sy = (H * 62 / 100) as i32;
+    draw_star(surf, cx - w / 2 - 50, sy, 34);
+    print_tight_centered(surf, font, &stars, 64.0, cx + 20, sy, BLACK);
+    if res.trophy {
+        let ty = (H * 74 / 100) as i32;
+        draw_trophy(surf, cx - 260, ty, 48);
+        print_tight_centered(surf, font, "NEW TROPHY!", 72.0, cx + 60, ty, BLACK);
+    }
+}
+
 fn ordinal(n: usize) -> String {
     let suffix = match (n % 10, n % 100) {
         (1, 11) | (2, 12) | (3, 13) => "TH",
@@ -1548,6 +1635,34 @@ mod tests {
         assert_eq!(map.hit(200, 1750), Some(Target::New));
         assert_eq!(map.hit(700, 1750), Some(Target::Menu));
         assert_eq!(map.hit(700, 900), None);
+    }
+
+    #[test]
+    fn every_race_question_draws_three_boxes_clear_of_the_footer_and_the_finish_draws_none() {
+        let font = ui_font();
+        let (_buf, mut surf) = page();
+        for level in 1..=crate::learn::problems::MAX_LEVEL {
+            let mut s = crate::learn::Session::start_at(level, 77);
+            s.open_menu();
+            assert!(s.choose_menu(crate::learn::menu_index(crate::learn::Pick::Race).unwrap()));
+            for q in 0..crate::learn::problems::RACE_LEN {
+                s.draw(&mut surf, &font);
+                let map = &s.hits;
+                assert_eq!(map.choices.len(), 3, "level {level} question {q}");
+                assert!(map.done.is_empty(), "a race has no DONE");
+                for (i, b) in map.choices.iter().enumerate() {
+                    assert!(b.x0 >= 0 && b.x1 < W as i32 && b.y0 > (H * 13 / 100) as i32, "box {i} off the page or on the bar");
+                    assert!(b.y1 < feedback_y(), "box {i} runs into the feedback strip");
+                    assert_eq!(map.hit((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2), Some(Target::Choice(i)));
+                }
+                let crate::learn::Page::Race(r) = &s.page else { panic!() };
+                let right = r.question().unwrap().choice_answer().unwrap();
+                s.race_answer(right, std::time::Instant::now());
+            }
+            s.draw(&mut surf, &font);
+            assert!(s.hits.choices.is_empty(), "the finish line takes no ticks");
+            assert!(!s.hits.new.is_empty() && !s.hits.menu.is_empty(), "NEW races again, MENU goes back");
+        }
     }
 
     #[test]
