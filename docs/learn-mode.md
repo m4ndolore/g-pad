@@ -101,7 +101,7 @@ letters genuinely touch the lines the child is told to reach.
 ## The menu
 
 A mark in MENU deals the picker: two labeled sections of tick boxes,
-**PRACTICE** (Math, Math Skills, Writing, Write Numbers, Surprise Mix) and **GAMES** (Chess,
+**PRACTICE** (Math, Math Skills, Writing, Write Numbers, Shapes, Surprise Mix) and **GAMES** (Chess,
 Doodle Critter, Guessing Game, Story Time), then a **LEVEL** row: four
 numbered boxes, the current level filled solid. A mark in an entry deals that
 page at once, and the choice is *sticky*: a picked game deals itself again on
@@ -119,6 +119,17 @@ name, grouped by strand:
 | Adding & taking away | Number Bonds, Bond Chains, Make Ten, Add by Making Ten, Number Sentences, Number Line, Big Sums, Big Take-Aways |
 | Bar models | Bar Models, How Many More |
 | Times & sharing | Times Tables, Equal Groups, Times Facts, Sharing, Missing Number, Divide |
+| Shapes | Sides & Corners, Count Shapes, Shape Patterns, Draw Shapes |
+
+**Shapes** are drawn by the pad as outlines: circle, triangle, square, and
+rectangle from level 1, pentagon and hexagon from level 3. SIDES & CORNERS
+asks about one big shape (the circle, with none, waits for level 3). COUNT
+SHAPES scatters a dozen cells' worth and asks for one kind, with the count
+row named ("CIRCLES = ☐") below a rule so the box never reads as one more
+square. SHAPE PATTERNS repeats a cycle of circles, triangles, and squares,
+never squares beside rectangles, and the child draws what comes next; DRAW
+SHAPES asks for one shape in an empty frame. The tutor judges drawings
+leniently: wobbly lines and rounded corners are fine.
 
 **Column sums** (Big Sums, Big Take-Aways) stack the numbers under T and O
 headings with a dashed line between the columns, and one answer box under

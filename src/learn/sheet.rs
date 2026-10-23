@@ -12,7 +12,7 @@ use crate::fb::{BBox, SCREEN_H, SCREEN_W};
 use crate::script;
 use crate::surface::{Surface, BLACK, FADED, WHITE};
 
-use super::problems::{Blank, Chain, Kind, Op, Set, SKIP_SHOWN};
+use super::problems::{Blank, Chain, Kind, Op, Set, Shape, SCENE_CELLS, SKIP_SHOWN};
 
 const W: usize = SCREEN_W;
 const H: usize = SCREEN_H;
@@ -180,6 +180,10 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak:
             Kind::BridgeTen { a, b } => draw_bridge_ten(surf, ui_font, *a, *b),
             Kind::TraceNumber { number } => draw_trace(surf, ui_font, &number.to_string()),
             Kind::Groups { groups, each } => draw_groups(surf, ui_font, *groups, *each),
+            Kind::ShapeSides { shape, corners } => draw_shape_sides(surf, ui_font, *shape, *corners),
+            Kind::CountShapes { target, scene } => draw_count_shapes(surf, ui_font, *target, scene),
+            Kind::ShapePattern { cycle, shown } => draw_shape_pattern(surf, cycle, *shown),
+            Kind::DrawShape { .. } => draw_shape_frame(surf),
             // The band figures: scale to their slice of the page.
             Kind::Equation { a, op, b } => draw_equation(surf, ui_font, *a, *op, *b, band),
             Kind::Bar { whole, parts, blank } => draw_bar(surf, ui_font, *whole, *parts, *blank, band),
@@ -652,6 +656,100 @@ fn draw_column(surf: &mut Surface, font: &FontRef, a: u32, op: Op, b: u32, band:
     answer_box(surf, x_t, box_y, 2 * cw, box_h)
 }
 
+/// One flat shape, outlined, filling a circle of radius `r` around (cx, cy).
+/// Polygons stand on a flat base, the way a child draws them; `thick` is the
+/// pen's radius.
+fn draw_shape(surf: &mut Surface, shape: Shape, cx: i32, cy: i32, r: i32, thick: i32) {
+    let regular = |n: u32, start: f32, drop: i32| -> Vec<(i32, i32)> {
+        (0..n)
+            .map(|i| {
+                let a = start + i as f32 * std::f32::consts::TAU / n as f32;
+                (cx + (r as f32 * a.cos()) as i32, cy + drop + (r as f32 * a.sin()) as i32)
+            })
+            .collect()
+    };
+    let up = -std::f32::consts::FRAC_PI_2;
+    let pts: Vec<(i32, i32)> = match shape {
+        Shape::Circle => {
+            ring(surf, cx, cy, r * 85 / 100, 2 * thick, BLACK);
+            return;
+        }
+        Shape::Square => {
+            let a = r * 72 / 100;
+            vec![(cx - a, cy - a), (cx + a, cy - a), (cx + a, cy + a), (cx - a, cy + a)]
+        }
+        Shape::Rectangle => {
+            let (a, b) = (r * 95 / 100, r * 55 / 100);
+            vec![(cx - a, cy - b), (cx + a, cy - b), (cx + a, cy + b), (cx - a, cy + b)]
+        }
+        // A triangle's circumcenter sits high in it: drop it a quarter so
+        // the shape, not its circle, is centered.
+        Shape::Triangle => regular(3, up, r / 4),
+        Shape::Pentagon => regular(5, up, r / 10),
+        // A vertex at the right puts flat edges on top and bottom.
+        Shape::Hexagon => regular(6, 0.0, 0),
+    };
+    for i in 0..pts.len() {
+        let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+        line(surf, a.0, a.1, b.0, b.1, thick, BLACK);
+    }
+}
+
+/// One big shape and SIDES = ☐ (or CORNERS = ☐) beneath it.
+fn draw_shape_sides(surf: &mut Surface, font: &FontRef, shape: Shape, corners: bool) -> BBox {
+    draw_shape(surf, shape, (W / 2) as i32, (H * 37 / 100) as i32, (H * 15 / 100) as i32, 5);
+    let lead = if corners { "CORNERS = " } else { "SIDES = " };
+    equation_with_box(surf, font, lead, "", (H * 60 / 100) as i32)
+}
+
+/// A scatter of shapes, one per cell of a 4×3 grid, nudged off the grid so
+/// it reads as a picture rather than a table. Below a rule, the count row
+/// names what is counted ("CIRCLES = ☐"): a bare box under a picture of
+/// squares would look like one more square.
+fn draw_count_shapes(surf: &mut Surface, font: &FontRef, target: Shape, scene: &[(Shape, u8)]) -> BBox {
+    let cols = 4i32;
+    let rows = (SCENE_CELLS as i32 + cols - 1) / cols;
+    let (x0, y0) = (MARGIN as i32, (H * 18 / 100) as i32);
+    let cw = (W - 2 * MARGIN) as i32 / cols;
+    let ch = (H * 37 / 100) as i32 / rows;
+    let r = cw.min(ch) * 36 / 100;
+    for &(shape, cell) in scene {
+        let c = cell as i32;
+        // The same cell always nudges the same way: a scene redraws exactly.
+        let jx = ((c * 37) % 9 - 4) * cw / 40;
+        let jy = ((c * 53) % 7 - 3) * ch / 30;
+        draw_shape(surf, shape, x0 + (c % cols) * cw + cw / 2 + jx, y0 + (c / cols) * ch + ch / 2 + jy, r, 3);
+    }
+    let rule_y = y0 + rows * ch + 16;
+    dashed_hline(surf, MARGIN as i32, (W - MARGIN) as i32, rule_y, 2, FADED);
+    let lead = format!("{}S = ", target.name());
+    let (bw, bh) = box_size();
+    let px = fit_px(font, &lead, 96.0, ((W - 2 * MARGIN) as i32 - bw - 40) as f32);
+    equation_with_box_sized(surf, font, &lead, "", rule_y + 40 + bh / 2, (px, bw, bh))
+}
+
+/// A pattern row: `shown` shapes repeating `cycle`, then a wider empty box
+/// for the next one, drawn by the child.
+fn draw_shape_pattern(surf: &mut Surface, cycle: &[Shape], shown: u32) -> BBox {
+    let usable = (W - 2 * MARGIN) as f32;
+    let slot = (usable / (shown as f32 + 1.6)) as i32;
+    let r = (slot * 40 / 100).min(110);
+    let cy = (H * 38 / 100) as i32;
+    for i in 0..shown as i32 {
+        let shape = cycle[i as usize % cycle.len().max(1)];
+        draw_shape(surf, shape, MARGIN as i32 + i * slot + slot / 2, cy, r, 4);
+    }
+    let side = (slot * 16 / 10).min(330);
+    let bx = MARGIN as i32 + shown as i32 * slot + (usable as i32 - shown as i32 * slot - side) / 2;
+    answer_box(surf, bx, cy - side / 2, side, side)
+}
+
+/// The empty frame the child draws a named shape in.
+fn draw_shape_frame(surf: &mut Surface) -> BBox {
+    let side = (W * 58 / 100) as i32;
+    answer_box(surf, (W as i32 - side) / 2, (H * 19 / 100) as i32, side, side)
+}
+
 fn draw_share(surf: &mut Surface, font: &FontRef, total: u32, groups: u32) -> BBox {
     let each = (total / groups.max(1)).max(1);
     let gap = (W * 7 / 100) as i32;
@@ -837,7 +935,7 @@ const MENU_GRID: Grid = Grid { cols: 2, box_h: (H * 8 / 100) as i32, row_gap: (H
 
 /// The skills page fits every strand above the footer: three columns, and
 /// shorter boxes.
-const SKILLS_GRID: Grid = Grid { cols: 3, box_h: (H * 55 / 1000) as i32, row_gap: (H * 13 / 1000) as i32, section_gap: (H * 2 / 100) as i32 };
+const SKILLS_GRID: Grid = Grid { cols: 3, box_h: (H * 46 / 1000) as i32, row_gap: (H * 10 / 1000) as i32, section_gap: (H * 12 / 1000) as i32 };
 
 /// Draw a picker page: a title, a prompt, and each section as a heading over
 /// a two-column grid of outlined boxes. Returns the boxes in order and the y
