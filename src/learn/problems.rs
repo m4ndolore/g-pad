@@ -73,6 +73,9 @@ pub enum Kind {
     /// Three shapes in three boxes: the child ticks the `target`. Marked on
     /// the tablet.
     FindShape { target: Shape, options: [Shape; 3] },
+    /// A sum or fact with three answers to tick among. Marked on the tablet:
+    /// the race's arithmetic.
+    QuickSum { a: u32, op: Op, b: u32, options: [u32; 3] },
 }
 
 /// The flat shapes Learn draws and asks about.
@@ -152,6 +155,121 @@ fn shapes_for(level: u8) -> &'static [Shape] {
     } else {
         &[Circle, Triangle, Square, Rectangle, Pentagon, Hexagon]
     }
+}
+
+fn apply(a: u32, op: Op, b: u32) -> u32 {
+    match op {
+        Op::Add => a + b,
+        Op::Sub => a - b,
+        Op::Mul => a * b,
+        Op::Div => a / b,
+    }
+}
+
+/// A sum or fact for a tick-box question, from what `level` is learning:
+/// within 10, then 20, then column sums and the times tables.
+fn quick_sum(level: u8, rng: &mut Rng) -> (u32, Op, u32) {
+    let small = |rng: &mut Rng, max: u32| {
+        if rng.range(0, 1) == 0 {
+            let a = rng.range(1, max - 1);
+            (a, Op::Add, rng.range(1, max - a))
+        } else {
+            let a = rng.range(2, max);
+            (a, Op::Sub, rng.range(1, a - 1))
+        }
+    };
+    match level {
+        1 => {
+            let a = rng.range(1, 4);
+            (a, Op::Add, rng.range(1, 5 - a))
+        }
+        2 => small(rng, 10),
+        3 => match rng.range(0, 2) {
+            0 => small(rng, 20),
+            1 => {
+                let (a, b) = column_add(3, rng);
+                (a, Op::Add, b)
+            }
+            _ => {
+                let (a, b) = column_sub(3, rng);
+                (a, Op::Sub, b)
+            }
+        },
+        _ => match rng.range(0, 2) {
+            0 => {
+                let t = times_table(level, rng);
+                (rng.range(1, 10), Op::Mul, t)
+            }
+            1 if level >= 5 => {
+                let t = times_table(level, rng);
+                (t * rng.range(2, 10), Op::Div, t)
+            }
+            _ => {
+                let (a, b) = column_add(level, rng);
+                (a, Op::Add, b)
+            }
+        },
+    }
+}
+
+/// The right answer and two near misses, shuffled: one or two off, ten off
+/// for a two-digit answer, a table step off for a fact. Never negative,
+/// never the same twice.
+fn sum_options(answer: u32, op: Op, b: u32, rng: &mut Rng) -> [u32; 3] {
+    let mut near: Vec<i64> = vec![1, -1, 2, -2];
+    if answer >= 20 {
+        near.extend([10, -10]);
+    }
+    if op == Op::Mul {
+        near.extend([b as i64, -(b as i64)]);
+    }
+    let mut options = vec![answer];
+    for _ in 0..40 {
+        if options.len() == 3 {
+            break;
+        }
+        let d = near[rng.range(0, near.len() as u32 - 1) as usize];
+        let v = answer as i64 + d;
+        if v >= 0 && !options.contains(&(v as u32)) {
+            options.push(v as u32);
+        }
+    }
+    // Two more always exist above the answer.
+    let mut up = answer + 1;
+    while options.len() < 3 {
+        if !options.contains(&up) {
+            options.push(up);
+        }
+        up += 1;
+    }
+    let mut options = [options[0], options[1], options[2]];
+    for i in (1..3).rev() {
+        options.swap(i, rng.range(0, i as u32) as usize);
+    }
+    options
+}
+
+/// Questions in a race.
+pub const RACE_LEN: usize = 10;
+
+/// A race: `RACE_LEN` tick-box questions at `level`, mostly quick sums with
+/// a few shapes, in a shuffled order. Every one is marked on the tablet.
+pub fn race(level: u8, rng: &mut Rng) -> Vec<Problem> {
+    let level = level.clamp(MIN_LEVEL, MAX_LEVEL);
+    // Before reading, a shape is found, not named.
+    let shape_act = if level <= 1 { Activity::FindShape } else { Activity::NameShape };
+    let shapes = match level {
+        1 | 2 => 3,
+        3 | 4 => 2,
+        _ => 1,
+    };
+    let mut qs: Vec<Problem> = (0..RACE_LEN)
+        .map(|k| problem_for(if k < shapes { shape_act } else { Activity::QuickSums }, level, rng))
+        .collect();
+    for i in (1..qs.len()).rev() {
+        qs.swap(i, rng.range(0, i as u32) as usize);
+    }
+    qs
 }
 
 /// A shape and three distinct options holding it, shuffled. Square and
@@ -401,6 +519,7 @@ impl Problem {
             Kind::DrawShape { shape } => shape.name().to_string(),
             Kind::NameShape { shape, .. } => shape.name().to_string(),
             Kind::FindShape { target, .. } => target.name().to_string(),
+            Kind::QuickSum { a, op, b, .. } => apply(*a, *op, *b).to_string(),
         }
     }
 
@@ -410,6 +529,7 @@ impl Problem {
         match &self.kind {
             Kind::NameShape { shape, options } => options.iter().position(|o| o == shape),
             Kind::FindShape { target, options } => options.iter().position(|o| o == target),
+            Kind::QuickSum { a, op, b, options } => options.iter().position(|&o| o == apply(*a, *op, *b)),
             _ => None,
         }
     }
@@ -420,6 +540,7 @@ impl Problem {
         match &self.kind {
             Kind::NameShape { .. } => "Count its sides together, then look again.",
             Kind::FindShape { .. } => "Count the sides on each one.",
+            Kind::QuickSum { .. } => "Work it out on your fingers or with dots.",
             _ => "Look at each box again.",
         }
     }
@@ -549,7 +670,7 @@ impl Problem {
                     lower = expected.to_lowercase()
                 )
             }
-            Kind::NameShape { .. } | Kind::FindShape { .. } => format!(
+            Kind::NameShape { .. } | Kind::FindShape { .. } | Kind::QuickSum { .. } => format!(
                 "a tick-box question marked on the tablet (correct answer {expected})"
             ),
             Kind::DrawShape { shape } => format!(
@@ -655,8 +776,8 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
         (Topic::Shapes, 1) => &[FindShape, DrawShape, CountShapes, NameShape, ShapePattern],
         (Topic::Shapes, 2) => &[NameShape, DrawShape, CountShapes, FindShape, ShapeSides, ShapePattern],
         (Topic::Shapes, _) => &[ShapeSides, NameShape, CountShapes, ShapePattern, FindShape, DrawShape],
-        (Topic::Math, 1) => &[Count, Bond, Compare],
-        (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, Compare, NumberLine, Bar, BridgeTen],
+        (Topic::Math, 1) => &[Count, Bond, QuickSums, Compare],
+        (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, QuickSums, Compare, NumberLine, Bar, BridgeTen],
         (Topic::Math, 3) => &[Bond, ColumnAdd, Equation, BondChain, NumberLine, Bar, BridgeTen, ColumnSub,
             MakeTen, PlaceValue, CompareBars, SkipCount],
         (Topic::Math, 4) => &[Array, Groups, TimesFacts, ColumnAdd, Equation, BondChain, Share, ColumnSub,
@@ -706,6 +827,7 @@ pub enum Activity {
     DrawShape,
     NameShape,
     FindShape,
+    QuickSums,
 }
 
 /// The skills picker's sections, each a strand of the curriculum, in box
@@ -726,6 +848,7 @@ pub const SKILL_GROUPS: &[(&str, &[Activity])] = &[
             Activity::NumberLine,
             Activity::ColumnAdd,
             Activity::ColumnSub,
+            Activity::QuickSums,
         ],
     ),
     ("BAR MODELS", &[Activity::Bar, Activity::CompareBars]),
@@ -792,6 +915,7 @@ impl Activity {
             DrawShape => &[DrawShape],
             NameShape => &[NameShape],
             FindShape => &[FindShape],
+            QuickSums => &[QuickSums],
         }
     }
 
@@ -829,6 +953,7 @@ impl Activity {
             DrawShape => "DRAW SHAPES",
             NameShape => "NAME THE SHAPE",
             FindShape => "FIND THE SHAPE",
+            QuickSums => "QUICK SUMS",
         }
     }
 }
@@ -885,6 +1010,7 @@ fn page_prompt(act: Activity, n: usize) -> &'static str {
         DrawShape => "DRAW THE SHAPE",
         NameShape => "WHAT SHAPE IS THIS?",
         FindShape => "MARK THE SHAPE",
+        QuickSums => "MARK THE ANSWER",
         Compare => "WRITE <, =, OR >",
         NumberLine => "COUNT THE HOPS",
         BondChain => "FILL THE CIRCLES, ONE AT A TIME",
@@ -1187,6 +1313,11 @@ fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
             let (target, options) = shape_options(level, rng);
             Problem { kind: Kind::FindShape { target, options }, prompt: target.find_prompt() }
         }
+        Activity::QuickSums => {
+            let (a, op, b) = quick_sum(level, rng);
+            let options = sum_options(apply(a, op, b), op, b, rng);
+            Problem { kind: Kind::QuickSum { a, op, b, options }, prompt: "MARK THE ANSWER" }
+        }
         Activity::DrawShape => {
             use Shape::*;
             let pool: &[Shape] = if level <= 2 { &[Circle, Triangle, Square, Rectangle] } else { &[Triangle, Square, Rectangle, Pentagon, Hexagon] };
@@ -1389,6 +1520,7 @@ mod tests {
                             | (Kind::DrawShape { .. }, Activity::DrawShape)
                             | (Kind::NameShape { .. }, Activity::NameShape)
                             | (Kind::FindShape { .. }, Activity::FindShape)
+                            | (Kind::QuickSum { .. }, Activity::QuickSums)
                     );
                     assert!(same, "skill {act:?} at level {level} dealt {:?}", p.kind);
                 }
@@ -1407,7 +1539,7 @@ mod tests {
         for (i, a) in skills.iter().enumerate() {
             assert!(!skills[..i].contains(a), "{a:?} sits in two skill groups");
         }
-        assert_eq!(skills.len(), 27, "every math activity has a box");
+        assert_eq!(skills.len(), 28, "every math activity has a box");
     }
 
     #[test]
@@ -1504,7 +1636,8 @@ mod tests {
                         | Kind::Share { .. } | Kind::Trace { .. } | Kind::BondChain(_)
                         | Kind::BridgeTen { .. } | Kind::TraceNumber { .. } | Kind::Groups { .. }
                         | Kind::ShapeSides { .. } | Kind::CountShapes { .. } | Kind::ShapePattern { .. }
-                        | Kind::DrawShape { .. } | Kind::NameShape { .. } | Kind::FindShape { .. });
+                        | Kind::DrawShape { .. } | Kind::NameShape { .. } | Kind::FindShape { .. }
+                        | Kind::QuickSum { .. });
                     if solo_only {
                         assert_eq!(set.items.len(), 1, "{:?} needs the whole page", set.items[0].kind);
                     } else {
@@ -1743,6 +1876,46 @@ mod tests {
             .collect();
         assert_eq!(spots.len(), 3);
         assert_eq!(Problem { kind: Kind::Equation { a: 1, op: Op::Add, b: 1 }, prompt: "" }.choice_answer(), None);
+    }
+
+    #[test]
+    fn quick_sums_offer_the_answer_once_among_near_misses() {
+        for level in 1..=MAX_LEVEL {
+            for kind in dealt(level, Activity::QuickSums, 300) {
+                let p = Problem { kind: kind.clone(), prompt: "" };
+                let Kind::QuickSum { a, op, b, options } = kind else { panic!() };
+                let answer: u32 = p.expected().parse().unwrap();
+                assert_eq!(options[p.choice_answer().unwrap()], answer);
+                assert_eq!(options.iter().filter(|&&o| o == answer).count(), 1, "{options:?}");
+                assert!(options[0] != options[1] && options[1] != options[2] && options[0] != options[2]);
+                match op {
+                    Op::Sub => assert!(b < a, "{a} - {b}"),
+                    Op::Div => assert!(a % b == 0 && b > 0, "{a} / {b}"),
+                    _ => {}
+                }
+                if level == 1 {
+                    assert!(op == Op::Add && answer <= 5, "{a} {op:?} {b}");
+                }
+                if level <= 3 {
+                    assert!(!matches!(op, Op::Mul | Op::Div), "times wait for level 4");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_race_is_ten_tick_boxes_at_the_level() {
+        for level in 1..=MAX_LEVEL {
+            let mut rng = Rng::new(level as u32);
+            let qs = race(level, &mut rng);
+            assert_eq!(qs.len(), RACE_LEN);
+            assert!(qs.iter().all(|q| q.choice_answer().is_some()), "every race question is marked here");
+            let shapes = qs.iter().filter(|q| matches!(q.kind, Kind::NameShape { .. } | Kind::FindShape { .. })).count();
+            assert!((1..=3).contains(&shapes), "{shapes} shapes at level {level}");
+            if level == 1 {
+                assert!(!qs.iter().any(|q| matches!(q.kind, Kind::NameShape { .. })), "no reading before level 2");
+            }
+        }
     }
 
     #[test]

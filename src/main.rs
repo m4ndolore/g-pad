@@ -658,6 +658,36 @@ fn learn_sheets(dir: &str) -> i32 {
         println!("{path}");
         session.next();
     }
+    // A race at levels 1, 3 and 5, as dealt, then a finish line.
+    let race_box = learn::menu_index(learn::Pick::Race).expect("SPEED RACE is on the menu");
+    for level in [1u8, 3, 5] {
+        let mut session = learn::Session::start_at(level, 50 + level as u32);
+        session.open_menu();
+        session.choose_menu(race_box);
+        session.draw(&mut surf, &ui_font);
+        let path = format!("{dir}/learn-race-L{level}.png");
+        if let Err(e) = dump_page(&surf, &path) {
+            eprintln!("g-pad: write {path}: {e}");
+            return 1;
+        }
+        println!("{path}");
+        if level == 3 {
+            let done = Instant::now() + Duration::from_secs(48);
+            while let Some(right) = match &session.page {
+                learn::Page::Race(r) => r.question().and_then(|q| q.choice_answer()),
+                _ => None,
+            } {
+                session.race_answer(right, done);
+            }
+            session.draw(&mut surf, &ui_font);
+            let path = format!("{dir}/learn-race-finish.png");
+            if let Err(e) = dump_page(&surf, &path) {
+                eprintln!("g-pad: write {path}: {e}");
+                return 1;
+            }
+            println!("{path}");
+        }
+    }
     // A tick-box question, answered right and then wrong, through the same
     // reply parsing and marks the main loop uses.
     let name_box = learn::problems::math_skills().iter()
@@ -2102,6 +2132,9 @@ fn run() -> std::io::Result<()> {
                 if let Some(ref mut session) = learn_session {
                     // Marks the page answers locally: NEW deals, MENU opens
                     // the picker, and a picker choice deals what it names.
+                    // A wrong race tick: the box to underline after the
+                    // redraw. The race's clock is the penalty.
+                    let mut race_miss: Option<BBox> = None;
                     let deal_locally = match tick {
                         LearnTick::New => {
                             session.next();
@@ -2112,6 +2145,20 @@ fn run() -> std::io::Result<()> {
                             true
                         }
                         LearnTick::Choice(i) if session.is_menu() => session.choose_menu(i),
+                        // A race tick is marked here and deals at once: the
+                        // next question, the same one after a miss, or the
+                        // finish line.
+                        LearnTick::Choice(i) if session.is_race() => {
+                            let chosen = session.hits.choices.get(i).copied();
+                            match session.race_answer(i, Instant::now()) {
+                                Some(learn::RaceStep::Wrong) => {
+                                    race_miss = chosen;
+                                    true
+                                }
+                                Some(_) => true,
+                                None => false,
+                            }
+                        }
                         _ => false,
                     };
                     if deal_locally && session.page == learn::Page::Chess {
@@ -2132,6 +2179,10 @@ fn run() -> std::io::Result<()> {
                     } else if deal_locally {
                         user_ink.clear();
                         session.draw(&mut surf, &ui_font);
+                        if let Some(b) = race_miss {
+                            learn::sheet::draw_look_again(&mut surf, &b);
+                            let _ = learn::sheet::draw_feedback(&mut surf, &ui_font, "TRY AGAIN!", "", false, 0);
+                        }
                         disp.full_refresh(surf.w, surf.h);
                     } else if let Some((i, reply)) = match tick {
                         LearnTick::Choice(i) => session.answer_choice(i).map(|r| (i, r)),
@@ -3933,7 +3984,8 @@ fn learn_flavor(session: &learn::Session) -> LearnFlavor {
         learn::Page::Play(learn::games::Game::Guess) => LearnFlavor::Guess,
         learn::Page::Play(learn::games::Game::Story { .. }) => LearnFlavor::Story,
         // Unreachable in marking: the picker pages and the board have no DONE box.
-        learn::Page::Menu | learn::Page::Skills | learn::Page::Chess | learn::Page::Trophies => LearnFlavor::Practice,
+        learn::Page::Menu | learn::Page::Skills | learn::Page::Chess | learn::Page::Trophies
+            | learn::Page::Race(_) => LearnFlavor::Practice,
     }
 }
 

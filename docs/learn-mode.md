@@ -60,6 +60,25 @@ down, silently. Activities rotate rather than sample, so a math page is
 always followed by something different. The menu's LEVEL row can re-seat the
 ladder by hand at any time; the automatic walk continues from the new rung.
 
+## Speed race
+
+**SPEED RACE** (a GAMES entry) is ten tick-box questions against the clock,
+at the player's level: QUICK SUMS (a sum with three answers to tick, drawn
+from what the level is learning, down to `77 - 2` and `4 x 10`) with one to
+three shape questions among them (FIND THE SHAPE before reading, NAME THE
+SHAPE after). The header counts `3 / 10` over a bar of ten cells, the done
+ones filled.
+
+Every tick is marked on the tablet and deals at once: a right tick the next
+question, a wrong one TRY AGAIN under the ticked box, on the same question.
+The clock starts when the race is dealt and stops on the last right tick; a
+miss is never counted out loud, its cost is the time. The finish line shows
+the time, YOUR FIRST RACE! or NEW RECORD! or the player's best, NO MISSES!
+when there were none, and the stars earned: 3 for finishing, 2 more for no
+misses, 2 more for beating your own best. NEW races again. Races move
+neither the ladder nor the session score: the race is the game, the ladder
+is the lesson. Each player's best time is on the leaderboard.
+
 ## Players, stars, and trophies
 
 The menu's PLAYER row lists who can play: FOX, OWL, and BEAR, or the names
@@ -127,8 +146,8 @@ letters genuinely touch the lines the child is told to reach.
 
 A mark in MENU deals the picker, three boxes across: two labeled sections,
 **PRACTICE** (Math, Math Skills, Writing, Write Numbers, Shapes, Surprise
-Mix) and **GAMES** (Trophies, Chess, Doodle Critter, Guessing Game, Story
-Time), then a **PLAYER** row and a **LEVEL** row of five numbered boxes, the
+Mix) and **GAMES** (Speed Race, Trophies, Chess, Doodle Critter, Guessing
+Game, Story Time), then a **PLAYER** row and a **LEVEL** row of five numbered boxes, the
 current player and level filled solid. A mark in an entry deals that
 page at once, and the choice is *sticky*: a picked game deals itself again on
 every NEW, a picked topic narrows the practice rotation (math only, or tracing
@@ -142,7 +161,7 @@ name, grouped by strand:
 | Strand | Skills |
 |---|---|
 | Counting & numbers | Count Dots, Bigger or Smaller, Tens & Ones, Hundred Chart, Skip Counting |
-| Adding & taking away | Number Bonds, Bond Chains, Make Ten, Add by Making Ten, Number Sentences, Number Line, Big Sums, Big Take-Aways |
+| Adding & taking away | Number Bonds, Bond Chains, Make Ten, Add by Making Ten, Number Sentences, Number Line, Big Sums, Big Take-Aways, Quick Sums |
 | Bar models | Bar Models, How Many More |
 | Times & sharing | Times Tables, Equal Groups, Times Facts, Sharing, Missing Number, Divide |
 | Shapes | Name the Shape, Find the Shape, Sides & Corners, Count Shapes, Shape Patterns, Draw Shapes |
