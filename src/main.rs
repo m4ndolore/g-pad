@@ -504,6 +504,20 @@ fn learn_sheets(dir: &str) -> i32 {
         return 1;
     }
     println!("{path}");
+    // The leaderboard, with a race of stars and trophies to show.
+    let mut roster = learn::players::Roster::in_memory();
+    for (p, (stars, level, race)) in roster.players.iter_mut().zip([(63, 3, Some(71_000)), (88, 5, Some(58_000)), (12, 1, None)]) {
+        p.stars = stars;
+        p.best_level = level;
+        p.best_race_ms = race;
+    }
+    let _ = learn::sheet::draw_trophies(&mut surf, &ui_font, &roster);
+    let path = format!("{dir}/learn-trophies.png");
+    if let Err(e) = dump_page(&surf, &path) {
+        eprintln!("g-pad: write {path}: {e}");
+        return 1;
+    }
+    println!("{path}");
     session.choose_menu(skills_box);
     session.draw(&mut surf, &ui_font);
     let path = format!("{dir}/learn-skills.png");
@@ -2630,8 +2644,15 @@ fn run() -> std::io::Result<()> {
                                     } else {
                                         0
                                     };
+                                    // A trophy or a new level outshouts the
+                                    // tutor's cheer, once.
+                                    let celebration = session.take_celebration();
+                                    let cheer = match celebration {
+                                        Some(c) if verdict == learn::Verdict::Yes => c.to_string(),
+                                        _ => fb.cheer.clone(),
+                                    };
                                     let region = learn::sheet::draw_feedback(
-                                        &mut surf, &ui_font, &fb.cheer, &hint,
+                                        &mut surf, &ui_font, &cheer, &hint,
                                         verdict == learn::Verdict::Yes, award,
                                     );
                                     let (x, y, w, h) = region.rect();
@@ -3912,7 +3933,7 @@ fn learn_flavor(session: &learn::Session) -> LearnFlavor {
         learn::Page::Play(learn::games::Game::Guess) => LearnFlavor::Guess,
         learn::Page::Play(learn::games::Game::Story { .. }) => LearnFlavor::Story,
         // Unreachable in marking: the picker pages and the board have no DONE box.
-        learn::Page::Menu | learn::Page::Skills | learn::Page::Chess => LearnFlavor::Practice,
+        learn::Page::Menu | learn::Page::Skills | learn::Page::Chess | learn::Page::Trophies => LearnFlavor::Practice,
     }
 }
 
@@ -3953,10 +3974,7 @@ fn learn_mark(ink: &mut ink::Ink, session: &learn::Session, ui_font: &FontRef,
         if session.is_menu() {
             // A picker page's furniture is its choice grid; the chosen page
             // repaints in full right after, so only the grid needs restoring.
-            let _ = match session.page {
-                learn::Page::Skills => learn::sheet::draw_skills(surf, ui_font),
-                _ => learn::sheet::draw_menu(surf, ui_font, session.level()),
-            };
+            let _ = session.redraw_picker(surf, ui_font);
         } else {
             learn::sheet::refresh_boxes(surf, ui_font);
             // A story page also has choice boxes under the mark; repaint them.

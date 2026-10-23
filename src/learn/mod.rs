@@ -20,6 +20,7 @@
 //! and the board's MENU button comes back here.
 
 pub mod games;
+pub mod players;
 pub mod problems;
 pub mod sheet;
 pub mod verdict;
@@ -51,6 +52,9 @@ pub enum Page {
     /// The chess board is up over the page. The board owns input until its
     /// MENU button closes it; drawing this page draws the menu.
     Chess,
+    /// The leaderboard: every player's stars, trophies, best level and race.
+    /// Its MENU box goes back to the menu.
+    Trophies,
 }
 
 /// What marking a named menu entry does.
@@ -62,12 +66,14 @@ pub enum Pick {
     Skills,
     /// Open the kids' chess board.
     Chess,
+    /// Open the leaderboard.
+    Trophies,
     /// Deal this game (by `games::Game::nth` index) on every NEW.
     Game(usize),
 }
 
 /// The menu's named entries, section by section, in choice-index order; the
-/// LEVEL boxes follow them. `sheet::draw_menu` draws this table and
+/// PLAYER boxes follow them, then the LEVEL boxes. `sheet::draw_menu` draws this table and
 /// `Session::choose_menu` reads it, so a box and its meaning cannot drift.
 pub const MENU: &[(&str, &[(&str, Pick)])] = &[
     (
@@ -84,6 +90,7 @@ pub const MENU: &[(&str, &[(&str, Pick)])] = &[
     (
         "GAMES",
         &[
+            ("TROPHIES", Pick::Trophies),
             ("CHESS", Pick::Chess),
             ("DOODLE CRITTER", Pick::Game(0)),
             ("GUESSING GAME", Pick::Game(1)),
@@ -135,6 +142,10 @@ pub struct Session {
     last_award: u32,
     /// Which local cheer a right tick says next.
     cheer_rot: usize,
+    /// Who is playing, and what everyone has earned.
+    roster: players::Roster,
+    /// What the latest answer won beyond its points, for the cheer.
+    celebration: Option<&'static str>,
     pub page: Page,
     pub hits: HitMap,
 }
@@ -150,14 +161,20 @@ impl Session {
             Ok("never") => PlayPolicy::Never,
             _ => PlayPolicy::Earned,
         };
-        Self::start_with(level, now_seed(), policy)
+        // A player who has played keeps their own level; RIDDLE_LEARN_LEVEL
+        // only seeds one who has not.
+        let roster = players::Roster::load();
+        let p = roster.player();
+        let level = if p.stars > 0 || p.level > 1 { p.level } else { level };
+        Self::start_with(level, now_seed(), policy, roster)
     }
 
+    /// A session that never touches the disk: tests and previews.
     pub fn start_at(level: u8, seed: u32) -> Self {
-        Self::start_with(level, seed, PlayPolicy::Earned)
+        Self::start_with(level, seed, PlayPolicy::Earned, players::Roster::in_memory())
     }
 
-    fn start_with(level: u8, seed: u32, policy: PlayPolicy) -> Self {
+    fn start_with(level: u8, seed: u32, policy: PlayPolicy, roster: players::Roster) -> Self {
         let mut rng = problems::Rng::new(seed);
         let ladder = problems::Ladder::new(level);
         let page = if policy == PlayPolicy::Always {
@@ -178,6 +195,8 @@ impl Session {
             score: 0,
             last_award: 0,
             cheer_rot: 0,
+            roster,
+            celebration: None,
             page,
             hits: empty_hits(),
         }
@@ -190,6 +209,17 @@ impl Session {
     /// What the latest correct answer scored; 0 after anything else.
     pub fn last_award(&self) -> u32 {
         self.last_award
+    }
+
+    #[cfg(test)]
+    pub fn roster(&self) -> &players::Roster {
+        &self.roster
+    }
+
+    /// What the latest right answer won beyond its points — NEW TROPHY! or
+    /// LEVEL UP! — taken once, for the cheer.
+    pub fn take_celebration(&mut self) -> Option<&'static str> {
+        self.celebration.take()
     }
 
     /// The graded problem of a practice page: the last on the sheet.
@@ -214,15 +244,34 @@ impl Session {
     pub fn draw(&mut self, surf: &mut Surface, ui_font: &FontRef) {
         self.hits = match &self.page {
             Page::Practice(set) => {
-                sheet::draw(surf, ui_font, set, self.ladder.level, self.ladder.streak(), self.score)
+                let header = sheet::Header {
+                    player: &self.roster.player().name,
+                    level: self.ladder.level,
+                    streak: self.ladder.streak(),
+                    score: self.score,
+                };
+                sheet::draw(surf, ui_font, set, &header)
             }
             Page::Play(g) => games::draw(surf, ui_font, g),
             Page::Menu | Page::Chess => {
                 self.page = Page::Menu;
-                sheet::draw_menu(surf, ui_font, self.ladder.level)
+                self.redraw_picker(surf, ui_font)
             }
             Page::Skills => sheet::draw_skills(surf, ui_font),
+            Page::Trophies => sheet::draw_trophies(surf, ui_font, &self.roster),
         };
+    }
+
+    /// Repaint the picker under a mark that was just absorbed, and return
+    /// its hit map. The skills page and the menu are the only pickers.
+    pub fn redraw_picker(&self, surf: &mut Surface, ui_font: &FontRef) -> HitMap {
+        match self.page {
+            Page::Skills => sheet::draw_skills(surf, ui_font),
+            _ => {
+                let names: Vec<&str> = self.roster.players.iter().map(|p| p.name.as_str()).collect();
+                sheet::draw_menu(surf, ui_font, self.ladder.level, &names, self.roster.current)
+            }
+        }
     }
 
     /// Deal the next page (call `draw` afterwards). A game focus deals the
@@ -295,15 +344,29 @@ impl Session {
                     self.page = Page::Chess;
                     return true;
                 }
+                Some(Pick::Trophies) => {
+                    self.page = Page::Trophies;
+                    return true;
+                }
                 None => {
-                    // A LEVEL box: re-seat the adaptive ladder there (it
-                    // still walks up and down from the new rung) and stay
-                    // on the menu, redrawn with the pick filled in.
+                    // A PLAYER box: switch to them and seat the ladder on
+                    // their level. A LEVEL box after those: re-seat the
+                    // ladder there (it still walks up and down from the new
+                    // rung). Either way the menu stays up, redrawn with the
+                    // pick filled in, so a topic can still be chosen.
                     let k = i - menu_entries().count();
+                    let n = self.roster.players.len();
+                    if k < n {
+                        self.roster.switch(k);
+                        self.ladder = problems::Ladder::new(self.roster.player().level);
+                        return true;
+                    }
+                    let k = k - n;
                     if k >= MENU_LEVELS as usize {
                         return false;
                     }
                     self.ladder = problems::Ladder::new(k as u8 + 1);
+                    self.roster.set_level(self.ladder.level);
                     return true;
                 }
             }
@@ -329,14 +392,25 @@ impl Session {
     /// never inflates the answer that caused it.
     pub fn record(&mut self, v: Verdict) {
         if let Some(correct) = v.counts_as_correct() {
+            self.celebration = None;
             if correct {
                 self.last_award = 10 * self.ladder.level as u32 + 5 * self.ladder.streak().min(4);
                 self.score += self.last_award;
                 self.earned += 1;
+                if self.roster.award(self.ladder.streak()).trophy {
+                    self.celebration = Some("NEW TROPHY!");
+                }
             } else {
                 self.last_award = 0;
             }
+            let before = self.ladder.level;
             self.ladder.record(correct);
+            if self.ladder.level != before {
+                let badge = self.roster.set_level(self.ladder.level);
+                if badge && self.celebration.is_none() {
+                    self.celebration = Some("LEVEL UP!");
+                }
+            }
         }
     }
 
@@ -394,7 +468,7 @@ impl Session {
         !self.is_choice_page()
             && !matches!(
                 self.page,
-                Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills | Page::Chess
+                Page::Play(games::Game::Story { .. }) | Page::Menu | Page::Skills | Page::Chess | Page::Trophies
             )
     }
 
@@ -451,9 +525,9 @@ impl Session {
                 };
                 game.instruction(pending)
             }
-            // The picker pages and the chess board have no DONE box; nothing
-            // is ever asked from them.
-            Page::Menu | Page::Skills | Page::Chess => String::new(),
+            // The picker pages, the board, and the leaderboard have no DONE
+            // box; nothing is ever asked from them.
+            Page::Menu | Page::Skills | Page::Chess | Page::Trophies => String::new(),
         }
     }
 }
@@ -533,8 +607,12 @@ mod tests {
     const WRITING: Pick = Pick::Topic(problems::Topic::Writing);
     const MIX: Pick = Pick::Topic(problems::Topic::Mix);
 
+    fn player_box(i: usize) -> usize {
+        menu_entries().count() + i
+    }
+
     fn level_box(level: u8) -> usize {
-        menu_entries().count() + level as usize - 1
+        menu_entries().count() + players::Roster::in_memory().players.len() + level as usize - 1
     }
 
     #[test]
@@ -700,17 +778,20 @@ mod tests {
 
     #[test]
     fn every_menu_box_maps_to_a_selection() {
-        // The named entries, then the LEVEL boxes after them.
+        // The named entries, then the PLAYER boxes, then the LEVEL boxes.
         let named = menu_entries().count();
-        for i in 0..named + MENU_LEVELS as usize {
+        let players = players::Roster::in_memory().players.len();
+        for i in 0..named + players + MENU_LEVELS as usize {
             let mut s = Session::start_at(1, 5);
             s.open_menu();
             assert!(s.choose_menu(i), "menu box {i} must select something");
-            // MATH SKILLS and the level boxes keep a picker up, CHESS leaves
-            // the board's marker, and every other pick deals a page.
+            // MATH SKILLS and the player and level boxes keep a picker up,
+            // CHESS leaves the board's marker, TROPHIES the leaderboard, and
+            // every other pick deals a page.
             let stays = i == pick(Pick::Skills) || i >= named;
             assert_eq!(s.is_menu(), stays, "menu box {i} left the wrong page up");
             assert_eq!(s.page == Page::Chess, i == pick(Pick::Chess));
+            assert_eq!(s.page == Page::Trophies, i == pick(Pick::Trophies));
         }
         // And every skills box latches a skill and leaves.
         for i in 0..problems::math_skills().len() {
@@ -720,6 +801,62 @@ mod tests {
             assert!(s.choose_menu(i), "skill box {i} must select something");
             assert!(!s.is_menu(), "a skill pick must deal a page");
         }
+    }
+
+    #[test]
+    fn each_player_keeps_their_own_level_and_stars() {
+        let mut s = Session::start_at(1, 5);
+        s.open_menu();
+        // FOX climbs to level 2.
+        for _ in 0..3 {
+            s.record(Verdict::Yes);
+        }
+        assert_eq!(s.level(), 2);
+        assert_eq!(s.roster().players[0].stars, 1 + 1 + 2);
+        // OWL starts at their own level 1, and earns their own stars.
+        assert!(s.choose_menu(player_box(1)));
+        assert!(s.is_menu(), "a player pick keeps the menu up");
+        assert_eq!((s.roster().current, s.level()), (1, 1));
+        s.record(Verdict::Yes);
+        assert_eq!(s.roster().players[1].stars, 1);
+        // Back to FOX: level 2 again.
+        assert!(s.choose_menu(player_box(0)));
+        assert_eq!(s.level(), 2);
+        // A level box sets the current player's level.
+        assert!(s.choose_menu(level_box(4)));
+        assert_eq!(s.roster().player().level, 4);
+    }
+
+    #[test]
+    fn a_trophy_or_a_new_level_changes_the_cheer_once() {
+        let mut s = Session::start_at(1, 5);
+        s.record(Verdict::Yes);
+        assert_eq!(s.take_celebration(), None);
+        s.record(Verdict::Yes);
+        s.record(Verdict::Yes); // the third right answer climbs to level 2
+        assert_eq!(s.take_celebration(), Some("LEVEL UP!"));
+        assert_eq!(s.take_celebration(), None, "a celebration is said once");
+        // Falling back and climbing again to a level already reached is no
+        // new badge.
+        s.record(Verdict::No);
+        s.record(Verdict::No);
+        assert_eq!(s.level(), 1);
+        for _ in 0..3 {
+            s.record(Verdict::Yes);
+        }
+        assert_eq!(s.level(), 2);
+        assert_ne!(s.take_celebration(), Some("LEVEL UP!"));
+        // Enough stars win a trophy.
+        while s.roster().player().stars + 2 < players::STARS_PER_TROPHY {
+            s.record(Verdict::Yes);
+            s.take_celebration();
+        }
+        let mut won = false;
+        for _ in 0..3 {
+            s.record(Verdict::Yes);
+            won |= s.take_celebration() == Some("NEW TROPHY!");
+        }
+        assert!(won);
     }
 
     #[test]

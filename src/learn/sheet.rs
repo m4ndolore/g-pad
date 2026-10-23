@@ -128,18 +128,35 @@ impl Band {
     }
 }
 
+/// What the sheet header shows: who is playing, their level, the streak
+/// dots, and the session score.
+pub struct Header<'a> {
+    pub player: &'a str,
+    pub level: u8,
+    pub streak: u32,
+    pub score: u32,
+}
+
+impl Header<'static> {
+    /// A header with no player: tests and previews.
+    #[cfg(test)]
+    pub fn plain(level: u8, streak: u32, score: u32) -> Self {
+        Header { player: "LEARN", level, streak, score }
+    }
+}
+
 /// Draw the whole sheet for `set` onto a white page and return its hit map.
 /// One question keeps the classic full-page figure; two to four stack in
 /// numbered bands, each with its own blank — the LAST blank is the graded
-/// `answer`. `level`, `streak`, and `score` feed the header; they are the
-/// child's only visible progress chrome.
-pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, level: u8, streak: u32, score: u32) -> HitMap {
+/// `answer`. The header is the child's only visible progress chrome.
+pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, header: &Header) -> HitMap {
+    let Header { player, level, streak, score } = *header;
     surf.fill_rect(0, 0, W, H, WHITE);
 
     // Header: what this page is, the session score, and the streak dots.
     // Quiet, top corners — the score takes the free top-center and only once
     // it exists, so the first page opens as calm as ever.
-    print(surf, ui_font, &format!("LEARN · LEVEL {level}"), 32.0, MARGIN, 40, BLACK);
+    print(surf, ui_font, &format!("{player} · LEVEL {level}"), 32.0, MARGIN, 40, BLACK);
     if score > 0 {
         let txt = format!("{score}");
         let px = 40.0;
@@ -985,8 +1002,8 @@ struct Grid {
     section_gap: i32,
 }
 
-/// The menu has room for big boxes.
-const MENU_GRID: Grid = Grid { cols: 2, box_h: (H * 8 / 100) as i32, row_gap: (H * 25 / 1000) as i32, section_gap: (H * 4 / 100) as i32 };
+/// The menu has room for big boxes, three across.
+const MENU_GRID: Grid = Grid { cols: 3, box_h: (H * 8 / 100) as i32, row_gap: (H * 2 / 100) as i32, section_gap: (H * 35 / 1000) as i32 };
 
 /// The skills page fits every strand above the footer: three columns, and
 /// shorter boxes.
@@ -1036,42 +1053,138 @@ fn label_box(surf: &mut Surface, font: &FontRef, label: &str, x: i32, y: i32, w:
     b
 }
 
-/// Draw the menu, `super::MENU` section by section, then the LEVEL row, and
-/// return its hit map: every entry is a choice box, and there is
-/// deliberately no DONE, NEW, or MENU here. `level` fills in the LEVEL row's
-/// current box so the child can see where the ladder stands.
-pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef, level: u8) -> HitMap {
+/// Draw the menu, `super::MENU` section by section, then a PLAYER row and a
+/// LEVEL row, and return its hit map: every entry is a choice box, and there
+/// is deliberately no DONE, NEW, or MENU here. The current player's box and
+/// the current level's box are filled solid, so both read at a glance.
+pub fn draw_menu(surf: &mut Surface, ui_font: &FontRef, level: u8, players: &[&str], current: usize) -> HitMap {
     let sections: Vec<(&str, Vec<&str>)> = super::MENU
         .iter()
         .map(|(heading, items)| (*heading, items.iter().map(|(label, _)| *label).collect()))
         .collect();
-    let (mut choices, ly) = draw_picker(surf, ui_font, "LEARN · MENU", "MARK A BOX TO CHOOSE", &sections, &MENU_GRID);
+    let (mut choices, y) = draw_picker(surf, ui_font, "LEARN · MENU", "MARK A BOX TO CHOOSE", &sections, &MENU_GRID);
+    // The PLAYER and LEVEL rows: marking one re-seats the ladder and keeps
+    // the menu open; their indices continue after the named entries.
+    let (boxes, y) = filled_row(surf, ui_font, "PLAYER", players, current, 40.0, y);
+    choices.extend(boxes);
+    let levels: Vec<String> = (1..=super::MENU_LEVELS).map(|k| k.to_string()).collect();
+    let labels: Vec<&str> = levels.iter().map(String::as_str).collect();
+    let (boxes, _) = filled_row(surf, ui_font, "LEVEL", &labels, (level as usize).saturating_sub(1), 52.0, y);
+    choices.extend(boxes);
+    HitMap::choices_only(choices)
+}
 
-    // The LEVEL row: one box per level, the current one filled solid so it
-    // reads at a glance. Marking one re-seats the ladder and keeps the menu
-    // open; the indices continue after the named entries.
-    print(surf, ui_font, "LEVEL", 30.0, MARGIN, ly as usize, BLACK);
-    let top = ly + 50;
+/// A headed row of equal boxes, the `filled` one solid black with white
+/// print. Returns the boxes and the y where the next section starts.
+fn filled_row(surf: &mut Surface, font: &FontRef, heading: &str, labels: &[&str], filled: usize, px: f32, y: i32)
+    -> (Vec<BBox>, i32) {
+    print(surf, font, heading, 30.0, MARGIN, y as usize, BLACK);
+    let top = y + 50;
     let gap_x = (W * 4 / 100) as i32;
-    let n = super::MENU_LEVELS as i32;
-    let lw = ((W - 2 * MARGIN) as i32 - (n - 1) * gap_x) / n;
-    let bh = MENU_GRID.box_h;
-    for k in 0..super::MENU_LEVELS {
-        let x = MARGIN as i32 + k as i32 * (lw + gap_x);
-        let ink = if k + 1 == level {
-            surf.fill_rect(x.max(0) as usize, top.max(0) as usize, lw as usize, bh as usize, BLACK);
+    let n = labels.len().max(1) as i32;
+    let w = ((W - 2 * MARGIN) as i32 - (n - 1) * gap_x) / n;
+    let h = MENU_GRID.box_h;
+    let mut boxes = Vec::new();
+    for (k, label) in labels.iter().enumerate() {
+        let x = MARGIN as i32 + k as i32 * (w + gap_x);
+        let ink = if k == filled {
+            surf.fill_rect(x.max(0) as usize, top.max(0) as usize, w as usize, h as usize, BLACK);
             WHITE
         } else {
-            rect_outline(surf, x, top, lw, bh, 4, BLACK);
+            rect_outline(surf, x, top, w, h, 4, BLACK);
             BLACK
         };
-        print_tight_centered(surf, ui_font, &format!("{}", k + 1), 52.0, x + lw / 2, top + bh / 2, ink);
+        let px = fit_px(font, label, px, (w - 30) as f32);
+        print_tight_centered(surf, font, label, px, x + w / 2, top + h / 2, ink);
         let mut b = BBox::empty();
         b.add(x, top, 0);
-        b.add(x + lw, top + bh, 0);
-        choices.push(b);
+        b.add(x + w, top + h, 0);
+        boxes.push(b);
     }
-    HitMap::choices_only(choices)
+    (boxes, top + h + MENU_GRID.section_gap)
+}
+
+/// The leaderboard: one row per player, most stars first, each with a rank
+/// medal, their stars, best level and best race, and a cup per trophy. The
+/// footer's MENU box goes back to the menu.
+pub fn draw_trophies(surf: &mut Surface, ui_font: &FontRef, roster: &super::players::Roster) -> HitMap {
+    surf.fill_rect(0, 0, W, H, WHITE);
+    print(surf, ui_font, "LEARN · TROPHIES", 32.0, MARGIN, 40, BLACK);
+    print_centered(surf, ui_font, "WHO HAS THE MOST STARS?", 46.0, (W / 2) as i32, (H * 8 / 100) as i32, BLACK);
+    let order = roster.ranking();
+    let top = (H * 14 / 100) as i32;
+    let row_h = ((box_top() - 30 - top) / order.len().max(1) as i32).min((H * 24 / 100) as i32);
+    for (slot, &i) in order.iter().enumerate() {
+        let p = &roster.players[i];
+        let y0 = top + slot as i32 * row_h;
+        // Ties share a place: rank is one more than how many have more.
+        let rank = 1 + roster.players.iter().filter(|o| o.stars > p.stars).count();
+        let (mx, my, mr) = (MARGIN as i32 + 55, y0 + 75, 52);
+        if rank == 1 {
+            surf.stamp(mx, my, mr, BLACK);
+        } else {
+            ring(surf, mx, my, mr, 6, BLACK);
+        }
+        let ink = if rank == 1 { WHITE } else { BLACK };
+        print_tight_centered(surf, ui_font, &ordinal(rank), 34.0, mx, my, ink);
+        let x = MARGIN as i32 + 150;
+        print_tight_at(surf, ui_font, &p.name, 80.0, x, y0 + 55, BLACK);
+        draw_star(surf, x + 26, y0 + 145, 26);
+        let mut line2 = format!("{} STARS  ·  BEST LEVEL {}", p.stars, p.best_level);
+        if let Some(ms) = p.best_race_ms {
+            line2.push_str(&format!("  ·  RACE {}", super::players::race_time(ms)));
+        }
+        let px = fit_px(ui_font, &line2, 40.0, ((W - MARGIN) as i32 - x - 70) as f32);
+        print_tight_at(surf, ui_font, &line2, px, x + 70, y0 + 145, BLACK);
+        // Cups in a row, spaced by their whole width, handles and all.
+        let cups = p.trophies();
+        let (cup, pitch, room) = (38, 146, 6);
+        if cups == 0 {
+            let need = super::players::STARS_PER_TROPHY - p.stars % super::players::STARS_PER_TROPHY;
+            print_tight_at(surf, ui_font, &format!("{need} MORE STARS TO A TROPHY"), 34.0, x, y0 + 240, BLACK);
+        } else {
+            for k in 0..cups.min(room) as i32 {
+                draw_trophy(surf, x + 60 + k * pitch, y0 + 245, cup);
+            }
+            if cups > room {
+                print_tight_at(surf, ui_font, &format!("+{}", cups - room), 44.0, x + 10 + room as i32 * pitch, y0 + 245, BLACK);
+            }
+        }
+        if slot + 1 < order.len() {
+            line(surf, MARGIN as i32, y0 + row_h - 12, (W - MARGIN) as i32, y0 + row_h - 12, 1, FADED);
+        }
+    }
+    let mut map = HitMap::choices_only(Vec::new());
+    map.menu = draw_action_box(surf, ui_font, ActionBox::Menu);
+    map
+}
+
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (1, 11) | (2, 12) | (3, 13) => "TH",
+        (1, _) => "ST",
+        (2, _) => "ND",
+        (3, _) => "RD",
+        _ => "TH",
+    };
+    format!("{n}{suffix}")
+}
+
+/// A trophy cup, solid, about `2s` wide and tall, centered on (cx, cy): a
+/// bowl narrowing to a stem on a base, handles either side.
+fn draw_trophy(surf: &mut Surface, cx: i32, cy: i32, s: i32) {
+    let top = cy - s;
+    ring(surf, cx - s, top + s / 2, s / 2, 5, BLACK);
+    ring(surf, cx + s, top + s / 2, s / 2, 5, BLACK);
+    let bowl_h = s * 11 / 10;
+    for dy in 0..bowl_h {
+        let half = s - (s - s / 4) * dy / bowl_h;
+        surf.fill_rect((cx - half).max(0) as usize, (top + dy).max(0) as usize, (2 * half) as usize, 1, BLACK);
+    }
+    let stem_w = (s / 4).max(4);
+    surf.fill_rect((cx - stem_w / 2).max(0) as usize, (top + bowl_h).max(0) as usize, stem_w as usize, (s / 2) as usize, BLACK);
+    surf.fill_rect((cx - s * 6 / 10).max(0) as usize, (top + bowl_h + s / 2).max(0) as usize, (s * 12 / 10) as usize,
+        (s / 4).max(4) as usize, BLACK);
 }
 
 /// Draw the skills picker, every math activity as its own box grouped by
@@ -1338,7 +1451,7 @@ mod tests {
         for level in 1..=4 {
             for rot in 0..8 {
                 let set = generate_set(level, Topic::Mix, rot, &mut rng);
-                let map = draw(&mut surf, &font, &set, level, 2, 45);
+                let map = draw(&mut surf, &font, &set, &Header::plain(level, 2, 45));
                 // A tick-box page has no DONE; every other page has all four.
                 assert_eq!(map.done.is_empty(), !map.choices.is_empty(), "{:?}", set.items);
                 for b in [&map.answer, &map.new, &map.menu] {
@@ -1383,7 +1496,7 @@ mod tests {
                 assert!(set.items.iter().all(|p| std::mem::discriminant(&p.kind) == d));
                 if set.items.len() > 1 {
                     saw_multi = true;
-                    let map = draw(&mut surf, &font, &set, level, 0, 0);
+                    let map = draw(&mut surf, &font, &set, &Header::plain(level, 0, 0));
                     for (i, b) in map.blanks.iter().enumerate() {
                         // Each band painted its figure: ink lands near each blank.
                         let mut around = BBox::empty();
@@ -1441,10 +1554,11 @@ mod tests {
     fn the_menu_offers_every_item_as_a_disjoint_box_and_nothing_else() {
         let font = ui_font();
         let (_buf, mut surf) = page();
-        let map = draw_menu(&mut surf, &font, 2);
-        // The named entries, then the LEVEL boxes.
+        let players = ["FOX", "OWL", "BEAR"];
+        let map = draw_menu(&mut surf, &font, 2, &players, 1);
+        // The named entries, then the PLAYER boxes, then the LEVEL boxes.
         let named: usize = crate::learn::MENU.iter().map(|(_, items)| items.len()).sum();
-        assert_eq!(map.choices.len(), named + crate::learn::MENU_LEVELS as usize);
+        assert_eq!(map.choices.len(), named + players.len() + crate::learn::MENU_LEVELS as usize);
         assert!(map.done.is_empty() && map.new.is_empty() && map.menu.is_empty() && map.answer.is_empty());
         for (i, b) in map.choices.iter().enumerate() {
             assert!(!b.is_empty());
@@ -1460,13 +1574,16 @@ mod tests {
             let (cx, cy) = ((b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2);
             assert_eq!(map.hit(cx, cy), Some(Target::Choice(i)));
         }
-        // The current level's box is filled solid; the others are outlines.
-        let current = &map.choices[named + 1]; // level 2
-        let other = &map.choices[named]; // level 1
-        assert!(
-            dark_in(&surf, current) > dark_in(&surf, other) * 3,
-            "the current level must read at a glance"
-        );
+        // The current player's and level's boxes are filled solid; the
+        // others are outlines.
+        let player = &map.choices[named + 1]; // OWL
+        let level = &map.choices[named + players.len() + 1]; // level 2
+        for (current, other) in [(player, &map.choices[named]), (level, &map.choices[named + players.len()])] {
+            assert!(
+                dark_in(&surf, current) > dark_in(&surf, other) * 3,
+                "the current player and level must read at a glance"
+            );
+        }
     }
 
     #[test]
@@ -1502,10 +1619,10 @@ mod tests {
         strip.add((W / 3) as i32, 20, 0);
         strip.add((W * 2 / 3) as i32, 90, 0);
         let (_a, mut quiet) = page();
-        draw(&mut quiet, &font, &set, 2, 0, 0);
+        draw(&mut quiet, &font, &set, &Header::plain(2, 0, 0));
         assert_eq!(dark_in(&quiet, &strip), 0, "a scoreless header stays calm");
         let (_b, mut scored) = page();
-        draw(&mut scored, &font, &set, 2, 0, 145);
+        draw(&mut scored, &font, &set, &Header::plain(2, 0, 145));
         assert!(dark_in(&scored, &strip) > 200, "the star and points must be visible");
     }
 
@@ -1517,7 +1634,7 @@ mod tests {
             kind: Kind::Bond { whole: 7, parts: [3, 4], blank: Blank::Part(1) },
             prompt: "WRITE THE MISSING NUMBER",
         };
-        let map = draw(&mut surf, &font, &solo(p), 2, 0, 0);
+        let map = draw(&mut surf, &font, &solo(p), &Header::plain(2, 0, 0));
         // The page is not blank...
         let mut full = BBox::empty();
         full.add(0, 0, 0);
@@ -1538,7 +1655,7 @@ mod tests {
             for level in 1..=crate::learn::problems::MAX_LEVEL {
                 for rot in 0..6 {
                     let set = generate_set(level, Topic::Skill(act), rot, &mut rng);
-                    let map = draw(&mut surf, &font, &set, level, 0, 0);
+                    let map = draw(&mut surf, &font, &set, &Header::plain(level, 0, 0));
                     assert_eq!(map.blanks.len(), set.items.len());
                     for (i, b) in map.blanks.iter().enumerate() {
                         let kind = &set.items[i].kind;
@@ -1572,7 +1689,7 @@ mod tests {
             kind: Kind::Trace { word: "cat" },
             prompt: "TRACE IT, THEN WRITE IT",
         };
-        let map = draw(&mut surf, &font, &solo(p), 1, 0, 0);
+        let map = draw(&mut surf, &font, &solo(p), &Header::plain(1, 0, 0));
         assert!(dark_in(&surf, &map.answer) > 400, "the dashed template must be visible");
     }
 
@@ -1584,7 +1701,7 @@ mod tests {
             kind: Kind::Equation { a: 4, op: Op::Add, b: 3 },
             prompt: "WRITE THE ANSWER",
         };
-        let map = draw(&mut surf, &font, &solo(p), 2, 0, 0);
+        let map = draw(&mut surf, &font, &solo(p), &Header::plain(2, 0, 0));
         let before = dark_in(&surf, &map.answer);
         let check = draw_check(&mut surf, &map.answer);
         assert!(!check.is_empty());
