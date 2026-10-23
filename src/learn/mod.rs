@@ -192,6 +192,9 @@ pub struct Session {
     last_award: u32,
     /// Which local cheer a right tick says next.
     cheer_rot: usize,
+    /// This tick-box page was already answered right. It stays on show
+    /// until the next page deals, and must not pay out again meanwhile.
+    choice_answered: bool,
     /// Who is playing, and what everyone has earned.
     roster: players::Roster,
     /// What the latest answer won beyond its points, for the cheer.
@@ -245,6 +248,7 @@ impl Session {
             score: 0,
             last_award: 0,
             cheer_rot: 0,
+            choice_answered: false,
             roster,
             celebration: None,
             page,
@@ -378,6 +382,7 @@ impl Session {
     /// asked for by name, and its pages keep coming until the menu says
     /// otherwise — "math mode" stays math mode.
     pub fn next(&mut self) {
+        self.choice_answered = false;
         let topic = match self.focus {
             Focus::Game(g) => {
                 self.page = Page::Play(games::Game::nth(g));
@@ -427,6 +432,7 @@ impl Session {
     /// caller to open the board. On the skills page the indices follow
     /// `problems::math_skills()`.
     pub fn choose_menu(&mut self, i: usize) -> bool {
+        self.choice_answered = false;
         self.focus = if self.page == Page::Skills {
             match problems::math_skills().get(i) {
                 Some(&act) => Focus::Practice(problems::Topic::Skill(act)),
@@ -458,6 +464,13 @@ impl Session {
                     let k = i - menu_entries().count();
                     let n = self.roster.players.len();
                     if k < n {
+                        // A new player starts their own session: today's
+                        // points and treat count were someone else's.
+                        if k != self.roster.current {
+                            self.score = 0;
+                            self.last_award = 0;
+                            self.earned = 0;
+                        }
                         self.roster.switch(k);
                         self.ladder = problems::Ladder::new(self.roster.player().level);
                         return true;
@@ -586,12 +599,16 @@ impl Session {
     /// hint), so the verdict travels the same road an oracle reply does.
     /// None when this is not a tick-box page or there is no such box.
     pub fn answer_choice(&mut self, i: usize) -> Option<String> {
+        if self.choice_answered {
+            return None;
+        }
         let p = self.as_practice()?;
         let right = p.choice_answer()?;
         if i >= 3 {
             return None;
         }
         if i == right {
+            self.choice_answered = true;
             self.cheer_rot += 1;
             Some(format!("YES {}", LOCAL_CHEERS[self.cheer_rot % LOCAL_CHEERS.len()]))
         } else {
@@ -917,9 +934,11 @@ mod tests {
         assert_eq!(s.level(), 2);
         assert_eq!(s.roster().players[0].stars, 1 + 1 + 2);
         // OWL starts at their own level 1, and earns their own stars.
+        assert!(s.score > 0);
         assert!(s.choose_menu(player_box(1)));
         assert!(s.is_menu(), "a player pick keeps the menu up");
         assert_eq!((s.roster().current, s.level()), (1, 1));
+        assert_eq!(s.score, 0, "OWL does not start with FOX's points");
         s.record(Verdict::Yes);
         assert_eq!(s.roster().players[1].stars, 1);
         // Back to FOX: level 2 again.
@@ -1020,10 +1039,17 @@ mod tests {
         let (v, f) = verdict::parse(&s.answer_choice(wrong).unwrap());
         assert_eq!(v, Verdict::No);
         assert!(!f.hint.is_empty(), "a wrong tick tells the grown-up how to look again");
+        assert!(s.answer_choice(3).is_none(), "there is no fourth box");
         let (v, f) = verdict::parse(&s.answer_choice(right).unwrap());
         assert_eq!(v, Verdict::Yes);
         assert!(f.cheer.split_whitespace().count() <= 3);
-        assert!(s.answer_choice(3).is_none(), "there is no fourth box");
+        // The answered page stays on show until the next deals, and pays
+        // out once: more ticks, right or wrong, are only ink.
+        assert!(s.answer_choice(right).is_none() && s.answer_choice(wrong).is_none());
+        s.next();
+        if s.is_choice_page() {
+            assert!(s.answer_choice(0).is_some(), "a new page takes ticks again");
+        }
         // Written answers are not tick boxes.
         let mut s = Session::start_at(2, 5);
         s.open_menu();
