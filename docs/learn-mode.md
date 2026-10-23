@@ -60,6 +60,31 @@ down, silently. Activities rotate rather than sample, so a math page is
 always followed by something different. The menu's LEVEL row can re-seat the
 ladder by hand at any time; the automatic walk continues from the new rung.
 
+## Players, stars, and trophies
+
+The menu's PLAYER row lists who can play: FOX, OWL, and BEAR, or the names
+in `RIDDLE_LEARN_PLAYERS` (comma-separated, at most four). The current
+player's box is filled solid. Picking a player switches to their own level;
+a LEVEL pick sets the current player's level. The sheet header names who is
+playing ("FOX · LEVEL 2").
+
+Each player keeps lifetime **stars**: one per right answer, one more on a
+run of three or more. Stars do not depend on the level, on purpose: a
+younger sibling on level 1 earns them as fast as an older one on level 5, so
+the board is a fair race. Every 25 stars is a **trophy**, and a right answer
+that wins one says NEW TROPHY! in place of the tutor's cheer; reaching a
+level for the first time says LEVEL UP!.
+
+**TROPHIES** (a GAMES entry) is the leaderboard: every player, most stars
+first, with a 1ST/2ND/3RD medal (ties share a place), their stars, best
+level, best race, and a cup per trophy. Its MENU box goes back.
+
+Everything persists on the tablet in `$RIDDLE_DATA_DIR/learn-players`
+(`/home/root/g-pad-data` by default): plain `NAME.field=value` lines, keyed
+by name, written to a temporary file and renamed so a flat battery cannot
+lose a child's stars. `RIDDLE_LEARN_LEVEL` seeds only a player who has not
+played yet.
+
 ## Scoring
 
 Math practice keeps a session score — the one piece of gamification beyond
@@ -100,10 +125,11 @@ letters genuinely touch the lines the child is told to reach.
 
 ## The menu
 
-A mark in MENU deals the picker: two labeled sections of tick boxes,
-**PRACTICE** (Math, Math Skills, Writing, Write Numbers, Shapes, Surprise Mix) and **GAMES** (Chess,
-Doodle Critter, Guessing Game, Story Time), then a **LEVEL** row: four
-numbered boxes, the current level filled solid. A mark in an entry deals that
+A mark in MENU deals the picker, three boxes across: two labeled sections,
+**PRACTICE** (Math, Math Skills, Writing, Write Numbers, Shapes, Surprise
+Mix) and **GAMES** (Trophies, Chess, Doodle Critter, Guessing Game, Story
+Time), then a **PLAYER** row and a **LEVEL** row of five numbered boxes, the
+current player and level filled solid. A mark in an entry deals that
 page at once, and the choice is *sticky*: a picked game deals itself again on
 every NEW, a picked topic narrows the practice rotation (math only, or tracing
 only) until the menu says otherwise. Surprise Mix restores the default deck.

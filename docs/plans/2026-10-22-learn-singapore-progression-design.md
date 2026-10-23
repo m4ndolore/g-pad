@@ -32,9 +32,12 @@ This was built overnight. These choices are recorded so they can be undone:
    the ladder on that player's level. The file is
    `$RIDDLE_DATA_DIR/learn-players`, plain `key=value` lines, on the tablet
    only.
-4. **Trophies are star milestones.** Every 100 lifetime stars is a trophy,
-   and reaching a new level is a badge. They are drawn as geometry, since
-   the pad cannot fetch pictures.
+4. **Stars are fair across ages; trophies are star milestones.** A star is
+   one right answer (two on a run of three or more), whatever the level: the
+   session score pays more at higher levels, and lifetime stars weighted the
+   same way would hand the board to the oldest child. Every 25 stars is a
+   trophy, and reaching a new level is a badge. Cups are drawn as geometry,
+   since the pad cannot fetch pictures.
 5. **The race is marked on the tablet.** Every race question is multiple
    choice: three tick boxes, one right. That makes it instant. An oracle round
    trip takes seconds, which would make "fastest" measure the network rather
@@ -111,13 +114,13 @@ The menu gains a PLAYER row: one box per player, the current one filled,
 like the LEVEL row. Picking a player saves the current player and loads the
 new one's level.
 
-A correct answer's award (`10 × level` plus the streak bonus) is added to the
-player's lifetime stars as well as the session score. The header shows the
-player's animal and their stars.
+A right answer adds stars to the player's lifetime total (see decision 4);
+the session score is unchanged. The header names the player.
 
 **TROPHIES** (a GAMES entry) is the leaderboard: each player's stars, a cup
-per 100, their highest level, and their best race. A YES that crosses a
-hundred stamps NEW TROPHY! and the cheer gets bigger stars.
+per 25, their highest level, and their best race. A YES that wins a trophy
+says NEW TROPHY! in place of the tutor's cheer; a first visit to a level
+says LEVEL UP!.
 
 ## The race
 
