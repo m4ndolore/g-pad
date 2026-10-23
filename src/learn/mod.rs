@@ -74,6 +74,7 @@ pub const MENU: &[(&str, &[(&str, Pick)])] = &[
             ("MATH SKILLS", Pick::Skills),
             ("WRITING", Pick::Topic(problems::Topic::Writing)),
             ("WRITE NUMBERS", Pick::Topic(problems::Topic::Numbers)),
+            ("SHAPES", Pick::Topic(problems::Topic::Shapes)),
             ("SURPRISE MIX", Pick::Topic(problems::Topic::Mix)),
         ],
     ),

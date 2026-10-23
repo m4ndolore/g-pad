@@ -57,7 +57,88 @@ pub enum Kind {
     Groups { groups: u32, each: u32 },
     /// Division as the inverse of a fact: `a x ☐ = product`.
     MissingFactor { a: u32, product: u32 },
+    /// One big shape: the child writes how many sides, or corners, it has.
+    ShapeSides { shape: Shape, corners: bool },
+    /// A scatter of mixed shapes on a 4×3 grid of cells, each `(shape,
+    /// cell)`; the child writes how many of `target` there are.
+    CountShapes { target: Shape, scene: Vec<(Shape, u8)> },
+    /// A repeating row of shapes, `shown` long, then an empty box: the child
+    /// draws the shape that comes next.
+    ShapePattern { cycle: Vec<Shape>, shown: u32 },
+    /// An empty frame: the child draws the named shape.
+    DrawShape { shape: Shape },
 }
+
+/// The flat shapes Learn draws and asks about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shape {
+    Circle,
+    Triangle,
+    Square,
+    Rectangle,
+    Pentagon,
+    Hexagon,
+}
+
+impl Shape {
+    pub fn name(self) -> &'static str {
+        match self {
+            Shape::Circle => "CIRCLE",
+            Shape::Triangle => "TRIANGLE",
+            Shape::Square => "SQUARE",
+            Shape::Rectangle => "RECTANGLE",
+            Shape::Pentagon => "PENTAGON",
+            Shape::Hexagon => "HEXAGON",
+        }
+    }
+
+    /// Sides, and so corners: a circle has none of either.
+    pub fn sides(self) -> u32 {
+        match self {
+            Shape::Circle => 0,
+            Shape::Triangle => 3,
+            Shape::Square | Shape::Rectangle => 4,
+            Shape::Pentagon => 5,
+            Shape::Hexagon => 6,
+        }
+    }
+
+    fn count_prompt(self) -> &'static str {
+        match self {
+            Shape::Circle => "HOW MANY CIRCLES?",
+            Shape::Triangle => "HOW MANY TRIANGLES?",
+            Shape::Square => "HOW MANY SQUARES?",
+            Shape::Rectangle => "HOW MANY RECTANGLES?",
+            Shape::Pentagon => "HOW MANY PENTAGONS?",
+            Shape::Hexagon => "HOW MANY HEXAGONS?",
+        }
+    }
+
+    fn draw_prompt(self) -> &'static str {
+        match self {
+            Shape::Circle => "DRAW A CIRCLE",
+            Shape::Triangle => "DRAW A TRIANGLE",
+            Shape::Square => "DRAW A SQUARE",
+            Shape::Rectangle => "DRAW A RECTANGLE",
+            Shape::Pentagon => "DRAW A PENTAGON",
+            Shape::Hexagon => "DRAW A HEXAGON",
+        }
+    }
+}
+
+/// Shapes by level: the four every young child meets, then the pentagon
+/// and hexagon from level 3.
+fn shapes_for(level: u8) -> &'static [Shape] {
+    use Shape::*;
+    if level <= 2 {
+        &[Circle, Triangle, Square, Rectangle]
+    } else {
+        &[Circle, Triangle, Square, Rectangle, Pentagon, Hexagon]
+    }
+}
+
+/// Cells in a shape scene: four across, three down.
+pub const SCENE_CELLS: u8 = 12;
 
 /// Number bonds linked into a chain: a part of one bond is the whole of the
 /// next. `order` lists the blank circles in the order they can be solved, so
@@ -116,29 +197,29 @@ impl Chain {
     }
 }
 
-type Shape = (&'static [(u8, u16)], &'static [(usize, [usize; 2])]);
+type ChainShape = (&'static [(u8, u16)], &'static [(usize, [usize; 2])]);
 
 /// Chain shapes: circle places and bonds, drawn for a right-hand split and
 /// mirrored for a left-hand one. Splits go inward so circles stay on the page.
-const CHAIN_TWO: Shape = (
+const CHAIN_TWO: ChainShape = (
     &[(0, 500), (1, 280), (1, 720), (2, 600), (2, 840)],
     &[(0, [1, 2]), (2, [3, 4])],
 );
-const CHAIN_TREE: Shape = (
+const CHAIN_TREE: ChainShape = (
     &[(0, 500), (1, 280), (1, 720), (2, 160), (2, 400), (2, 600), (2, 840)],
     &[(0, [1, 2]), (1, [3, 4]), (2, [5, 6])],
 );
-const CHAIN_LADDER: Shape = (
+const CHAIN_LADDER: ChainShape = (
     &[(0, 500), (1, 280), (1, 720), (2, 600), (2, 840), (3, 480), (3, 720)],
     &[(0, [1, 2]), (2, [3, 4]), (3, [5, 6])],
 );
 /// Four bonds for four blanks: n bonds are n equations, so a chain never
 /// has more solvable blanks than bonds.
-const CHAIN_TREE_PLUS: Shape = (
+const CHAIN_TREE_PLUS: ChainShape = (
     &[(0, 500), (1, 280), (1, 720), (2, 160), (2, 400), (2, 600), (2, 840), (3, 300), (3, 500)],
     &[(0, [1, 2]), (1, [3, 4]), (2, [5, 6]), (4, [7, 8])],
 );
-const CHAIN_LADDER_PLUS: Shape = (
+const CHAIN_LADDER_PLUS: ChainShape = (
     &[(0, 500), (1, 280), (1, 720), (2, 600), (2, 840), (3, 480), (3, 720), (2, 160), (2, 400)],
     &[(0, [1, 2]), (1, [7, 8]), (2, [3, 4]), (3, [5, 6])],
 );
@@ -146,7 +227,7 @@ const CHAIN_LADDER_PLUS: Shape = (
 /// A chain sized by level: two bonds and two blanks to 10, then three bonds
 /// and three blanks to 20, then four of each to 50.
 fn chain(level: u8, rng: &mut Rng) -> Chain {
-    let either = |rng: &mut Rng, a: Shape, b: Shape| if rng.range(0, 1) == 0 { a } else { b };
+    let either = |rng: &mut Rng, a: ChainShape, b: ChainShape| if rng.range(0, 1) == 0 { a } else { b };
     let (shape, blanks, max_whole) = match level {
         0..=2 => (CHAIN_TWO, 2, 10),
         3 => (either(rng, CHAIN_TREE, CHAIN_LADDER), 3, 20),
@@ -269,6 +350,10 @@ impl Problem {
             },
             Kind::Groups { groups, each } => (groups * each).to_string(),
             Kind::MissingFactor { a, product } => (product / a).to_string(),
+            Kind::ShapeSides { shape, .. } => shape.sides().to_string(),
+            Kind::CountShapes { target, scene } => scene.iter().filter(|(s, _)| s == target).count().to_string(),
+            Kind::ShapePattern { cycle, shown } => cycle[*shown as usize % cycle.len()].name().to_string(),
+            Kind::DrawShape { shape } => shape.name().to_string(),
         }
     }
 
@@ -367,6 +452,43 @@ impl Problem {
             Kind::MissingFactor { a, product } => format!(
                 "the equation {a} x ___ = {product}; the child wrote the missing number (correct answer {expected})"
             ),
+            Kind::ShapeSides { shape, corners } => format!(
+                "a large {}; the child wrote how many {} it has (correct answer {expected})",
+                shape.name().to_lowercase(),
+                if *corners { "corners" } else { "sides" }
+            ),
+            Kind::CountShapes { target, scene } => {
+                let mut tally: Vec<String> = Vec::new();
+                for s in [Shape::Circle, Shape::Triangle, Shape::Square, Shape::Rectangle, Shape::Pentagon, Shape::Hexagon] {
+                    let n = scene.iter().filter(|(k, _)| *k == s).count();
+                    if n > 0 {
+                        tally.push(format!("{n} {}", s.name().to_lowercase()));
+                    }
+                }
+                format!(
+                    "a picture of scattered shapes ({}); the child wrote how many {}s there are (correct answer {expected})",
+                    tally.join(", "),
+                    target.name().to_lowercase()
+                )
+            }
+            Kind::ShapePattern { cycle, shown } => {
+                let row: Vec<&str> = (0..*shown as usize).map(|i| cycle[i % cycle.len()].name()).collect();
+                format!(
+                    "a repeating pattern of shapes ({}), then an empty box; the child drew the shape that comes next. \
+                     The page shows only the child's drawing. YES if it is recognizably a {lower} (wobbly lines and rounded corners are fine \
+                     for a young child), ALMOST if nearly (a {lower} left open, or one side too many), NO if a different shape or empty \
+                     (correct answer {expected})",
+                    row.join(", ").to_lowercase(),
+                    lower = expected.to_lowercase()
+                )
+            }
+            Kind::DrawShape { shape } => format!(
+                "the child was asked to draw a {lower} in an empty frame. The page shows only the child's drawing. \
+                 YES if it is recognizably a {lower} (wobbly lines and rounded corners are fine for a young child), \
+                 ALMOST if nearly (a {lower} left open, or one side too many), NO if a different shape or empty \
+                 (correct answer {expected})",
+                lower = shape.name().to_lowercase()
+            ),
         }
     }
 }
@@ -446,6 +568,8 @@ pub enum Topic {
     Writing,
     /// Number writing only: the WRITE NUMBERS entry.
     Numbers,
+    /// Shapes only: the SHAPES entry.
+    Shapes,
     /// One activity, dealt every page: the skills picker's latch.
     Skill(Activity),
 }
@@ -458,6 +582,9 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
         (Topic::Skill(a), _) => a.alone(),
         (Topic::Writing, _) => &[Trace],
         (Topic::Numbers, _) => &[WriteNumbers],
+        (Topic::Shapes, 1) => &[DrawShape, CountShapes, ShapePattern],
+        (Topic::Shapes, 2) => &[DrawShape, CountShapes, ShapeSides, ShapePattern],
+        (Topic::Shapes, _) => &[ShapeSides, CountShapes, ShapePattern, DrawShape],
         (Topic::Math, 1) => &[Count, Bond, Compare],
         (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, Compare, NumberLine, Bar, BridgeTen],
         (Topic::Math, 3) => &[Bond, ColumnAdd, Equation, BondChain, NumberLine, Bar, BridgeTen, ColumnSub,
@@ -466,15 +593,15 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
             PlaceValue, HundredWindow, DivideFacts, Bar, CompareBars, SkipCount],
         (Topic::Math, _) => &[ColumnAdd, TimesFacts, MissingFactor, ColumnSub, Groups, DivideFacts, BondChain,
             Bar, CompareBars, HundredWindow, SkipCount],
-        (Topic::Mix, 1) => &[Count, Bond, WriteNumbers, Trace, Compare],
-        (Topic::Mix, 2) => &[Bond, MakeTen, WriteNumbers, Equation, Trace, BondChain, Compare, NumberLine, Bar,
-            BridgeTen],
-        (Topic::Mix, 3) => &[Bond, ColumnAdd, Equation, Trace, BondChain, WriteNumbers, NumberLine, Bar,
-            BridgeTen, ColumnSub, PlaceValue, CompareBars, SkipCount],
-        (Topic::Mix, 4) => &[Array, ColumnAdd, Trace, Groups, TimesFacts, BondChain, ColumnSub, PlaceValue,
-            Share, HundredWindow, DivideFacts, Bar, CompareBars, SkipCount],
-        (Topic::Mix, _) => &[ColumnAdd, TimesFacts, Trace, ColumnSub, MissingFactor, Groups, DivideFacts,
-            BondChain, Bar, CompareBars, HundredWindow, SkipCount],
+        (Topic::Mix, 1) => &[Count, Bond, WriteNumbers, DrawShape, Trace, Compare, CountShapes],
+        (Topic::Mix, 2) => &[Bond, MakeTen, WriteNumbers, Equation, CountShapes, Trace, BondChain, Compare,
+            NumberLine, ShapePattern, Bar, BridgeTen],
+        (Topic::Mix, 3) => &[Bond, ColumnAdd, Equation, ShapeSides, Trace, BondChain, WriteNumbers, NumberLine,
+            Bar, BridgeTen, ColumnSub, ShapePattern, PlaceValue, CompareBars, SkipCount],
+        (Topic::Mix, 4) => &[Array, ColumnAdd, Trace, Groups, TimesFacts, BondChain, ShapeSides, ColumnSub,
+            PlaceValue, Share, HundredWindow, DivideFacts, CountShapes, Bar, CompareBars, SkipCount],
+        (Topic::Mix, _) => &[ColumnAdd, TimesFacts, Trace, ColumnSub, MissingFactor, ShapeSides, Groups,
+            DivideFacts, BondChain, Bar, CountShapes, CompareBars, HundredWindow, SkipCount],
     }
 }
 
@@ -503,6 +630,10 @@ pub enum Activity {
     TimesFacts,
     MissingFactor,
     DivideFacts,
+    ShapeSides,
+    CountShapes,
+    ShapePattern,
+    DrawShape,
 }
 
 /// The skills picker's sections, each a strand of the curriculum, in box
@@ -536,6 +667,10 @@ pub const SKILL_GROUPS: &[(&str, &[Activity])] = &[
             Activity::MissingFactor,
             Activity::DivideFacts,
         ],
+    ),
+    (
+        "SHAPES",
+        &[Activity::ShapeSides, Activity::CountShapes, Activity::ShapePattern, Activity::DrawShape],
     ),
 ];
 
@@ -572,6 +707,10 @@ impl Activity {
             TimesFacts => &[TimesFacts],
             MissingFactor => &[MissingFactor],
             DivideFacts => &[DivideFacts],
+            ShapeSides => &[ShapeSides],
+            CountShapes => &[CountShapes],
+            ShapePattern => &[ShapePattern],
+            DrawShape => &[DrawShape],
         }
     }
 
@@ -603,6 +742,10 @@ impl Activity {
             TimesFacts => "TIMES FACTS",
             MissingFactor => "MISSING NUMBER",
             DivideFacts => "DIVIDE",
+            ShapeSides => "SIDES & CORNERS",
+            CountShapes => "COUNT SHAPES",
+            ShapePattern => "SHAPE PATTERNS",
+            DrawShape => "DRAW SHAPES",
         }
     }
 }
@@ -652,6 +795,11 @@ fn page_prompt(act: Activity, n: usize) -> &'static str {
         ColumnSub => "TAKE AWAY THE ONES FIRST",
         Groups => "HOW MANY IN ALL?",
         WriteNumbers => "TRACE IT, THEN WRITE IT",
+        // One to a page: each problem names its own shape or question.
+        ShapeSides => "HOW MANY SIDES?",
+        CountShapes => "HOW MANY?",
+        ShapePattern => "DRAW WHAT COMES NEXT",
+        DrawShape => "DRAW THE SHAPE",
         Compare => "WRITE <, =, OR >",
         NumberLine => "COUNT THE HOPS",
         BondChain => "FILL THE CIRCLES, ONE AT A TIME",
@@ -680,8 +828,11 @@ pub fn generate_set(level: u8, topic: Topic, rot: usize, rng: &mut Rng) -> Set {
     let acts = rotation(level.clamp(MIN_LEVEL, MAX_LEVEL), topic);
     let act = acts[rot % acts.len()];
     let n = per_page(act, rng);
-    let items = (0..n).map(|_| problem_for(act, level, rng)).collect();
-    Set { items, prompt: page_prompt(act, n) }
+    let items: Vec<Problem> = (0..n).map(|_| problem_for(act, level, rng)).collect();
+    // A page of one says its own problem's line ("HOW MANY TRIANGLES?"); a
+    // worksheet row says the activity's.
+    let prompt = if n == 1 { items[0].prompt } else { page_prompt(act, n) };
+    Set { items, prompt }
 }
 
 /// Generate the `rot`-th problem at `level`, within `topic`'s rotation.
@@ -885,6 +1036,70 @@ fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
             let n = rng.range(2, 10);
             Problem { kind: Kind::MissingFactor { a: t, product: t * n }, prompt: "WRITE THE MISSING NUMBER" }
         }
+        Activity::ShapeSides => {
+            // A circle (none at all) is the best trick question, but only
+            // once the child has met sides on shapes that have them.
+            let pool = shapes_for(level);
+            let pool = if level <= 2 { &pool[1..] } else { pool };
+            let shape = pool[rng.range(0, pool.len() as u32 - 1) as usize];
+            let corners = rng.range(0, 1) == 1;
+            let prompt = if corners { "HOW MANY CORNERS?" } else { "HOW MANY SIDES?" };
+            Problem { kind: Kind::ShapeSides { shape, corners }, prompt }
+        }
+        Activity::CountShapes => {
+            let pool = shapes_for(level);
+            let target = pool[rng.range(0, pool.len() as u32 - 1) as usize];
+            let want = if level <= 2 { rng.range(2, 5) } else { rng.range(3, 7) } as usize;
+            let others = rng.range(3, 5) as usize;
+            // Shuffle the cells, then deal: targets first, distractors after.
+            let mut cells: Vec<u8> = (0..SCENE_CELLS).collect();
+            for i in (1..cells.len()).rev() {
+                cells.swap(i, rng.range(0, i as u32) as usize);
+            }
+            let mut scene: Vec<(Shape, u8)> = cells[..want].iter().map(|&c| (target, c)).collect();
+            for &c in &cells[want..want + others] {
+                let mut s = pool[rng.range(0, pool.len() as u32 - 1) as usize];
+                if s == target {
+                    s = pool[(pool.iter().position(|&p| p == target).unwrap_or(0) + 1) % pool.len()];
+                }
+                // A square among rectangles (or the reverse) is a fair
+                // distractor only once the child can tell them apart.
+                if level <= 2 && matches!((s, target), (Shape::Square, Shape::Rectangle) | (Shape::Rectangle, Shape::Square)) {
+                    s = Shape::Circle;
+                }
+                scene.push((s, c));
+            }
+            scene.sort_by_key(|&(_, c)| c);
+            Problem { kind: Kind::CountShapes { target, scene }, prompt: target.count_prompt() }
+        }
+        Activity::ShapePattern => {
+            // Patterns use the shapes a child can draw: circle, triangle,
+            // square. Never square beside rectangle: a wobbly drawing of one
+            // reads as the other.
+            use Shape::*;
+            let patterns: &[&[Shape]] = if level <= 1 {
+                &[&[Circle, Square], &[Triangle, Circle], &[Square, Triangle]]
+            } else {
+                &[
+                    &[Circle, Square],
+                    &[Triangle, Circle],
+                    &[Circle, Circle, Triangle],
+                    &[Square, Triangle, Triangle],
+                    &[Circle, Triangle, Square],
+                    &[Triangle, Square, Circle],
+                ]
+            };
+            let cycle = patterns[rng.range(0, patterns.len() as u32 - 1) as usize].to_vec();
+            // At least one whole repeat and one more shape, at most seven.
+            let shown = rng.range(cycle.len() as u32 + 1, 7);
+            Problem { kind: Kind::ShapePattern { cycle, shown }, prompt: "DRAW WHAT COMES NEXT" }
+        }
+        Activity::DrawShape => {
+            use Shape::*;
+            let pool: &[Shape] = if level <= 2 { &[Circle, Triangle, Square, Rectangle] } else { &[Triangle, Square, Rectangle, Pentagon, Hexagon] };
+            let shape = pool[rng.range(0, pool.len() as u32 - 1) as usize];
+            Problem { kind: Kind::DrawShape { shape }, prompt: shape.draw_prompt() }
+        }
     }
 }
 
@@ -1075,6 +1290,10 @@ mod tests {
                             | (Kind::Equation { op: Op::Mul, .. }, Activity::TimesFacts)
                             | (Kind::Equation { op: Op::Div, .. }, Activity::DivideFacts)
                             | (Kind::MissingFactor { .. }, Activity::MissingFactor)
+                            | (Kind::ShapeSides { .. }, Activity::ShapeSides)
+                            | (Kind::CountShapes { .. }, Activity::CountShapes)
+                            | (Kind::ShapePattern { .. }, Activity::ShapePattern)
+                            | (Kind::DrawShape { .. }, Activity::DrawShape)
                     );
                     assert!(same, "skill {act:?} at level {level} dealt {:?}", p.kind);
                 }
@@ -1093,7 +1312,7 @@ mod tests {
         for (i, a) in skills.iter().enumerate() {
             assert!(!skills[..i].contains(a), "{a:?} sits in two skill groups");
         }
-        assert_eq!(skills.len(), 21, "every math activity has a box");
+        assert_eq!(skills.len(), 25, "every math activity has a box");
     }
 
     #[test]
@@ -1188,7 +1407,9 @@ mod tests {
                     let solo_only = matches!(set.items[0].kind,
                         Kind::Bond { .. } | Kind::TenFrame { .. } | Kind::Array { .. }
                         | Kind::Share { .. } | Kind::Trace { .. } | Kind::BondChain(_)
-                        | Kind::BridgeTen { .. } | Kind::TraceNumber { .. } | Kind::Groups { .. });
+                        | Kind::BridgeTen { .. } | Kind::TraceNumber { .. } | Kind::Groups { .. }
+                        | Kind::ShapeSides { .. } | Kind::CountShapes { .. } | Kind::ShapePattern { .. }
+                        | Kind::DrawShape { .. });
                     if solo_only {
                         assert_eq!(set.items.len(), 1, "{:?} needs the whole page", set.items[0].kind);
                     } else {
@@ -1359,6 +1580,54 @@ mod tests {
             for rot in 0..10 {
                 let set = generate_set(level, Topic::Numbers, rot, &mut rng);
                 assert!(set.items.iter().all(|p| matches!(p.kind, Kind::TraceNumber { .. })));
+            }
+        }
+    }
+
+    #[test]
+    fn shape_answers_follow_the_shapes() {
+        for level in 1..=MAX_LEVEL {
+            for kind in dealt(level, Activity::ShapeSides, 100) {
+                let Kind::ShapeSides { shape, .. } = kind else { panic!("{kind:?}") };
+                assert!(shapes_for(level).contains(&shape));
+                if level <= 2 {
+                    assert_ne!(shape, Shape::Circle, "no trick circle before level 3");
+                }
+            }
+            for kind in dealt(level, Activity::CountShapes, 100) {
+                let Kind::CountShapes { target, scene } = &kind else { panic!("{kind:?}") };
+                let mut cells: Vec<u8> = scene.iter().map(|&(_, c)| c).collect();
+                cells.dedup();
+                assert_eq!(cells.len(), scene.len(), "two shapes share a cell");
+                assert!(cells.iter().all(|&c| c < SCENE_CELLS));
+                let n = scene.iter().filter(|(s, _)| s == target).count();
+                assert!(n >= 2 && n < scene.len(), "{n} targets in {scene:?}");
+                assert!(scene.iter().all(|(s, _)| shapes_for(level).contains(s)));
+                let p = Problem { kind: kind.clone(), prompt: "" };
+                assert_eq!(p.expected(), n.to_string());
+            }
+            for kind in dealt(level, Activity::ShapePattern, 100) {
+                let Kind::ShapePattern { cycle, shown } = &kind else { panic!("{kind:?}") };
+                assert!(*shown as usize > cycle.len() && *shown <= 7, "{shown} shown of a {}-cycle", cycle.len());
+                let has = |s: Shape| cycle.contains(&s);
+                assert!(!(has(Shape::Square) && has(Shape::Rectangle)));
+                assert!(cycle.iter().all(|s| matches!(s, Shape::Circle | Shape::Triangle | Shape::Square)));
+            }
+        }
+        let p = Problem { kind: Kind::ShapePattern { cycle: vec![Shape::Circle, Shape::Square], shown: 5 }, prompt: "" };
+        assert_eq!(p.expected(), "SQUARE");
+        assert_eq!(Problem { kind: Kind::ShapeSides { shape: Shape::Hexagon, corners: true }, prompt: "" }.expected(), "6");
+    }
+
+    #[test]
+    fn a_shape_page_says_its_own_question() {
+        let mut rng = Rng::new(4);
+        for rot in 0..12 {
+            let set = generate_set(3, Topic::Shapes, rot, &mut rng);
+            assert_eq!(set.items.len(), 1);
+            assert_eq!(set.prompt, set.items[0].prompt);
+            if let Kind::CountShapes { target, .. } = set.items[0].kind {
+                assert!(set.prompt.contains(&target.name()[..4]), "{} for {target:?}", set.prompt);
             }
         }
     }
