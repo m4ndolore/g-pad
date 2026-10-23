@@ -48,6 +48,15 @@ pub enum Kind {
     /// Skip counting: four terms of `start, start + step, …` and a box for
     /// the fifth.
     SkipCount { start: u32, step: u32 },
+    /// Number writing: trace the dashed numeral, then write it again below.
+    TraceNumber { number: u32 },
+    /// Two-digit adding or taking away in column form: the numbers stacked
+    /// under T and O headings, one answer box beneath both columns.
+    Column { a: u32, op: Op, b: u32 },
+    /// Multiplication as equal groups: `groups` rings of `each` dots.
+    Groups { groups: u32, each: u32 },
+    /// Division as the inverse of a fact: `a x ☐ = product`.
+    MissingFactor { a: u32, product: u32 },
 }
 
 /// Number bonds linked into a chain: a part of one bond is the whole of the
@@ -253,6 +262,13 @@ impl Problem {
             Kind::BridgeTen { a, b } => (a + b).to_string(),
             Kind::CompareBars { big, small } => (big - small).to_string(),
             Kind::SkipCount { start, step } => (start + SKIP_SHOWN * step).to_string(),
+            Kind::TraceNumber { number } => number.to_string(),
+            Kind::Column { a, op, b } => match op {
+                Op::Sub => (a - b).to_string(),
+                _ => (a + b).to_string(),
+            },
+            Kind::Groups { groups, each } => (groups * each).to_string(),
+            Kind::MissingFactor { a, product } => (product / a).to_string(),
         }
     }
 
@@ -336,6 +352,21 @@ impl Problem {
             Kind::SkipCount { start, step } => format!(
                 "skip counting by {step}s from {start}, four numbers shown; the child wrote the next number (correct answer {expected})"
             ),
+            Kind::TraceNumber { number } => format!(
+                "handwriting practice for the number {number}: the child traced it over guide digits on the upper lines, then wrote it freehand on the lower lines. \
+                 Only the child's own pen strokes are shown — the printed guides are not. \
+                 YES if the lower freehand copy reads as {number}, ALMOST if a digit is written backwards or shaky but recognizable, NO if missing or unreadable"
+            ),
+            Kind::Column { a, op, b } => format!(
+                "the sum {a} {} {b} written in tens and ones columns, one number above the other; the child wrote the answer under the line (correct answer {expected})",
+                op.glyph()
+            ),
+            Kind::Groups { groups, each } => format!(
+                "{groups} equal groups of {each} dots with the equation {groups} x {each} = ___; the child wrote how many dots in all (correct answer {expected})"
+            ),
+            Kind::MissingFactor { a, product } => format!(
+                "the equation {a} x ___ = {product}; the child wrote the missing number (correct answer {expected})"
+            ),
         }
     }
 }
@@ -367,7 +398,7 @@ pub struct Ladder {
 }
 
 pub const MIN_LEVEL: u8 = 1;
-pub const MAX_LEVEL: u8 = 4;
+pub const MAX_LEVEL: u8 = 5;
 
 impl Ladder {
     pub fn new(level: u8) -> Self {
@@ -413,6 +444,8 @@ pub enum Topic {
     Mix,
     Math,
     Writing,
+    /// Number writing only: the WRITE NUMBERS entry.
+    Numbers,
     /// One activity, dealt every page: the skills picker's latch.
     Skill(Activity),
 }
@@ -424,18 +457,24 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
     match (topic, level) {
         (Topic::Skill(a), _) => a.alone(),
         (Topic::Writing, _) => &[Trace],
+        (Topic::Numbers, _) => &[WriteNumbers],
         (Topic::Math, 1) => &[Count, Bond, Compare],
         (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, Compare, NumberLine, Bar, BridgeTen],
-        (Topic::Math, 3) => &[Bond, Equation, BondChain, NumberLine, Bar, BridgeTen, MakeTen, PlaceValue,
-            CompareBars, SkipCount],
-        (Topic::Math, _) => &[Array, Equation, BondChain, Share, PlaceValue, HundredWindow, Bar,
-            CompareBars, SkipCount],
-        (Topic::Mix, 1) => &[Count, Bond, Trace, Compare],
-        (Topic::Mix, 2) => &[Bond, MakeTen, Trace, Equation, BondChain, Compare, NumberLine, Bar, BridgeTen],
-        (Topic::Mix, 3) => &[Bond, Equation, Trace, BondChain, NumberLine, Bar, BridgeTen, PlaceValue,
-            CompareBars, SkipCount],
-        (Topic::Mix, _) => &[Array, Equation, Trace, BondChain, PlaceValue, HundredWindow, Bar,
-            CompareBars, SkipCount],
+        (Topic::Math, 3) => &[Bond, ColumnAdd, Equation, BondChain, NumberLine, Bar, BridgeTen, ColumnSub,
+            MakeTen, PlaceValue, CompareBars, SkipCount],
+        (Topic::Math, 4) => &[Array, Groups, TimesFacts, ColumnAdd, Equation, BondChain, Share, ColumnSub,
+            PlaceValue, HundredWindow, DivideFacts, Bar, CompareBars, SkipCount],
+        (Topic::Math, _) => &[ColumnAdd, TimesFacts, MissingFactor, ColumnSub, Groups, DivideFacts, BondChain,
+            Bar, CompareBars, HundredWindow, SkipCount],
+        (Topic::Mix, 1) => &[Count, Bond, WriteNumbers, Trace, Compare],
+        (Topic::Mix, 2) => &[Bond, MakeTen, WriteNumbers, Equation, Trace, BondChain, Compare, NumberLine, Bar,
+            BridgeTen],
+        (Topic::Mix, 3) => &[Bond, ColumnAdd, Equation, Trace, BondChain, WriteNumbers, NumberLine, Bar,
+            BridgeTen, ColumnSub, PlaceValue, CompareBars, SkipCount],
+        (Topic::Mix, 4) => &[Array, ColumnAdd, Trace, Groups, TimesFacts, BondChain, ColumnSub, PlaceValue,
+            Share, HundredWindow, DivideFacts, Bar, CompareBars, SkipCount],
+        (Topic::Mix, _) => &[ColumnAdd, TimesFacts, Trace, ColumnSub, MissingFactor, Groups, DivideFacts,
+            BondChain, Bar, CompareBars, HundredWindow, SkipCount],
     }
 }
 
@@ -457,6 +496,13 @@ pub enum Activity {
     BridgeTen,
     CompareBars,
     SkipCount,
+    WriteNumbers,
+    ColumnAdd,
+    ColumnSub,
+    Groups,
+    TimesFacts,
+    MissingFactor,
+    DivideFacts,
 }
 
 /// The skills picker's sections, each a strand of the curriculum, in box
@@ -475,10 +521,22 @@ pub const SKILL_GROUPS: &[(&str, &[Activity])] = &[
             Activity::BridgeTen,
             Activity::Equation,
             Activity::NumberLine,
+            Activity::ColumnAdd,
+            Activity::ColumnSub,
         ],
     ),
     ("BAR MODELS", &[Activity::Bar, Activity::CompareBars]),
-    ("TIMES & SHARING", &[Activity::Array, Activity::Share]),
+    (
+        "TIMES & SHARING",
+        &[
+            Activity::Array,
+            Activity::Groups,
+            Activity::TimesFacts,
+            Activity::Share,
+            Activity::MissingFactor,
+            Activity::DivideFacts,
+        ],
+    ),
 ];
 
 /// Every math activity, in the skills picker's box order.
@@ -507,6 +565,13 @@ impl Activity {
             BridgeTen => &[BridgeTen],
             CompareBars => &[CompareBars],
             SkipCount => &[SkipCount],
+            WriteNumbers => &[WriteNumbers],
+            ColumnAdd => &[ColumnAdd],
+            ColumnSub => &[ColumnSub],
+            Groups => &[Groups],
+            TimesFacts => &[TimesFacts],
+            MissingFactor => &[MissingFactor],
+            DivideFacts => &[DivideFacts],
         }
     }
 
@@ -531,6 +596,13 @@ impl Activity {
             BridgeTen => "ADD BY MAKING TEN",
             CompareBars => "HOW MANY MORE",
             SkipCount => "SKIP COUNTING",
+            WriteNumbers => "WRITE NUMBERS",
+            ColumnAdd => "BIG SUMS",
+            ColumnSub => "BIG TAKE-AWAYS",
+            Groups => "EQUAL GROUPS",
+            TimesFacts => "TIMES FACTS",
+            MissingFactor => "MISSING NUMBER",
+            DivideFacts => "DIVIDE",
         }
     }
 }
@@ -558,9 +630,9 @@ impl Set {
 fn per_page(act: Activity, rng: &mut Rng) -> usize {
     use Activity::*;
     match act {
-        Equation | Compare => rng.range(3, 4) as usize,
+        Equation | Compare | TimesFacts | DivideFacts | MissingFactor => rng.range(3, 4) as usize,
         PlaceValue | SkipCount => rng.range(2, 3) as usize,
-        NumberLine | Bar | HundredWindow | CompareBars => 2,
+        NumberLine | Bar | HundredWindow | CompareBars | ColumnAdd | ColumnSub => 2,
         _ => 1,
     }
 }
@@ -570,9 +642,16 @@ fn page_prompt(act: Activity, n: usize) -> &'static str {
     use Activity::*;
     let many = n > 1;
     match act {
-        Equation => {
+        Equation | TimesFacts | DivideFacts => {
             if many { "WRITE THE ANSWERS" } else { "WRITE THE ANSWER" }
         }
+        MissingFactor => {
+            if many { "WRITE THE MISSING NUMBERS" } else { "WRITE THE MISSING NUMBER" }
+        }
+        ColumnAdd => "ADD THE ONES FIRST",
+        ColumnSub => "TAKE AWAY THE ONES FIRST",
+        Groups => "HOW MANY IN ALL?",
+        WriteNumbers => "TRACE IT, THEN WRITE IT",
         Compare => "WRITE <, =, OR >",
         NumberLine => "COUNT THE HOPS",
         BondChain => "FILL THE CIRCLES, ONE AT A TIME",
@@ -766,6 +845,96 @@ fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
             let k = rng.range(0, (99 / step - SKIP_SHOWN).min(6));
             Problem { kind: Kind::SkipCount { start: k * step, step }, prompt: "WHAT COMES NEXT?" }
         }
+        Activity::WriteNumbers => {
+            // Digits first, then the teens and twenty, then any two digits.
+            let number = match level {
+                1 => rng.range(0, 9),
+                2 => rng.range(10, 20),
+                _ => rng.range(21, 99),
+            };
+            Problem { kind: Kind::TraceNumber { number }, prompt: "TRACE IT, THEN WRITE IT" }
+        }
+        Activity::ColumnAdd => {
+            let (a, b) = column_add(level, rng);
+            Problem { kind: Kind::Column { a, op: Op::Add, b }, prompt: "ADD THE ONES FIRST" }
+        }
+        Activity::ColumnSub => {
+            let (a, b) = column_sub(level, rng);
+            Problem { kind: Kind::Column { a, op: Op::Sub, b }, prompt: "TAKE AWAY THE ONES FIRST" }
+        }
+        Activity::Groups => {
+            let each = times_table(level, rng);
+            let groups = rng.range(2, 5);
+            Problem { kind: Kind::Groups { groups, each }, prompt: "HOW MANY IN ALL?" }
+        }
+        Activity::TimesFacts => {
+            // Either order: 3 x 5 and 5 x 3 are the same fact, and the
+            // child should meet both.
+            let t = times_table(level, rng);
+            let n = rng.range(1, 10);
+            let (a, b) = if rng.range(0, 1) == 0 { (t, n) } else { (n, t) };
+            Problem { kind: Kind::Equation { a, op: Op::Mul, b }, prompt: "WRITE THE ANSWER" }
+        }
+        Activity::DivideFacts => {
+            let t = times_table(level, rng);
+            let n = rng.range(2, 10);
+            Problem { kind: Kind::Equation { a: t * n, op: Op::Div, b: t }, prompt: "WRITE THE ANSWER" }
+        }
+        Activity::MissingFactor => {
+            let t = times_table(level, rng);
+            let n = rng.range(2, 10);
+            Problem { kind: Kind::MissingFactor { a: t, product: t * n }, prompt: "WRITE THE MISSING NUMBER" }
+        }
+    }
+}
+
+/// The times table a fact comes from, in Singapore's Primary 2 order: 2, 5,
+/// and 10 first, then 3 and 4 join them at level 5.
+fn times_table(level: u8, rng: &mut Rng) -> u32 {
+    if level <= 4 {
+        [2, 5, 10][rng.range(0, 2) as usize]
+    } else {
+        [2, 3, 4, 5, 10][rng.range(0, 4) as usize]
+    }
+}
+
+/// Draws a pair for `keep` up to a few hundred times, then takes the
+/// fallback. Every condition here is met by a large share of draws, so the
+/// fallback only guards against a pathological seed.
+fn draw_pair(rng: &mut Rng, mut draw: impl FnMut(&mut Rng) -> (u32, u32), keep: impl Fn(u32, u32) -> bool,
+    fallback: (u32, u32)) -> (u32, u32) {
+    for _ in 0..400 {
+        let (a, b) = draw(rng);
+        if keep(a, b) {
+            return (a, b);
+        }
+    }
+    fallback
+}
+
+/// A column sum at `level`: two digits plus one at level 3, two plus two at
+/// level 4, both with no new ten made; at level 5 the ones always make a new
+/// ten (regrouping). The sum stays under 100.
+fn column_add(level: u8, rng: &mut Rng) -> (u32, u32) {
+    let regroup = level >= 5;
+    let keep = move |a: u32, b: u32| a + b <= 99 && (a % 10 + b % 10 >= 10) == regroup;
+    if level <= 3 {
+        draw_pair(rng, |r| (r.range(11, 89), r.range(1, 9)), keep, (23, 4))
+    } else {
+        draw_pair(rng, |r| (r.range(11, 79), r.range(11, 79)), keep, if regroup { (38, 47) } else { (23, 14) })
+    }
+}
+
+/// A column take-away at `level`: one digit from two at level 3, two from
+/// two at level 4, never borrowing; at level 5 the ones always borrow a ten.
+/// The answer is never zero or less.
+fn column_sub(level: u8, rng: &mut Rng) -> (u32, u32) {
+    let regroup = level >= 5;
+    let keep = move |a: u32, b: u32| b < a && (b % 10 > a % 10) == regroup;
+    if level <= 3 {
+        draw_pair(rng, |r| (r.range(11, 99), r.range(1, 9)), keep, (47, 5))
+    } else {
+        draw_pair(rng, |r| (r.range(21, 99), r.range(11, 89)), keep, if regroup { (52, 27) } else { (68, 25) })
     }
 }
 
@@ -844,11 +1013,11 @@ mod tests {
         l.record(false);
         l.record(false);
         assert_eq!(l.level, 1);
-        let mut l = Ladder::new(4);
+        let mut l = Ladder::new(MAX_LEVEL);
         for _ in 0..9 {
             l.record(true);
         }
-        assert_eq!(l.level, 4);
+        assert_eq!(l.level, MAX_LEVEL);
     }
 
     #[test]
@@ -900,6 +1069,12 @@ mod tests {
                             | (Kind::BridgeTen { .. }, Activity::BridgeTen)
                             | (Kind::CompareBars { .. }, Activity::CompareBars)
                             | (Kind::SkipCount { .. }, Activity::SkipCount)
+                            | (Kind::Column { op: Op::Add, .. }, Activity::ColumnAdd)
+                            | (Kind::Column { op: Op::Sub, .. }, Activity::ColumnSub)
+                            | (Kind::Groups { .. }, Activity::Groups)
+                            | (Kind::Equation { op: Op::Mul, .. }, Activity::TimesFacts)
+                            | (Kind::Equation { op: Op::Div, .. }, Activity::DivideFacts)
+                            | (Kind::MissingFactor { .. }, Activity::MissingFactor)
                     );
                     assert!(same, "skill {act:?} at level {level} dealt {:?}", p.kind);
                 }
@@ -918,7 +1093,7 @@ mod tests {
         for (i, a) in skills.iter().enumerate() {
             assert!(!skills[..i].contains(a), "{a:?} sits in two skill groups");
         }
-        assert_eq!(skills.len(), 15, "every math activity has a box");
+        assert_eq!(skills.len(), 21, "every math activity has a box");
     }
 
     #[test]
@@ -1013,7 +1188,7 @@ mod tests {
                     let solo_only = matches!(set.items[0].kind,
                         Kind::Bond { .. } | Kind::TenFrame { .. } | Kind::Array { .. }
                         | Kind::Share { .. } | Kind::Trace { .. } | Kind::BondChain(_)
-                        | Kind::BridgeTen { .. });
+                        | Kind::BridgeTen { .. } | Kind::TraceNumber { .. } | Kind::Groups { .. });
                     if solo_only {
                         assert_eq!(set.items.len(), 1, "{:?} needs the whole page", set.items[0].kind);
                     } else {
@@ -1106,6 +1281,84 @@ mod tests {
                 let Kind::SkipCount { start, step } = p.kind else { panic!("{:?}", p.kind) };
                 assert_eq!(start % step, 0, "counting starts on the step's own ladder");
                 assert!(start + SKIP_SHOWN * step < 100, "{start} by {step}s runs past 99");
+            }
+        }
+    }
+
+    fn dealt(level: u8, act: Activity, n: usize) -> Vec<Kind> {
+        let mut rng = Rng::new(17 + level as u32);
+        (0..n).map(|_| problem_for(act, level, &mut rng).kind).collect()
+    }
+
+    #[test]
+    fn column_sums_regroup_only_at_level_five() {
+        for level in 3..=5u8 {
+            for kind in dealt(level, Activity::ColumnAdd, 200) {
+                let Kind::Column { a, op: Op::Add, b } = kind else { panic!("not a column sum: {kind:?}") };
+                assert!(a + b <= 99, "{a} + {b} leaves two digits");
+                assert!((10..=99).contains(&a), "{a} is not two digits");
+                assert_eq!(a % 10 + b % 10 >= 10, level == 5, "regrouping wrong at level {level}: {a} + {b}");
+                if level == 3 {
+                    assert!(b <= 9, "level 3 adds one digit, got {b}");
+                } else {
+                    assert!(b >= 10, "level {level} adds two digits, got {b}");
+                }
+            }
+            for kind in dealt(level, Activity::ColumnSub, 200) {
+                let Kind::Column { a, op: Op::Sub, b } = kind else { panic!("not a column take-away: {kind:?}") };
+                assert!(b < a, "{a} - {b} is not positive");
+                assert_eq!(b % 10 > a % 10, level == 5, "borrowing wrong at level {level}: {a} - {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn times_facts_come_from_the_level_tables_and_division_is_exact() {
+        for (level, tables) in [(4u8, vec![2u32, 5, 10]), (5, vec![2, 3, 4, 5, 10])] {
+            for kind in dealt(level, Activity::TimesFacts, 200) {
+                let Kind::Equation { a, op: Op::Mul, b } = kind else { panic!("{kind:?}") };
+                assert!(tables.contains(&a) || tables.contains(&b), "{a} x {b} is off the level {level} tables");
+                assert!(a.min(b) >= 1 && a.max(b) <= 10);
+            }
+            for kind in dealt(level, Activity::DivideFacts, 200) {
+                let Kind::Equation { a, op: Op::Div, b } = kind else { panic!("{kind:?}") };
+                assert!(tables.contains(&b) && a % b == 0 && a / b >= 2, "{a} / {b}");
+            }
+            for kind in dealt(level, Activity::MissingFactor, 200) {
+                let Kind::MissingFactor { a, product } = kind else { panic!("{kind:?}") };
+                assert!(tables.contains(&a) && product % a == 0 && product / a >= 2, "{a} x ? = {product}");
+            }
+            for kind in dealt(level, Activity::Groups, 200) {
+                let Kind::Groups { groups, each } = kind else { panic!("{kind:?}") };
+                assert!(tables.contains(&each) && (2..=5).contains(&groups));
+            }
+        }
+        // The 3 and 4 tables wait for level 5.
+        assert!(dealt(4, Activity::TimesFacts, 200).iter().all(|k| !matches!(
+            k, Kind::Equation { a: 3 | 4, b: 3 | 4, .. }
+        )));
+    }
+
+    #[test]
+    fn number_writing_grows_from_digits_to_two_digit_numbers() {
+        for (level, lo, hi) in [(1u8, 0u32, 9u32), (2, 10, 20), (3, 21, 99), (5, 21, 99)] {
+            for kind in dealt(level, Activity::WriteNumbers, 100) {
+                let Kind::TraceNumber { number } = kind else { panic!("{kind:?}") };
+                assert!((lo..=hi).contains(&number), "level {level} wrote {number}");
+            }
+        }
+        let p = Problem { kind: Kind::TraceNumber { number: 7 }, prompt: "" };
+        assert_eq!(p.expected(), "7");
+        assert!(p.brief().contains("backwards"), "a reversed digit must read as ALMOST");
+    }
+
+    #[test]
+    fn the_numbers_topic_deals_only_number_writing() {
+        let mut rng = Rng::new(9);
+        for level in 1..=5 {
+            for rot in 0..10 {
+                let set = generate_set(level, Topic::Numbers, rot, &mut rng);
+                assert!(set.items.iter().all(|p| matches!(p.kind, Kind::TraceNumber { .. })));
             }
         }
     }

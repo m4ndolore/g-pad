@@ -73,6 +73,7 @@ pub const MENU: &[(&str, &[(&str, Pick)])] = &[
             ("MATH", Pick::Topic(problems::Topic::Math)),
             ("MATH SKILLS", Pick::Skills),
             ("WRITING", Pick::Topic(problems::Topic::Writing)),
+            ("WRITE NUMBERS", Pick::Topic(problems::Topic::Numbers)),
             ("SURPRISE MIX", Pick::Topic(problems::Topic::Mix)),
         ],
     ),
@@ -88,7 +89,7 @@ pub const MENU: &[(&str, &[(&str, Pick)])] = &[
 ];
 
 /// The levels the menu's LEVEL row offers, after the named entries.
-pub const MENU_LEVELS: u8 = 4;
+pub const MENU_LEVELS: u8 = problems::MAX_LEVEL;
 
 fn menu_entries() -> impl Iterator<Item = &'static (&'static str, Pick)> {
     MENU.iter().flat_map(|(_, items)| items.iter())

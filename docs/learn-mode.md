@@ -31,14 +31,15 @@ navigate nothing here; the pen does everything.
 
 ## The pedagogy
 
-Singapore Math's concrete → pictorial → abstract ladder, four levels:
+Singapore Math's concrete → pictorial → abstract ladder, five levels:
 
 | Level | Activities |
 |---|---|
-| 1 | count the ten-frame dots (≤5), number bonds to 5, compare to 5 (<, =, >), trace single letters |
-| 2 | bonds to 10, bond chains to 10, make-ten, adding 8 or 9 by making ten, + and − within 10, compare to 10, number-line hops, bar models to 10, trace CVC words |
-| 3 | bonds to 20, bond chains to 20, adding 6–9 by making ten, + and − within 20, number lines to 20, bar models and comparison bars to 20, skip counting by 2, 5, 10, place value (teens), sight words |
-| 4 | multiplication as dot arrays, division as sharing, ×/÷ equations, bond chains, place value to 99, hundred-chart windows, bar models, comparison bars, skip counting by 2, 3, 4, 5, 10, longer words |
+| 1 | count the ten-frame dots (≤5), number bonds to 5, compare to 5 (<, =, >), trace digits 0–9, trace single letters |
+| 2 | bonds to 10, bond chains to 10, make-ten, adding 8 or 9 by making ten, + and − within 10, compare to 10, number-line hops, bar models to 10, trace 10–20, trace CVC words |
+| 3 | bonds to 20, bond chains to 20, adding 6–9 by making ten, + and − within 20, column sums (two digits and one, no regrouping), number lines to 20, bar models and comparison bars to 20, skip counting by 2, 5, 10, place value (teens), trace two-digit numbers, sight words |
+| 4 | multiplication as dot arrays and equal groups, times facts for 2, 5, 10, division facts and sharing, column sums of two two-digit numbers (no regrouping), bond chains, place value to 99, hundred-chart windows, bar models, comparison bars, skip counting by 2, 3, 4, 5, 10, longer words |
+| 5 | column sums with regrouping (a new ten, or a borrowed one), times facts for 2, 3, 4, 5, 10, missing factors (`4 x ☐ = 12`), division facts, equal groups, bond chains to 50, bar models |
 
 The full Singapore Math toolbox is on the page: part-whole **bar models**
 (one bar split proportionally, the whole bracketed beneath, one number
@@ -100,7 +101,7 @@ letters genuinely touch the lines the child is told to reach.
 ## The menu
 
 A mark in MENU deals the picker: two labeled sections of tick boxes,
-**PRACTICE** (Math, Math Skills, Writing, Surprise Mix) and **GAMES** (Chess,
+**PRACTICE** (Math, Math Skills, Writing, Write Numbers, Surprise Mix) and **GAMES** (Chess,
 Doodle Critter, Guessing Game, Story Time), then a **LEVEL** row: four
 numbered boxes, the current level filled solid. A mark in an entry deals that
 page at once, and the choice is *sticky*: a picked game deals itself again on
@@ -115,9 +116,22 @@ name, grouped by strand:
 | Strand | Skills |
 |---|---|
 | Counting & numbers | Count Dots, Bigger or Smaller, Tens & Ones, Hundred Chart, Skip Counting |
-| Adding & taking away | Number Bonds, Bond Chains, Make Ten, Add by Making Ten, Number Sentences, Number Line |
+| Adding & taking away | Number Bonds, Bond Chains, Make Ten, Add by Making Ten, Number Sentences, Number Line, Big Sums, Big Take-Aways |
 | Bar models | Bar Models, How Many More |
-| Times & sharing | Times Tables, Sharing |
+| Times & sharing | Times Tables, Equal Groups, Times Facts, Sharing, Missing Number, Divide |
+
+**Column sums** (Big Sums, Big Take-Aways) stack the numbers under T and O
+headings with a dashed line between the columns, and one answer box under
+the rule. Whether a sum regroups is decided by the generator, not left to
+chance: levels 3 and 4 never make or borrow a ten, level 5 always does.
+**Times facts** follow Singapore's Primary 2 order, the 2, 5 and 10 tables
+first, then 3 and 4 at level 5; division and missing factors are drawn from
+the same tables, so every quotient is exact.
+
+**Write Numbers** traces a numeral and asks for it again freehand: digits at
+level 1, 10 to 20 at level 2, two-digit numbers after. Digits are sized to
+fill the writing height, top line to baseline, the way numbers are taught. A
+digit written backwards is ALMOST, never NO.
 
 A mark latches that one skill: every page deals it (at the current level,
 still adapting) until the menu says otherwise, and like any named pick, a
