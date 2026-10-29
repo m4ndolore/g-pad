@@ -60,6 +60,26 @@ down, silently. Activities rotate rather than sample, so a math page is
 always followed by something different. The menu's LEVEL row can re-seat the
 ladder by hand at any time; the automatic walk continues from the new rung.
 
+## Old schoolbooks
+
+Two activities come from public-domain American schoolbooks, set by Learn
+rather than shown as scans, so every answer region is exact and the tutor
+still only reads ink:
+
+- **STORY SUMS** (levels 2–5, the Math rotation and the skills page): word
+  problems from *Ray's New Primary Arithmetic* (1877) as the book prints
+  them, OCR slips mended, each tagged with the level its arithmetic needs
+  (within 10, within 20, small times and sharing, bigger ones). One per
+  page, a wide box under the sentence; a unit written after the number is
+  fine.
+- **COPYWORK** (the WRITING rotation from level 2): sentences from
+  *McGuffey's First Eclectic Reader* to trace and copy, short ones in print
+  at level 2, longer ones at 3, cursive from 4. Cursive is Dancing Script
+  (OFL), drawn through the same trace pipeline. A sentence too wide for
+  the full size shrinks, and its rules shrink with it.
+
+Both pages name their book in small grey type under the prompt.
+
 ## Speed race
 
 **SPEED RACE** (a GAMES entry) is ten tick-box questions against the clock,

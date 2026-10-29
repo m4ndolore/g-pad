@@ -173,6 +173,10 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, header: &Header) -
 
     // The instruction line, printed large enough for an early reader.
     print_centered(surf, ui_font, set.prompt, 46.0, (W / 2) as i32, (H * 13 / 100) as i32, BLACK);
+    // A page from an old schoolbook names the book, quietly, for the grown-up.
+    if let Some(source) = set.graded().source() {
+        print_centered(surf, ui_font, source, 24.0, (W / 2) as i32, (H * 163 / 1000) as i32, FADED);
+    }
 
     let n = set.items.len().max(1) as i32;
     let (top, bottom) = ((H * 18 / 100) as i32, feedback_y() - 24);
@@ -195,6 +199,8 @@ pub fn draw(surf: &mut Surface, ui_font: &FontRef, set: &Set, header: &Header) -
             Kind::Array { rows, cols } => draw_array(surf, ui_font, *rows, *cols),
             Kind::Share { total, groups } => draw_share(surf, ui_font, *total, *groups),
             Kind::Trace { word } => draw_trace(surf, ui_font, word),
+            Kind::Copy { line, cursive } => draw_copy(surf, ui_font, line, *cursive),
+            Kind::Story { text, .. } => draw_story(surf, ui_font, text),
             Kind::BondChain(chain) => draw_bond_chain(surf, ui_font, chain),
             Kind::BridgeTen { a, b } => draw_bridge_ten(surf, ui_font, *a, *b),
             Kind::TraceNumber { number } => draw_trace(surf, ui_font, &number.to_string()),
@@ -870,6 +876,9 @@ fn draw_share(surf: &mut Surface, font: &FontRef, total: u32, groups: u32) -> BB
 /// the top line without quite touching it — the print-font compromise every
 /// paper worksheet set in a regular font makes. Numbers are the exception:
 /// digits fill the whole writing height, top line to baseline.
+///
+/// A sentence too wide for the full size shrinks to the content width, and
+/// its rules shrink with it, so the small letters still stop at the midline.
 fn draw_trace(surf: &mut Surface, font: &FontRef, word: &str) -> BBox {
     let gap = (H * 55 / 1000) as i32; // half the writing height
     let base1 = (H * 34 / 100) as i32;
@@ -885,12 +894,14 @@ fn draw_trace(surf: &mut Surface, font: &FontRef, word: &str) -> BBox {
     let mut px = probe * target as f32 / ref_h;
     let max_w = (W - 2 * MARGIN) as f32;
     let w = script::measure(font, word, px);
+    let mut rule_gap = gap;
     if w > max_w {
         px *= max_w / w;
+        rule_gap = (gap as f32 * max_w / w).round() as i32;
     }
 
     for &base in &[base1, base2] {
-        rule_group(surf, base, 2 * gap, gap);
+        rule_group(surf, base, 2 * rule_gap, rule_gap);
     }
 
     let scaled = font.as_scaled(PxScale::from(px));
@@ -911,6 +922,35 @@ fn draw_trace(surf: &mut Surface, font: &FontRef, word: &str) -> BBox {
     answer.add(MARGIN as i32, base1 - 2 * gap - 20, 0);
     answer.add((W - MARGIN) as i32, base2 + gap + 30, 0);
     answer
+}
+
+/// The cursive copywork face: Dancing Script (OFL, fonts/OFL.txt), joined
+/// letters drawn through the same trace pipeline as print.
+const CURSIVE_TTF: &[u8] = include_bytes!("../../fonts/DancingScript.ttf");
+
+/// Copywork: a sentence to trace and copy, in print or cursive.
+fn draw_copy(surf: &mut Surface, ui_font: &FontRef, line: &str, cursive: bool) -> BBox {
+    match cursive.then(|| FontRef::try_from_slice(CURSIVE_TTF).ok()).flatten() {
+        Some(font) => draw_trace(surf, &font, line),
+        None => draw_trace(surf, ui_font, line),
+    }
+}
+
+/// A word problem as an old schoolbook prints it: the sentence set in
+/// reading-size type across the page, a wide answer box beneath (two digits,
+/// and room for a unit if the child writes one).
+fn draw_story(surf: &mut Surface, font: &FontRef, text: &str) -> BBox {
+    let px = 56.0;
+    let lead = (px * 1.45) as i32;
+    let mut y = (H * 21 / 100) as i32;
+    for row in script::wrap(font, text, px, (W - 2 * MARGIN) as f32) {
+        print(surf, font, &row, px, MARGIN, y as usize, BLACK);
+        y += lead;
+    }
+    let (_, bh) = box_size();
+    let bw = (W * 30 / 100) as i32;
+    let cy = (y + 60 + bh / 2).min(feedback_y() - 40 - bh / 2);
+    answer_box(surf, (W as i32 - bw) / 2, cy - bh / 2, bw, bh)
 }
 
 /// One handwriting rule group: top line at `top_h` above the heavy
@@ -1861,5 +1901,53 @@ mod tests {
         whole3.add(0, 0, 0);
         whole3.add(W as i32 - 1, H as i32 - 1, 0);
         assert_eq!(dark_in(&surf3, &whole3), with_award, "the toast must not spill out of the strip");
+    }
+
+    #[test]
+    fn book_pages_credit_their_book_and_keep_the_answer_clear_of_the_feedback() {
+        use crate::learn::problems::{Kind, Problem};
+        let font = ui_font();
+        let longest = "If twenty ducks were divided into four flocks, each having the same number, \
+                       how many ducks would there be in each flock?";
+        let pages = [
+            Problem { kind: Kind::Story { text: longest, answer: 5 }, prompt: "READ IT, THEN WRITE THE ANSWER" },
+            Problem { kind: Kind::Copy { line: "Look at Tom and his dog.", cursive: false }, prompt: "TRACE IT, THEN COPY IT" },
+            Problem { kind: Kind::Copy { line: "He is always so polite.", cursive: true }, prompt: "TRACE IT, THEN COPY IT" },
+        ];
+        for p in pages {
+            let (_buf, mut surf) = page();
+            let map = draw(&mut surf, &font, &solo(p.clone()), &Header::plain(4, 0, 0));
+            let mut credit = BBox::empty();
+            credit.add(MARGIN as i32, (H * 163 / 1000) as i32, 0);
+            credit.add((W - MARGIN) as i32, (H * 163 / 1000) as i32 + 30, 0);
+            let inked = (credit.y0..=credit.y1)
+                .flat_map(|y| (credit.x0..=credit.x1).map(move |x| (x, y)))
+                .filter(|&(x, y)| surf.luma(x, y) < 250)
+                .count();
+            assert!(inked > 50, "{:?} must name its book", p.kind);
+            assert!(!map.answer.is_empty());
+            assert!(map.answer.y1 < feedback_y(), "{:?} answer region runs into the feedback strip", p.kind);
+            assert!(map.answer.x0 >= 0 && map.answer.x1 < W as i32);
+        }
+    }
+
+    #[test]
+    fn a_long_copy_line_shrinks_its_rules_with_its_letters() {
+        use crate::learn::problems::{Kind, Problem};
+        let font = ui_font();
+        let midline_rise = |line: &'static str| {
+            let (_buf, mut surf) = page();
+            let p = Problem { kind: Kind::Copy { line, cursive: false }, prompt: "TRACE IT, THEN COPY IT" };
+            draw(&mut surf, &font, &solo(p), &Header::plain(2, 0, 0));
+            // The lower rule group's dashed midline: the first inked row above
+            // its baseline, at the left end where every dash pattern starts.
+            let base2 = (H * 56 / 100) as i32;
+            (1..(H as i32 * 12 / 100))
+                .find(|d| surf.luma(MARGIN as i32 + 5, base2 - 4 - d) < 250)
+                .unwrap_or(0)
+        };
+        let short = midline_rise("A big rat.");
+        let long = midline_rise("Look at Tom and his dog.");
+        assert!(long < short, "the long line's midline ({long}) must sit lower than the short line's ({short})");
     }
 }

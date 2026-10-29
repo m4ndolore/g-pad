@@ -492,6 +492,27 @@ fn learn_sheets(dir: &str) -> i32 {
             session.next();
         }
     }
+    // The old-schoolbook pages at each rung: a Ray's story sum, and McGuffey
+    // copywork (print at 2 and 3, cursive from 4).
+    for level in 2..=learn::problems::MAX_LEVEL {
+        let mut rng = learn::problems::Rng::new(7 + level as u32);
+        let story = learn::problems::Topic::Skill(learn::problems::Activity::Story);
+        let copy_rot = if level >= 4 { 0 } else { 1 };
+        let pages = [
+            ("story", learn::problems::generate_set(level, story, 0, &mut rng)),
+            ("copy", learn::problems::generate_set(level, learn::problems::Topic::Writing, copy_rot, &mut rng)),
+        ];
+        for (name, set) in pages {
+            let header = learn::sheet::Header { player: "LEARN", level, streak: 0, score: 0 };
+            learn::sheet::draw(&mut surf, &ui_font, &set, &header);
+            let path = format!("{dir}/learn-{name}-L{level}.png");
+            if let Err(e) = dump_page(&surf, &path) {
+                eprintln!("g-pad: write {path}: {e}");
+                return 1;
+            }
+            println!("{path}");
+        }
+    }
     // The menu: the picker every page's MENU box deals — and the skills
     // page its MATH SKILLS entry opens.
     let skills_box = learn::menu_index(learn::Pick::Skills).expect("MATH SKILLS is on the menu");

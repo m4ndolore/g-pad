@@ -76,6 +76,12 @@ pub enum Kind {
     /// A sum or fact with three answers to tick among. Marked on the tablet:
     /// the race's arithmetic.
     QuickSum { a: u32, op: Op, b: u32, options: [u32; 3] },
+    /// A word problem from Ray's New Primary Arithmetic (1877), printed as
+    /// the book prints it; the child writes the number that answers it.
+    Story { text: &'static str, answer: u32 },
+    /// Copywork from McGuffey's First Eclectic Reader: trace the dashed
+    /// sentence, then copy it below, in print or in cursive.
+    Copy { line: &'static str, cursive: bool },
 }
 
 /// The flat shapes Learn draws and asks about.
@@ -520,6 +526,17 @@ impl Problem {
             Kind::NameShape { shape, .. } => shape.name().to_string(),
             Kind::FindShape { target, .. } => target.name().to_string(),
             Kind::QuickSum { a, op, b, .. } => apply(*a, *op, *b).to_string(),
+            Kind::Story { answer, .. } => answer.to_string(),
+            Kind::Copy { line, .. } => (*line).to_string(),
+        }
+    }
+
+    /// The old schoolbook a page is taken from, credited under the prompt.
+    pub fn source(&self) -> Option<&'static str> {
+        match self.kind {
+            Kind::Story { .. } => Some("FROM RAY'S NEW PRIMARY ARITHMETIC, 1877"),
+            Kind::Copy { .. } => Some("FROM McGUFFEY'S FIRST ECLECTIC READER"),
+            _ => None,
         }
     }
 
@@ -680,6 +697,18 @@ impl Problem {
                  (correct answer {expected})",
                 lower = shape.name().to_lowercase()
             ),
+            Kind::Story { text, .. } => format!(
+                "the word problem \"{text}\" printed on the page, read aloud by a grown-up; \
+                 the child wrote the number that answers it in a box (correct answer {expected}). \
+                 A unit written after the number, like \"cents\", is fine"
+            ),
+            Kind::Copy { line, cursive } => format!(
+                "copywork of the sentence \"{line}\"{style}: the child traced it over guide letters on the upper lines, \
+                 then copied it freehand on the lower lines. Only the child's own pen strokes are shown — the printed guides are not. \
+                 YES if the lower copy is readable as the sentence (missing punctuation is fine), \
+                 ALMOST if a word is missing or shaky but recognizable, NO if missing or unreadable",
+                style = if *cursive { " in cursive" } else { "" }
+            ),
         }
     }
 }
@@ -748,6 +777,85 @@ const TRACE_L2: &[&str] = &["cat", "dog", "sun", "hat", "pig", "bed", "cup", "fo
 const TRACE_L3: &[&str] = &["the", "and", "you", "see", "play", "look", "here"];
 const TRACE_L4: &[&str] = &["jump", "ship", "rain", "star", "frog", "moon", "tree"];
 
+/// Word problems from Ray's New Primary Arithmetic (1877, public domain),
+/// as `(level, text, answer)`. The text is the book's, with the scan's OCR
+/// slips mended; the level is the arithmetic each asks for: sums and
+/// take-aways within 10, then within 20, then small times and sharing, then
+/// bigger ones.
+const STORIES: &[(u8, &str, u32)] = &[
+    (2, "James had 4 pens, and he found 2 more: how many had he then?", 6),
+    (2, "A hen has 5 black chickens and 2 white ones: how many chickens has she?", 7),
+    (2, "Frank had 3 apples, and gave 1 to his brother: how many had he left?", 2),
+    (2, "If you have 5 nuts, and give away 4 of them, how many will you then have?", 1),
+    (2, "Daniel caught 6 mice, but 2 of them got away: how many were left?", 4),
+    (2, "Francis bought 7 oranges, and ate 2 of them: how many had he then?", 5),
+    (2, "There were 7 ducks in a pond: 4 flew away: how many were left?", 3),
+    (2, "Charles had 7 marbles, and lost 6 of them: how many marbles had he left?", 1),
+    (2, "If you place 7 marbles by the side of 2 marbles, how many will there be altogether?", 9),
+    (2, "There are 5 horses in 1 field, and 4 in another: how many are there in both fields?", 9),
+    (2, "Henry had 9 raisins: after eating 6 of them, how many had he left?", 3),
+    (2, "Mary has 9 pecans: after eating 1 of them, how many will she have left?", 8),
+    (2, "I think of two numbers that together make 8: one of them is 5: what is the other?", 3),
+    (3, "Harry caught 2 fishes, and Edward caught 9: how many did both catch?", 11),
+    (3, "Charles caught 8 rabbits, and Samuel caught 3: how many did both catch?", 11),
+    (3, "My pencil cost 10 cents, and my pen 3 cents: how much did both cost?", 13),
+    (3, "If a lemon cost 4 cents, and an orange 8 cents, how much will both cost?", 12),
+    (3, "There are 5 pigs in one pen, and 6 in another: how many pigs in both pens?", 11),
+    (3, "Fanny had 7 roses, and she plucked 9 more: how many had she then?", 16),
+    (3, "Thomas had 5 marbles, and has found 8 more: how many marbles has he now?", 13),
+    (3, "Charles had 7 plums, and John gave him 9: how many did he then have?", 16),
+    (3, "Joseph caught 6 fishes, Samuel 3, and Henry 5: how many fishes did they all catch?", 14),
+    (3, "Six peaches and 3 peaches and 6 peaches are how many peaches?", 15),
+    (3, "Susan bought 11 peaches, and gave Emma 8: how many had she left?", 3),
+    (3, "Frank had 13 oranges, and gave 5 to Charles: how many did Frank then have?", 8),
+    (3, "Samuel, having 14 marbles, lost 8 of them: how many marbles had he left?", 6),
+    (3, "Mary had 15 plums, and gave her brother 6: how many had she then?", 9),
+    (3, "George had 16 marbles, and lost 9 of them: how many did he then have?", 7),
+    (3, "A man had 17 horses, and sold 8 of them: how many had he then?", 9),
+    (3, "I owed 13 dollars, and paid all but 5 dollars: how much did I pay?", 8),
+    (3, "Three numbers together make 18: the first number is 9, the second is 4: what is the third?", 5),
+    (4, "If apples cost 1 cent apiece, what will be the cost of 4 apples?", 4),
+    (4, "James bought 3 tops, at 3 cents each: what did he pay for them?", 9),
+    (4, "Lucy has 2 kittens, and each one has 4 feet: how many feet have both?", 8),
+    (4, "Daniel bought 4 tops, at 4 cents each: what did they cost?", 16),
+    (4, "Francis bought 7 oranges, at 4 cents each: what did they cost?", 28),
+    (4, "Lucy has 5 hens, and each hen has 5 chickens: how many chickens have all the hens?", 25),
+    (4, "Mary has 3 hens, and each hen has 6 chickens: how many chickens are there in all?", 18),
+    (4, "If there are 6 panes of glass in one window, how many panes are there in 4 windows?", 24),
+    (4, "If 1 dress can be made from 6 yards of calico, how many yards will it take to make 2 dresses?", 12),
+    (4, "If 16 apples be divided equally among 4 boys, how many will each have?", 4),
+    (4, "If you divide 14 apples into piles, containing 7 apples each, how many piles will there be?", 2),
+    (4, "If twenty ducks were divided into four flocks, each having the same number, how many ducks would there be in each flock?", 5),
+    (5, "If a pound of starch cost 9 cents, what will 4 pounds cost?", 36),
+    (5, "At 10 cents apiece, what will be the cost of 4 lead-pencils?", 40),
+    (5, "What will be the cost of 8 kites, at 5 cents apiece?", 40),
+    (5, "If 1 pound of flour cost 5 cents, what will 9 pounds cost?", 45),
+    (5, "What will be the cost of 6 lead-pencils, at 9 cents each?", 54),
+    (5, "There are 5 houses, each having 8 windows: how many windows in all the houses?", 40),
+    (5, "If 7 boys share 35 peaches equally, how many will each boy receive?", 5),
+    (5, "A father divided 45 cents equally among his 5 children: how much did each child get?", 9),
+    (5, "I bought 6 dozen eggs, at 10 cents a dozen: how much did they cost?", 60),
+];
+
+/// Copywork from McGuffey's First Eclectic Reader (public domain), shortest
+/// first: the early lessons' sentences in print, then longer ones in print,
+/// then sentences to copy in cursive.
+const COPY_PRINT_SHORT: &[&str] = &[
+    "The dog ran.", "The cat is on the mat.", "The man has a pen.", "A fat hen.", "A big rat.",
+    "Can the hen run?", "Ann can catch Rab.", "She has the hat.", "Ned has fed the hen.",
+    "Let us run and jump.", "The sun is up.", "Look at Tom and his dog.",
+];
+const COPY_PRINT_LONG: &[&str] = &[
+    "She is a black hen.", "Kitty has a nice pet.", "This is a fine day.", "The sun shines bright.",
+    "Here comes the band!", "Now the ball is lost.", "Where can it be?", "Ponto has found it.",
+    "Frank has a pretty boat.", "Thank you, my boy.", "Try again, Mary.", "The air is pure.",
+];
+const COPY_CURSIVE: &[&str] = &[
+    "I will not let it fall.", "What a bright June day!", "Brave old dog!", "How happy they are!",
+    "Let us go and see them.", "Here he comes with it.", "Do let me try.", "He is always so polite.",
+    "Give me your paw, Fido.", "They like the sport.", "See the boys and girls!",
+];
+
 /// What the menu narrows practice to: the full mix (default), math only,
 /// handwriting only, or one math skill chosen by name. A topic changes which
 /// activities rotate, never how any one activity is generated.
@@ -771,28 +879,31 @@ fn rotation(level: u8, topic: Topic) -> &'static [Activity] {
     use Activity::*;
     match (topic, level) {
         (Topic::Skill(a), _) => a.alone(),
-        (Topic::Writing, _) => &[Trace],
+        (Topic::Writing, 1) => &[Trace],
+        (Topic::Writing, 2 | 3) => &[Trace, Copy],
+        (Topic::Writing, _) => &[Copy, Trace],
         (Topic::Numbers, _) => &[WriteNumbers],
         (Topic::Shapes, 1) => &[FindShape, DrawShape, CountShapes, NameShape, ShapePattern],
         (Topic::Shapes, 2) => &[NameShape, DrawShape, CountShapes, FindShape, ShapeSides, ShapePattern],
         (Topic::Shapes, _) => &[ShapeSides, NameShape, CountShapes, ShapePattern, FindShape, DrawShape],
         (Topic::Math, 1) => &[Count, Bond, QuickSums, Compare],
-        (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, QuickSums, Compare, NumberLine, Bar, BridgeTen],
+        (Topic::Math, 2) => &[Bond, MakeTen, Equation, BondChain, QuickSums, Compare, NumberLine, Bar, BridgeTen,
+            Story],
         (Topic::Math, 3) => &[Bond, ColumnAdd, Equation, BondChain, NumberLine, Bar, BridgeTen, ColumnSub,
-            MakeTen, PlaceValue, CompareBars, SkipCount],
+            MakeTen, PlaceValue, CompareBars, SkipCount, Story],
         (Topic::Math, 4) => &[Array, Groups, TimesFacts, ColumnAdd, Equation, BondChain, Share, ColumnSub,
-            PlaceValue, HundredWindow, DivideFacts, Bar, CompareBars, SkipCount],
+            PlaceValue, HundredWindow, DivideFacts, Bar, CompareBars, SkipCount, Story],
         (Topic::Math, _) => &[ColumnAdd, TimesFacts, MissingFactor, ColumnSub, Groups, DivideFacts, BondChain,
-            Bar, CompareBars, HundredWindow, SkipCount],
+            Bar, CompareBars, HundredWindow, SkipCount, Story],
         (Topic::Mix, 1) => &[Count, Bond, WriteNumbers, FindShape, Trace, Compare, DrawShape, CountShapes],
         (Topic::Mix, 2) => &[Bond, MakeTen, WriteNumbers, Equation, CountShapes, Trace, BondChain, NameShape,
             Compare, NumberLine, ShapePattern, Bar, BridgeTen],
         (Topic::Mix, 3) => &[Bond, ColumnAdd, Equation, ShapeSides, Trace, BondChain, WriteNumbers, NumberLine,
-            Bar, BridgeTen, ColumnSub, ShapePattern, PlaceValue, CompareBars, SkipCount],
+            Bar, BridgeTen, ColumnSub, ShapePattern, PlaceValue, CompareBars, SkipCount, Story],
         (Topic::Mix, 4) => &[Array, ColumnAdd, Trace, Groups, TimesFacts, BondChain, ShapeSides, ColumnSub,
-            PlaceValue, Share, HundredWindow, DivideFacts, CountShapes, Bar, CompareBars, SkipCount],
-        (Topic::Mix, _) => &[ColumnAdd, TimesFacts, Trace, ColumnSub, MissingFactor, ShapeSides, Groups,
-            DivideFacts, BondChain, Bar, CountShapes, CompareBars, HundredWindow, SkipCount],
+            PlaceValue, Share, HundredWindow, DivideFacts, CountShapes, Bar, CompareBars, SkipCount, Story, Copy],
+        (Topic::Mix, _) => &[ColumnAdd, TimesFacts, Copy, ColumnSub, MissingFactor, ShapeSides, Groups,
+            DivideFacts, BondChain, Bar, CountShapes, CompareBars, HundredWindow, SkipCount, Story],
     }
 }
 
@@ -828,10 +939,13 @@ pub enum Activity {
     NameShape,
     FindShape,
     QuickSums,
+    Story,
+    Copy,
 }
 
 /// The skills picker's sections, each a strand of the curriculum, in box
-/// order. `Trace` stays out: handwriting is already the WRITING topic.
+/// order. `Trace` and `Copy` stay out: handwriting is already the WRITING
+/// topic.
 pub const SKILL_GROUPS: &[(&str, &[Activity])] = &[
     (
         "COUNTING & NUMBERS",
@@ -851,7 +965,7 @@ pub const SKILL_GROUPS: &[(&str, &[Activity])] = &[
             Activity::QuickSums,
         ],
     ),
-    ("BAR MODELS", &[Activity::Bar, Activity::CompareBars]),
+    ("STORIES & BAR MODELS", &[Activity::Story, Activity::Bar, Activity::CompareBars]),
     (
         "TIMES & SHARING",
         &[
@@ -916,6 +1030,8 @@ impl Activity {
             NameShape => &[NameShape],
             FindShape => &[FindShape],
             QuickSums => &[QuickSums],
+            Story => &[Story],
+            Copy => &[Copy],
         }
     }
 
@@ -954,6 +1070,8 @@ impl Activity {
             NameShape => "NAME THE SHAPE",
             FindShape => "FIND THE SHAPE",
             QuickSums => "QUICK SUMS",
+            Story => "STORY SUMS",
+            Copy => "COPYWORK",
         }
     }
 }
@@ -1031,6 +1149,8 @@ fn page_prompt(act: Activity, n: usize) -> &'static str {
         Array => "HOW MANY DOTS IN ALL?",
         Share => "HOW MANY IN EACH GROUP?",
         Trace => "TRACE IT, THEN WRITE IT",
+        Story => "READ IT, THEN WRITE THE ANSWER",
+        Copy => "TRACE IT, THEN COPY IT",
     }
 }
 
@@ -1121,6 +1241,23 @@ fn problem_for(act: Activity, level: u8, rng: &mut Rng) -> Problem {
             };
             let word = words[rng.range(0, words.len() as u32 - 1) as usize];
             Problem { kind: Kind::Trace { word }, prompt: "TRACE IT, THEN WRITE IT" }
+        }
+        Activity::Story => {
+            // Level 1 has no stories in its rotation; the skills latch there
+            // deals the easiest ones.
+            let rung = level.clamp(2, MAX_LEVEL);
+            let pool: Vec<_> = STORIES.iter().filter(|(l, ..)| *l == rung).collect();
+            let &(_, text, answer) = pool[rng.range(0, pool.len() as u32 - 1) as usize];
+            Problem { kind: Kind::Story { text, answer }, prompt: "READ IT, THEN WRITE THE ANSWER" }
+        }
+        Activity::Copy => {
+            let (lines, cursive) = match level {
+                ..=2 => (COPY_PRINT_SHORT, false),
+                3 => (COPY_PRINT_LONG, false),
+                _ => (COPY_CURSIVE, true),
+            };
+            let line = lines[rng.range(0, lines.len() as u32 - 1) as usize];
+            Problem { kind: Kind::Copy { line, cursive }, prompt: "TRACE IT, THEN COPY IT" }
         }
         Activity::Bar => {
             // Segments must stay wide enough to write in: each part at least
@@ -1479,7 +1616,7 @@ mod tests {
                 let math = generate(level, Topic::Math, rot, &mut rng).kind;
                 assert!(!matches!(math, Kind::Trace { .. }), "math topic dealt {math:?}");
                 let writing = generate(level, Topic::Writing, rot, &mut rng).kind;
-                assert!(matches!(writing, Kind::Trace { .. }), "writing topic dealt {writing:?}");
+                assert!(matches!(writing, Kind::Trace { .. } | Kind::Copy { .. }), "writing topic dealt {writing:?}");
             }
         }
     }
@@ -1521,6 +1658,7 @@ mod tests {
                             | (Kind::NameShape { .. }, Activity::NameShape)
                             | (Kind::FindShape { .. }, Activity::FindShape)
                             | (Kind::QuickSum { .. }, Activity::QuickSums)
+                            | (Kind::Story { .. }, Activity::Story)
                     );
                     assert!(same, "skill {act:?} at level {level} dealt {:?}", p.kind);
                 }
@@ -1539,7 +1677,46 @@ mod tests {
         for (i, a) in skills.iter().enumerate() {
             assert!(!skills[..i].contains(a), "{a:?} sits in two skill groups");
         }
-        assert_eq!(skills.len(), 28, "every math activity has a box");
+        assert_eq!(skills.len(), 29, "every math activity has a box");
+    }
+
+    #[test]
+    fn rays_stories_cover_levels_two_to_five_within_each_levels_numbers() {
+        for level in 2..=5u8 {
+            let pool: Vec<_> = STORIES.iter().filter(|(l, ..)| *l == level).collect();
+            assert!(pool.len() >= 9, "level {level} has only {} stories", pool.len());
+            for (_, text, answer) in pool {
+                assert!(text.ends_with('?'), "{text:?} is not a question");
+                assert!(*answer > 0);
+                let cap = match level {
+                    2 => 10,
+                    3 => 20,
+                    _ => 100,
+                };
+                assert!(*answer <= cap, "{text:?} answers {answer}, past level {level}'s numbers");
+            }
+        }
+        let mut rng = Rng::new(3);
+        for level in 1..=5 {
+            let p = problem_for(Activity::Story, level, &mut rng);
+            assert!(matches!(p.kind, Kind::Story { .. }));
+            assert!(p.source().unwrap().contains("RAY'S"));
+        }
+    }
+
+    #[test]
+    fn copywork_is_mcguffeys_and_turns_cursive_at_level_four() {
+        let mut rng = Rng::new(9);
+        for level in 1..=5 {
+            for _ in 0..10 {
+                let p = problem_for(Activity::Copy, level, &mut rng);
+                let Kind::Copy { line, cursive } = p.kind else { panic!("copy dealt {:?}", p.kind) };
+                assert_eq!(cursive, level >= 4);
+                assert_eq!(p.expected(), line);
+                assert!(p.source().unwrap().contains("McGUFFEY"));
+                assert!(line.len() <= 26, "{line:?} is too long to trace at a readable size");
+            }
+        }
     }
 
     #[test]
@@ -1637,7 +1814,7 @@ mod tests {
                         | Kind::BridgeTen { .. } | Kind::TraceNumber { .. } | Kind::Groups { .. }
                         | Kind::ShapeSides { .. } | Kind::CountShapes { .. } | Kind::ShapePattern { .. }
                         | Kind::DrawShape { .. } | Kind::NameShape { .. } | Kind::FindShape { .. }
-                        | Kind::QuickSum { .. });
+                        | Kind::QuickSum { .. } | Kind::Story { .. } | Kind::Copy { .. });
                     if solo_only {
                         assert_eq!(set.items.len(), 1, "{:?} needs the whole page", set.items[0].kind);
                     } else {
