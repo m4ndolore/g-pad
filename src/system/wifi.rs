@@ -124,8 +124,9 @@ const IFACE: &str = "wlan0";
 /// A rescan is asynchronous; the list answers from the previous scan until
 /// the new one lands, which takes a few seconds.
 const SCAN_SETTLE: Duration = Duration::from_secs(4);
-/// How long `con up` may take before it is reported as a failure.
-const JOIN_WAIT_SECS: &str = "10";
+/// How long nmcli waits on a join. Scan, WPA handshake and DHCP took 10.3 s
+/// on a new network (2026-11-14), past the old 10 s limit.
+const JOIN_WAIT_SECS: &str = "30";
 
 const DEV_SHOW: &[&str] = &[
     "-t",
@@ -155,7 +156,9 @@ pub fn spawn(cmd: Cmd, tx: Sender<Event>) {
             let _ = tx.send(e);
         };
         match cmd {
-            Cmd::Refresh => refresh(&send),
+            Cmd::Refresh => {
+                refresh(&send);
+            }
             Cmd::Scan => {
                 // A rescan right after another is refused ("not allowed
                 // immediately following previous scan"); the list still
@@ -177,10 +180,8 @@ pub fn spawn(cmd: Cmd, tx: Sender<Event>) {
             Cmd::Select(name) => {
                 // NetworkManager owns roaming: activating a saved connection
                 // is one call that waits for the join or says why it failed.
-                if let Err(e) = nm(&["--wait", JOIN_WAIT_SECS, "con", "up", "id", &name]) {
-                    return send(Event::Failed(e));
-                }
-                refresh(&send);
+                let res = nm(&["--wait", JOIN_WAIT_SECS, "con", "up", "id", &name]);
+                finish_join(res, &name, &send);
             }
             Cmd::Join { ssid, password } => {
                 // The password rides on nmcli's command line, briefly visible
@@ -190,27 +191,49 @@ pub fn spawn(cmd: Cmd, tx: Sender<Event>) {
                 if let Some(p) = &password {
                     args.extend(["password", p.as_str()]);
                 }
-                if let Err(e) = nm(&args) {
-                    return send(Event::Failed(e));
-                }
-                refresh(&send);
+                let res = nm(&args);
+                finish_join(res, &ssid, &send);
             }
         }
     });
 }
 
-/// Status then the saved list. The scan list only supplies the signal, so
-/// its absence is not an error.
-fn refresh(send: &dyn Fn(Event)) {
-    let heard = nm(WIFI_LIST).map(|t| parse_wifi_list(&t)).unwrap_or_default();
-    match nm(DEV_SHOW) {
-        Ok(dev) => send(Event::Status(status_from(&dev, &heard))),
-        Err(e) => return send(Event::Failed(e)),
+/// Report a join. NetworkManager keeps activating after nmcli's `--wait`
+/// expires, so a timeout can land a moment before the join succeeds: read
+/// the state first and show nmcli's error only if the tablet is not on
+/// `ssid`.
+fn finish_join(res: Result<String, String>, ssid: &str, send: &dyn Fn(Event)) {
+    let now = refresh(send);
+    if let Some(e) = join_error(res, now.as_ref(), ssid) {
+        send(Event::Failed(e));
     }
+}
+
+/// The error a join should show: none when it worked, or when the state
+/// read afterwards says the tablet is connected to `ssid` anyway.
+fn join_error(res: Result<String, String>, now: Option<&Status>, ssid: &str) -> Option<String> {
+    let e = res.err()?;
+    let joined = now.is_some_and(|s| s.connected && s.ssid.as_deref() == Some(ssid));
+    (!joined).then_some(e)
+}
+
+/// Status then the saved list. The scan list only supplies the signal, so
+/// its absence is not an error. Returns the status it sent.
+fn refresh(send: &dyn Fn(Event)) -> Option<Status> {
+    let heard = nm(WIFI_LIST).map(|t| parse_wifi_list(&t)).unwrap_or_default();
+    let status = match nm(DEV_SHOW) {
+        Ok(dev) => status_from(&dev, &heard),
+        Err(e) => {
+            send(Event::Failed(e));
+            return None;
+        }
+    };
+    send(Event::Status(status.clone()));
     match nm(CON_SHOW) {
         Ok(cons) => send(Event::Saved(parse_con_show(&cons))),
         Err(e) => send(Event::Failed(e)),
     }
+    Some(status)
 }
 
 /// Run one nmcli command; the error is its first line, for the status row.
@@ -413,6 +436,16 @@ mod tests {
         );
         let down = "GENERAL.STATE:30 (disconnected)\nGENERAL.CONNECTION:--\n";
         assert_eq!(status_from(down, &[]), Status { ssid: None, connected: false, ip: None, rssi: None });
+    }
+
+    #[test]
+    fn a_join_that_timed_out_but_connected_shows_no_error() {
+        let on = |ssid: &str| Status { ssid: Some(ssid.into()), connected: true, ip: None, rssi: None };
+        let timeout = || Err("Error: Timeout 10 sec expired.".to_string());
+        assert_eq!(join_error(timeout(), Some(&on("home")), "home"), None);
+        assert_eq!(join_error(timeout(), Some(&on("other")), "home").as_deref(), Some("Error: Timeout 10 sec expired."));
+        assert_eq!(join_error(timeout(), None, "home").as_deref(), Some("Error: Timeout 10 sec expired."));
+        assert_eq!(join_error(Ok(String::new()), None, "home"), None);
     }
 
     #[test]
