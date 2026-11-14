@@ -7,7 +7,7 @@
 #
 # Needs: the cross toolchain build-takeover-zig.sh needs (zig, cargo-zigbuild,
 # the armv7 target), quill/build/<target>/libquill.so built for the OS in
-# BUILT_FOR (default 3.28; see quill/build-zig.sh), and `gh` logged in.
+# BUILT_FOR (default 3.29; see quill/build-zig.sh), and `gh` logged in.
 #
 # Assets uploaded:
 #   anthink-rm2-<tag>.zip   the bundle, unpacking to g-pad/
@@ -51,7 +51,7 @@ cat "$OUT/SHA256SUMS"
 
 NOTES="$OUT/notes.md"
 {
-    echo "Prebuilt for the reMarkable 2 on OS ${BUILT_FOR:-3.28}. Install from any machine with ssh:"
+    echo "Prebuilt for the reMarkable 2 on OS ${BUILT_FOR:-3.29}. Install from any machine with ssh:"
     echo
     echo '```sh'
     echo "curl -fsSL https://github.com/m4ndolore/g-pad/releases/download/$TAG/install.sh | bash"

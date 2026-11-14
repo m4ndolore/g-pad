@@ -16,7 +16,7 @@ case "$DEVICE" in
     FEATURES=rm2
     # The OS whose e-ink engine ABI libquill.so was built against. The
     # installer warns when the tablet runs a different major.minor.
-    BUILT_FOR="${BUILT_FOR:-3.28}"
+    BUILT_FOR="${BUILT_FOR:-3.29}"
     ;;
   rmpp)
     TARGET=aarch64-unknown-linux-gnu
