@@ -13,7 +13,7 @@ thinking. No keyboard, no chat window, no screen glow. Paper that answers.
 [![MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
 [![no vendor blob](https://github.com/m4ndolore/g-pad/actions/workflows/no-vendor-blob.yml/badge.svg)](https://github.com/m4ndolore/g-pad/actions/workflows/no-vendor-blob.yml)
 ![Rust](https://img.shields.io/badge/rust-18.5k%20lines%20%C2%B7%205%20crates-black.svg)
-![reMarkable 2](https://img.shields.io/badge/reMarkable%202-OS%203.28-black.svg)
+![reMarkable 2](https://img.shields.io/badge/reMarkable%202-OS%203.29-black.svg)
 
 Anthink takes over the whole tablet. The stock UI stops, the pad drives the e-ink
 engine directly as root, and the pen goes straight to the panel. It runs on a
@@ -104,7 +104,7 @@ ANTHINK_BUNDLE=dist/rm2-takeover/g-pad ./scripts/install.sh
 > **This modifies your device.** Takeover stops the reMarkable UI and drives the
 > e-ink engine directly as root. Leave with a **five-finger hold**, and xochitl
 > restarts. If it ever wedges: `ssh root@10.11.99.1 'systemctl start xochitl'`.
-> Tested on a reMarkable 2 on OS 3.27 and 3.28. Not affiliated with reMarkable AS.
+> Tested on a reMarkable 2 on OS 3.27, 3.28 and 3.29. Not affiliated with reMarkable AS.
 >
 > `libqsgepaper.so` is reMarkable's. The build copies it from **your** tablet, it
 > is gitignored, and CI fails if it ever lands in history.
@@ -231,7 +231,7 @@ Verify on the device with `g-pad --oracle-test icon.png`.
 
 ## Status
 
-Live on a reMarkable 2 running OS 3.28.0.172. Pad, Learn, SYSTEM, the boot
+Live on a reMarkable 2 running OS 3.29.0.153. Pad, Learn, SYSTEM, the boot
 branding, and the Agent bridge are in daily use. The BRIEF tab is the newest
 surface and has not yet had a day on hardware. The windowed build for the stock
 UI is not maintained; takeover is the product.

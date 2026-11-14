@@ -34,6 +34,9 @@ first and falls back to the 3.28 one, so one build serves both; a library
 built before that change fails `quill_init` on 3.28 with
 "swapBuffers unavailable" and draws nothing.
 
+OS 3.29 (Qt 6.10.3, same as 3.28) only added symbols: a libquill.so linked
+against the 3.29 libraries is byte-identical to the 3.28 build.
+
 The original clean-room provenance statement is retained in `CLEANROOM.md`.
 The ARM32 extension is a portability change to that MIT implementation based
 on Qt's public platform types and ELF ABI names.
